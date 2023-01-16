@@ -19,6 +19,7 @@ from Deepfillv2.libs.data import ImageDataset_box, ImageDataset_segmented
 print('pippo')
 print('pippo2')
 print('pippo3')
+print('pippo4')
 
 parser = argparse.ArgumentParser()
 mask_modes = ["box", "segmented"]
