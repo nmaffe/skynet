@@ -31,7 +31,9 @@ parser.add_argument("--postfix",  type=str, default='a', help="postfix added beh
 def main():
 
     args = parser.parse_args()
-    
+
+    # TODO: modificare questi path in modo da tenere traccia degli iperparametri
+    # es: 'train/' diventa 'train/RGI_{args.region}_size_{args.shape}_maxH_{args.max_height}_eccetera'
     train_path = args.outdir + 'train/'
     val_path = args.outdir + 'val/'
 
