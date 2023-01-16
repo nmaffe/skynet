@@ -34,6 +34,8 @@ def main():
 
     args = parser.parse_args()
 
+    # TODO: qua args.outdir dovrebbe diventare con args.outdir+'RGI_{args.region}_size_{args.shape}'
+
     if os.path.isdir(args.outdir):
         if os.path.isdir(args.outdir + 'images/'):
             None
