@@ -16,7 +16,7 @@ import Deepfillv2.libs.misc as misc
 from Deepfillv2.libs.networks import Generator, Discriminator
 from Deepfillv2.libs.data import ImageDataset_box, ImageDataset_segmented
 
-
+print('pippo')
 parser = argparse.ArgumentParser()
 mask_modes = ["box", "segmented"]
 parser.add_argument('--config', type=str,default="Deepfillv2/configs/train.yaml", help="Path to yaml config file")
