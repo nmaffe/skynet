@@ -20,6 +20,7 @@ print('pippo')
 print('pippo2')
 print('pippo3')
 print('pippo4')
+print('pippo5')
 
 parser = argparse.ArgumentParser()
 mask_modes = ["box", "segmented"]
