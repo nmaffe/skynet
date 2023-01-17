@@ -26,8 +26,8 @@ def str2bool(s):
         raise argparse.ArgumentTypeError("Boolean value expected")
 
 parser = argparse.ArgumentParser(description='Create DEM mosaic from DEM tiles')
-parser.add_argument("--input",  type=str, default=None, help="path to the DEM tile folder")
-parser.add_argument("--output", type=str, default="DEM_files/mosaics/mosaic.tif", help="path for the output file")
+parser.add_argument("--input",  type=str, default=None, help="folder path to the DEM tiles")
+parser.add_argument("--output", type=str, default="../ASTERDEM_v3_mosaics/", help="folder path for the output file")
 parser.add_argument('--create_mask',  default=True, type=str2bool, const=True, nargs='?', help='Create mask mosaic')
 parser.add_argument("--region",  type=int, default=None, help="RGI region")
 parser.add_argument("--version",  type=str, default='62', help="RGI version")
@@ -39,6 +39,8 @@ def main():
 
 
     args = parser.parse_args()
+
+    print(f'Working on tiles contained in {args.input}')
 
     INDIR = args.input
     if INDIR[:-1] != '/':
@@ -63,7 +65,7 @@ def main():
         src_files_to_mosaic.append(src)
 
     mosaic = merge_arrays(src_files_to_mosaic)
-    mosaic.rio.to_raster(OUTPUT)
+    mosaic.rio.to_raster(OUTPUT+f"mosaic_RGI_{args.region}.tif")
 
     if args.create_mask:
 
@@ -107,7 +109,7 @@ def main():
         mask = xr.zeros_like(mosaic)
         mask.rio.write_nodata(1., inplace=True)
         mask = mask.rio.clip(gdf['geometry'].to_list(), args.epsg, drop=False, invert=True, all_touched=False)
-        mask.rio.to_raster(OUTPUT.replace('.tif', '_mask.tif'))
+        mask.rio.to_raster(OUTPUT+f"mosaic_RGI_{args.region}.tif".replace('.tif', '_mask.tif'))
 
         print("Finished !")
 
