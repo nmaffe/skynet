@@ -465,12 +465,10 @@ def rasterio_clip(dem_path, polygon_set, epsg):
     # clip all glaciers at once
     mask = mask.rio.clip(polygon_set['geometry'].to_list(), epsg, drop=False, invert=True, all_touched=False)
 
-    # if you prefer the loop
+    # if you prefer the loop over single glaciers
     # for glacier in tqdm(range(len(polygon_set)), leave=False):
     #    geom = polygon_set['geometry'][glacier]
     #    mask = mask.rio.clip([geom], epsg, drop=False, invert=True, all_touched=False)
-
-    mask.rio.to_raster(dem_path[:-4] + "_mask.tif")
 
     return mask
 
