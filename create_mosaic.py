@@ -12,7 +12,8 @@ from oggm import utils
 from utils import contains_glacier_, rasterio_clip
 
 """
-This program creates the whole DEM mosaic and the whole mask mosaic with all masks of single glaciers contained.
+This program creates the whole DEM mosaic and the whole mask mosaic with all masks of single glaciers contained
+in the specific RGI.
 """
 
 def str2bool(s):
@@ -29,7 +30,7 @@ parser = argparse.ArgumentParser(description='Create DEM mosaic from DEM tiles')
 parser.add_argument("--input",  type=str, default=None, help="folder path to the DEM tiles")
 parser.add_argument("--output", type=str, default="../ASTERDEM_v3_mosaics/", help="folder path for the output file")
 parser.add_argument('--create_mask',  default=True, type=str2bool, const=True, nargs='?', help='Create mask mosaic')
-parser.add_argument("--region",  type=int, default=None, help="RGI region")
+parser.add_argument("--region",  type=str, default=None, help="RGI region in xx format")
 parser.add_argument("--version",  type=str, default='62', help="RGI version")
 parser.add_argument("--epsg",  type=str, default="EPSG:4326", help="DEM projection")
 
@@ -48,9 +49,8 @@ def main():
 
     OUTPUT = args.output
 
-    REGION = args.region
     if args.create_mask == True:
-        if REGION == None:
+        if args.region == None:
             print("Creating mosaic mask requires RGI region: ex. --region 11")
             exit()
 
@@ -76,6 +76,7 @@ def main():
         print("Creating mosaic mask ...")
 
         """ 
+        OLD METHOD 
         old version which first selects for every tile those glaciers contained, then produces all invidual mask tiles 
         and then merges them into a mosaic mask. Unless you want to have individual mask tiles produces, you can just
         create an empty mosaic and all glaciers contained inside will be burned in. 
@@ -98,18 +99,28 @@ def main():
         mask = merge_arrays(src_files_to_mask, bounds=mosaic.rio.bounds())
         mask.rio.to_raster(OUTPUT.replace('.tif', '_mask.tif'))"""
 
-        # if you want to save individual mask tiles
-        save_individual_mask_tiles = False
-        if save_individual_mask_tiles is True:
-            for tile in tqdm(dem_paths, leave=True):
-                _ = rasterio_clip(tile, gdf, args.epsg)
+        """ METHOD 1: MASK SINGLE TILES AND MERGE EVERYTHING TO CREATE MOSAIC MASK"""
+        src_files_to_mask = []
+        for tile in tqdm(dem_paths, leave=True):
+            masked_tile = rioxarray.open_rasterio(tile)
+            masked_tile = xr.zeros_like(masked_tile)
+            masked_tile.rio.write_nodata(1., inplace=True)
+            masked_tile = masked_tile.rio.clip(gdf['geometry'].to_list(), args.epsg, drop=False, invert=True, all_touched=False)
+            masked_tile.rio.write_nodata(0., inplace=True) # necessary to fill in missing tiles with 0 when merging
+            src_files_to_mask.append(masked_tile)
+            # masked_tile.rio.to_raster(dem_path[:-4] + "_mask.tif") # if you want to save the masked_tile
+        mask1 = merge_arrays(src_files_to_mask, bounds=mosaic.rio.bounds())
+        mask1.rio.to_raster(OUTPUT + f"mosaic_RGI_{args.region}.tif".replace('.tif', '_mask.tif'))
 
 
-        """ smarter way is burn in all glaciers contained in gdf without saving individual mask tiles"""
-        mask = xr.zeros_like(mosaic)
-        mask.rio.write_nodata(1., inplace=True)
-        mask = mask.rio.clip(gdf['geometry'].to_list(), args.epsg, drop=False, invert=True, all_touched=False)
-        mask.rio.to_raster(OUTPUT+f"mosaic_RGI_{args.region}.tif".replace('.tif', '_mask.tif'))
+        """ METHOD 2: FAST way is burn in all glaciers in one go. Memory very expensive """
+        """
+        mask2 = xr.zeros_like(mosaic)
+        mask2.rio.write_nodata(1., inplace=True)
+        mask2 = mask2.rio.clip(gdf['geometry'].to_list(), args.epsg, drop=False, invert=True, all_touched=False)
+        mask2.rio.to_raster(OUTPUT+f"mosaic_RGI_{args.region}.tif".replace('.tif', '_mask.tif'))
+        """
+        #print(mask1.equals(mask2)) # check if the two methods agree
 
         print("Finished !")
 
