@@ -41,7 +41,7 @@ def main():
 
     args = parser.parse_args()
 
-    print(f'Working on tiles contained in {args.input}')
+    print(f'Working on tiles contained in {args.input} and creating mosaic and mask for region {args.region}')
 
     INDIR = args.input
     if INDIR[:-1] != '/':
@@ -66,6 +66,7 @@ def main():
 
     mosaic = merge_arrays(src_files_to_mosaic)
     mosaic.rio.to_raster(OUTPUT+f"mosaic_RGI_{args.region}.tif")
+    print('Created mosaic.')
 
     if args.create_mask:
 
@@ -100,27 +101,31 @@ def main():
         mask.rio.to_raster(OUTPUT.replace('.tif', '_mask.tif'))"""
 
         """ METHOD 1: MASK SINGLE TILES AND MERGE EVERYTHING TO CREATE MOSAIC MASK"""
-        src_files_to_mask = []
-        for tile in tqdm(dem_paths, leave=True):
-            masked_tile = rioxarray.open_rasterio(tile)
-            masked_tile = xr.zeros_like(masked_tile)
-            masked_tile.rio.write_nodata(1., inplace=True)
-            masked_tile = masked_tile.rio.clip(gdf['geometry'].to_list(), args.epsg, drop=False, invert=True, all_touched=False)
-            masked_tile.rio.write_nodata(0., inplace=True) # necessary to fill in missing tiles with 0 when merging
-            src_files_to_mask.append(masked_tile)
-            # masked_tile.rio.to_raster(dem_path[:-4] + "_mask.tif") # if you want to save the masked_tile
-        mask1 = merge_arrays(src_files_to_mask, bounds=mosaic.rio.bounds())
-        mask1.rio.to_raster(OUTPUT + f"mosaic_RGI_{args.region}.tif".replace('.tif', '_mask.tif'))
+        use_method1 = True
+        if use_method1 is True:
+            src_files_to_mask = []
+            for tile in tqdm(dem_paths, leave=True):
+                masked_tile = rioxarray.open_rasterio(tile)
+                masked_tile = xr.zeros_like(masked_tile)
+                masked_tile.rio.write_nodata(1., inplace=True)
+                masked_tile = masked_tile.rio.clip(gdf['geometry'].to_list(), args.epsg, drop=False, invert=True, all_touched=False)
+                masked_tile.rio.write_nodata(0., inplace=True) # necessary to fill in missing tiles with 0 when merging
+                src_files_to_mask.append(masked_tile)
+                # masked_tile.rio.to_raster(dem_path[:-4] + "_mask.tif") # if you want to save the masked_tile
+            mask1 = merge_arrays(src_files_to_mask, bounds=mosaic.rio.bounds())
+            mask1.rio.to_raster(OUTPUT + f"mosaic_RGI_{args.region}.tif".replace('.tif', '_mask.tif'))
 
 
         """ METHOD 2: FAST way is burn in all glaciers in one go. Memory very expensive """
-        """
-        mask2 = xr.zeros_like(mosaic)
-        mask2.rio.write_nodata(1., inplace=True)
-        mask2 = mask2.rio.clip(gdf['geometry'].to_list(), args.epsg, drop=False, invert=True, all_touched=False)
-        mask2.rio.to_raster(OUTPUT+f"mosaic_RGI_{args.region}.tif".replace('.tif', '_mask.tif'))
-        """
-        #print(mask1.equals(mask2)) # check if the two methods agree
+        use_method2 = False
+        if use_method2 is True:
+            mask2 = xr.zeros_like(mosaic)
+            mask2.rio.write_nodata(1., inplace=True)
+            mask2 = mask2.rio.clip(gdf['geometry'].to_list(), args.epsg, drop=False, invert=True, all_touched=False)
+            mask2.rio.to_raster(OUTPUT+f"mosaic_RGI_{args.region}.tif".replace('.tif', '_mask.tif'))
+
+        if (use_method1 is True and use_method2 is True):
+            print(mask1.equals(mask2)) # check if the two methods agree
 
         print("Finished !")
 
