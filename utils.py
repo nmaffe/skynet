@@ -496,8 +496,10 @@ def coords_to_xy(dem_path, glaciers, crs_from=4326, crs_to=4326):
         # rows, cols = dataset.index(lon, lat) # Get the (row, col) index of the pixel containing (x, y).
 
         dims = dataset.dims #  <-- ('band', 'y', 'x')
-        rows = dataset.indexes[dims[1]].get_loc(lat,  method="nearest")
-        cols = dataset.indexes[dims[2]].get_loc(lon,  method="nearest")
+        #rows = dataset.indexes[dims[1]].get_loc(lat,  method="nearest") # Deprecated
+        #cols = dataset.indexes[dims[2]].get_loc(lon,  method="nearest") # Deprecated
+        rows = dataset.indexes[dims[1]].get_indexer([lat], method="nearest")[0]
+        cols = dataset.indexes[dims[2]].get_indexer([lon], method="nearest")[0]
         coords.append([rows, cols])
 
     RGI = glaciers['RGIId'].to_list()
