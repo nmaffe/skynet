@@ -69,7 +69,7 @@ def main():
     args.input = args.input+f'mosaic_RGI_{args.region}.tif'
     dem = rioxarray.open_rasterio(args.input)
     if (args.region =='13' or args.region =='14' or args.region =='15'):
-        print('you are in asia..')
+        print('merging the three mosaic masks 13-14-15...')
         m13 = rioxarray.open_rasterio('/home/nico/PycharmProjects/skynet/ASTERDEM_v3_mosaics/mosaic_RGI_13_mask.tif')
         m14 = rioxarray.open_rasterio('/home/nico/PycharmProjects/skynet/ASTERDEM_v3_mosaics/mosaic_RGI_14_mask.tif')
         m15 = rioxarray.open_rasterio('/home/nico/PycharmProjects/skynet/ASTERDEM_v3_mosaics/mosaic_RGI_15_mask.tif')
@@ -139,7 +139,7 @@ def main():
                 ########### extract mask patch #############
                 # First reduce mask then clip the geometry
                 mask_patch = mask[0, r:r + args.shape, c:c + args.shape]
-                mask_patch = mask_patch.rio.clip([geom], "EPSG:4326", drop=False, invert=True, all_touched=False, from_disk=True) # pixels inside the geometry will be set to nodata, i.e. 1.
+                mask_patch = mask_patch.rio.clip([geom], "EPSG:4326", drop=False, invert=True, all_touched=False)
                 ########### extract image patch #############
                 image_patch = dem[0, r:r + args.shape, c:c + args.shape]
                 ########### extract full mask #############
