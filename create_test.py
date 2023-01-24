@@ -20,9 +20,9 @@ from utils import coords_to_xy, contains_glacier_
 
 
 parser = argparse.ArgumentParser(description='Create DEM mosaic from DEM tiles')
-parser.add_argument("--input",  type=str, default=None, help="path to the DEM mosaic")
+parser.add_argument("--input",  type=str, default='../ASTERDEM_v3_mosaics/', help="path to mosaic folder")
 parser.add_argument("--outdir", type=str, default="dataset/test/", help="path for the output file")
-parser.add_argument("--region",  type=int, default=11, help="RGI region")
+parser.add_argument("--region",  type=str, default=11, help="RGI region in xx format")
 parser.add_argument("--shape",  type=int, default=256, help="Size of test patches")
 parser.add_argument("--version",  type=str, default='62', help="RGI version")
 parser.add_argument("--epsg",  type=str, default="EPSG:4326", help="DEM projection")
@@ -34,7 +34,7 @@ def main():
 
     args = parser.parse_args()
 
-    # TODO: qua args.outdir dovrebbe diventare con args.outdir+'RGI_{args.region}_size_{args.shape}'
+    args.outdir = args.outdir+f'RGI_{args.region}_size_{args.shape}/'
 
     if os.path.isdir(args.outdir):
         if os.path.isdir(args.outdir + 'images/'):
@@ -50,7 +50,6 @@ def main():
         else:
             os.mkdir(args.outdir + 'masks_full/')
     else:
-        print('*********************************')
         os.mkdir(args.outdir)
         os.mkdir(args.outdir + 'images/')
         os.mkdir(args.outdir + 'masks/')
@@ -67,8 +66,16 @@ def main():
     gdf = gpd.read_file(eu)
 
     # load DEM
+    args.input = args.input+f'mosaic_RGI_{args.region}.tif'
     dem = rioxarray.open_rasterio(args.input)
-    empty = rioxarray.open_rasterio(args.input.replace('.tif', '_mask.tif'))
+    if (args.region =='13' or args.region =='14' or args.region =='15'):
+        print('you are in asia..')
+        m13 = rioxarray.open_rasterio('/home/nico/PycharmProjects/skynet/ASTERDEM_v3_mosaics/mosaic_RGI_13_mask.tif')
+        m14 = rioxarray.open_rasterio('/home/nico/PycharmProjects/skynet/ASTERDEM_v3_mosaics/mosaic_RGI_14_mask.tif')
+        m15 = rioxarray.open_rasterio('/home/nico/PycharmProjects/skynet/ASTERDEM_v3_mosaics/mosaic_RGI_15_mask.tif')
+        empty = m13 + m14 + m15
+    else:
+        empty = rioxarray.open_rasterio(args.input.replace('.tif', '_mask.tif'))
 
     # sort glaciers
     # da queste righe estraggo filtered_gdf, la lista di ghiacciai contenuti nel dem completo
