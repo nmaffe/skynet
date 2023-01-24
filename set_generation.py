@@ -279,8 +279,6 @@ def create_dataset_train(image, mask, patch_size, max_iter, seen, max_height, th
             if avg < threshold:
                 append = False
 
-
-
         if append and patch.size == size:
             seen[center_i-15:center_i+16, center_j-15:center_j+16] += 1 # To keep track of created patch regions, fill a 32x32 box centered on the patch region with 1.
             patches.append(patch)
@@ -295,11 +293,11 @@ def create_dataset_train(image, mask, patch_size, max_iter, seen, max_height, th
     return patches, seen
 
 
-def flow_train_dataset(image, mask, patch_size, train_path, val_path, max_height, threshold=None, mode=None, total=15000, postfix='', random_state=None, invalid_value=-32767.):
+def flow_train_dataset(image, mask, region, patch_size, train_path, val_path, max_height, threshold=None, mode=None, total=15000, postfix='', random_state=None, invalid_value=-32767.):
 
     seen = xr.zeros_like(image)
 
-    cumulative_patch = np.zeros((1, 256, 256)) #ndarray
+    cumulative_patch = np.zeros((1, patch_size[0], patch_size[1])) # ndarray used only for plotting
 
     num, limit = 0, total
     pbar = tqdm(total = limit)
@@ -315,9 +313,9 @@ def flow_train_dataset(image, mask, patch_size, train_path, val_path, max_height
         # SAVE THE IMAGES
         # We have a batch of 10 images. We keep all but the last one as train and the last one as val.
         for img in flow[:-1]:
-            img.rio.to_raster(train_path + str(num) + postfix + '.tif', dtype=np.uint16)
+            img.rio.to_raster(train_path + f'RGI_{region}_'+ str(num) + '.tif', dtype=np.uint16)
             num += 1
-        flow[-1].rio.to_raster(val_path + str(num) + postfix + '.tif', dtype=np.uint16)
+        flow[-1].rio.to_raster(val_path + f'RGI_{region}_'+ str(num) + '.tif', dtype=np.uint16)
         num += 1
 
         pbar.update(10)
@@ -329,23 +327,23 @@ def flow_train_dataset(image, mask, patch_size, train_path, val_path, max_height
     """ inspect the mean training patch to see if there is any bias """
     average_patch = np.average(cumulative_patch, axis=0)
     print('Shapes: ', cumulative_patch.shape, average_patch.shape)
+
     fig, axs = plt.subplots()
     im0 = axs.imshow(average_patch, cmap='terrain')
     cax = plt.axes([0.8, 0.12, 0.03, 0.75])
     cbar = fig.colorbar(im0, cax=cax, orientation='vertical')
     cbar.ax.set_ylabel('Height (m)', rotation=270, fontsize=13, fontweight='bold', labelpad=20)
     cbar.ax.tick_params(labelsize=12)
-    plt.tight_layout()
     plt.show()
 
     show = True
     if show:
         """ Show the final maps. Note that the created 256x256 patches are only shown for the inner 32x32 center boxes. """
         fig, (ax0, ax1) = plt.subplots(2,1, figsize=(6, 8))
-        im0 = image.plot.imshow(ax=ax0, cmap='terrain', cbar_kwargs={'label':'Height (m)'})
-        im1 = mask.plot.imshow(ax=ax1, cmap='Blues', add_colorbar=False)
-        im2 = seen.where(seen!=0.0).plot.imshow(ax=ax1, cmap='spring', cbar_kwargs={'label':'Training region'})
-        im3 = image.plot.imshow(ax=ax1, cmap='terrain', alpha=0.4, add_colorbar=False)
+        im0 = image.rio.clip_box(minx=7.2,miny=45.5,maxx=8.0,maxy=46.3).plot.imshow(ax=ax0, cmap='terrain', cbar_kwargs={'label':'Height (m)'})
+        im1 = mask.rio.clip_box(minx=7.2,miny=45.5,maxx=8.0,maxy=46.3).plot.imshow(ax=ax1, cmap='Blues', add_colorbar=False)
+        im2 = seen.rio.clip_box(minx=7.2,miny=45.5,maxx=8.0,maxy=46.3).where(seen!=0.0).plot.imshow(ax=ax1, cmap='spring', cbar_kwargs={'label':'Training region'})
+        im3 = image.rio.clip_box(minx=7.2,miny=45.5,maxx=8.0,maxy=46.3).plot.imshow(ax=ax1, cmap='terrain', alpha=0.4, add_colorbar=False)
         ax0.set_xlabel('')
         ax0.set_ylabel('')
         ax1.set_xlabel('')
