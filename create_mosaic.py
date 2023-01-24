@@ -74,7 +74,7 @@ def main():
         eu = utils.get_rgi_region_file(args.region, version=args.version)
         gdf = gpd.read_file(eu)
 
-        print("Creating mosaic mask ...")
+        print(f"Creating mosaic mask ... should be able to burn in {len(gdf)} glaciers")
 
         """ 
         OLD METHOD 
@@ -109,6 +109,8 @@ def main():
                 masked_tile = xr.zeros_like(masked_tile)
                 masked_tile.rio.write_nodata(1., inplace=True)
                 masked_tile = masked_tile.rio.clip(gdf['geometry'].to_list(), args.epsg, drop=False, invert=True, all_touched=False)
+                #num_px_burned = float(masked_tile.sum()) # if tile is useless num_px_burned=0
+                #if (num_px_burned==0): print(tile)
                 masked_tile.rio.write_nodata(0., inplace=True) # necessary to fill in missing tiles with 0 when merging
                 src_files_to_mask.append(masked_tile)
                 # masked_tile.rio.to_raster(dem_path[:-4] + "_mask.tif") # if you want to save the masked_tile
