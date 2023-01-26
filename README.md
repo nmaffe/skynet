@@ -18,11 +18,28 @@ Download it from https://search.earthdata.nasa.gov/search.
  To select the region of interest you may specify the rectancle SW and NE coordinates:
 
 | RGI | SW (lat, lon) | NE (lat, lon)|
-| ---  | --- | --- |
-| 08   | 58,4 | 72, 35 |
-| 11   | 41,-2 | 49,21 |
-| 13, 15, 15   | 26,66 | 47,105 |
-| 18   | -47,166 | -38,177 |
+| :---:  | :---: | :---: |
+| 08   | 58, 4 | 72, 35 |
+| 11   | 41, -2 | 49, 21 |
+| 13, 15, 15 | 26, 66 | 47, 105 |
+| 18   | -47, 166 | -38, 177 |
+
+## Create mosaic
+To create the DEM mosaic and the mosaic_mask where of all glaciers contained inside the region, run:
+```
+python create_mosaic.py --input '/PATH_TO_DEM_TILES/' --output /PATH_TO_OUTPUT_MOSAIC/ --create_mask True --version '62' --epsg "EPSG:4326" --region None
+
+--create_mask (default=True): if you want to produce the mosaic_mask of all glaciers
+--epsg (default="EPSG:4326" the DEM projection).
+--version (default='62'): oggm version to extract glaciers.
+--region (default=None): specify Randolph Glacier Inventory region as XX.
+```
+This code creates two files: ```mosaic_RGI_xx.tif``` and ```mosaic_RGI_xx_mask.tif``` in the specified output path.
+The mask file contains 1 if the pixel belongs to a glacier (segmented using Bresenham’s line algorithm), and 0 otherwise.
+The glacier shapefiles are extracted from ```oggm``` library.
+
+
+
 
 ### Funding
 <!--
