@@ -12,6 +12,18 @@
 </p>
 -->
 
+## Download dem tiles
+This model uses ASTER GDEM v3. 
+Download it from https://search.earthdata.nasa.gov/search. 
+ To select the region of interest you may specify the rectancle SW and NE coordinates:
+
+| RGI | SW (lat, lon) | NE (lat, lon)|
+| ---  | --- | --- |
+| 08   | 58,4 | 72, 35 |
+| 11   | 41,-2 | 49,21 |
+| 13, 15, 15   | 26,66 | 47,105 |
+| 18   | -47,166 | -38,177 |
+
 ### Funding
 <!--
 [<img aligh="right" alt="CCAI" src="images/logoCCAI.png" height="70">](https://www.climatechange.ai/)
