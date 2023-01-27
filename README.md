@@ -101,9 +101,9 @@ TODO
 
 ## Acknowledgments
 
-[<img src="img/myImage.png">](http://example.com/)
-
-[<img alt="CCAI" src="img/logo_CCAI.png" height="70" />](https://www.climatechange.ai/)
+<p align="center">
+ [<img alt="CCAI" src="img/logo_CCAI.png" height="70" />](https://www.climatechange.ai/)
+</p>
 
 <img aligh="right" alt="EU" src="img/logoEU.png" height="70">](https://marie-sklodowska-curie-actions.ec.europa.eu/)
 
