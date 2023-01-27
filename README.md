@@ -68,7 +68,7 @@ This code creates the training dataset.
 ```
 > python create_train.py --input PATH --outdir PATH --region None --threshold 1500
 
---input PATH: path to dem mosaic .tif
+--input PATH: input dem mosaic .tif file
 --outdir PATH (default='dataset/'): path for the output files
 --region (default=None): RGI region as XX
 --shape (default=256): size of train patches
