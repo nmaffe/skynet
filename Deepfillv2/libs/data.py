@@ -111,6 +111,8 @@ class ImageDataset_box(Dataset):
         else:
             self.data = [entry.path for entry in os.scandir(folder_path) if is_image_file(entry.name)]
 
+        print(f'Training images: {len(self.data)}')
+
         self.transforms = T.ToTensor()
         if transforms != None:
             self.transforms = T.Compose(transforms + [self.transforms])
