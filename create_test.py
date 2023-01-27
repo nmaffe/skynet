@@ -20,9 +20,9 @@ from utils import coords_to_xy, contains_glacier_
 
 
 parser = argparse.ArgumentParser(description='Create DEM mosaic from DEM tiles')
-parser.add_argument("--input",  type=str, default='../ASTERDEM_v3_mosaics/', help="path to mosaic folder")
-parser.add_argument("--outdir", type=str, default="dataset/test/", help="path for the output file")
-parser.add_argument("--region",  type=str, default=11, help="RGI region in xx format")
+parser.add_argument("--input",  type=str, default='../ASTERDEM_v3_mosaics/', help="path for input mosaic file")
+parser.add_argument("--outdir", type=str, default="dataset/test/", help="path for the output test files")
+parser.add_argument("--region",  type=str, default=None, help="RGI region in xx format")
 parser.add_argument("--shape",  type=int, default=256, help="Size of test patches")
 parser.add_argument("--version",  type=str, default='62', help="RGI version")
 parser.add_argument("--epsg",  type=str, default="EPSG:4326", help="DEM projection")
@@ -186,6 +186,7 @@ def main():
                 # save xarray.DataArray as tif files
                 mask_patch.rio.to_raster(args.outdir + 'masks/' + RGIId[glacier] + '_mask.tif', dtype=np.float32)
                 image_patch.rio.to_raster(args.outdir + 'images/' + RGIId[glacier] + '.tif', dtype=np.uint16)
+                #todo in the full mask folder the files should be called sth like _masks_full.tif
                 full_mask.rio.to_raster(args.outdir + 'masks_full/' + RGIId[glacier] + '_mask.tif', dtype=np.float32)
 
             # remove mask
