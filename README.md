@@ -27,7 +27,7 @@ Download it from https://search.earthdata.nasa.gov/search.
 ## Create mosaic 🖼
 To create the DEM mosaic and the mosaic_mask where of all glaciers contained inside the region, run:
 ```
-> python create_mosaic.py --input /PATH_TO_DEM_TILES/ --output /PATH_TO_OUTPUT_MOSAIC/ --create_mask True --version '62' --epsg "EPSG:4326" --region None
+python create_mosaic.py --input /PATH_TO_DEM_TILES/ --output /PATH_TO_OUTPUT_MOSAIC/ --create_mask True --version '62' --epsg "EPSG:4326" --region None
 
 --create_mask (default=True): if you want to produce the mosaic_mask of all glaciers
 --epsg (default="EPSG:4326" the DEM projection).
@@ -45,7 +45,7 @@ This code creates the test dataset of all glaciers contained in the mosaic. It c
 - masks_full/: mask of ALL glaciers inside the patch
 
 ```
-> python create_test.py --input PATH --outdir PATH --region None --shape 256 --version '62' --epsg "EPSG:4326"
+python create_test.py --input PATH --outdir PATH --region None --shape 256 --version '62' --epsg "EPSG:4326"
  
 --input PATH: path of mosaic and mosaic_mask files
 --outdir PATH: path for the generated test dataset
@@ -66,7 +66,7 @@ to the same size before the forward pass. Or to increase to 512x512. Currently, 
 ## Create train dataset 🏋️
 This code creates the training dataset. 
 ```
-> python create_train.py --input PATH --outdir PATH --region None --threshold 1500
+python create_train.py --input PATH --outdir PATH --region None --threshold 1500
 
 --input PATH: input dem mosaic .tif file
 --outdir PATH (default='dataset/'): path for the output files
@@ -94,7 +94,12 @@ Of all the created images, 90%-10% are saved as train-validation. The algorithm 
 the total amount of ```samples``` is reached.
 
 ## Train
-TODO
+```
+python deepfillv2_train.py --config YAML_FILE --mask MASKTYPE
+
+--config (default="Deepfillv2/configs/train.yaml"): config .yaml file
+--box (default="box"): box or segmented mask type
+```
 
 ## Inference
 TODO
