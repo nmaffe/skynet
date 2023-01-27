@@ -100,6 +100,8 @@ python deepfillv2_train.py --config YAML_FILE --mask MASKTYPE
 --config (default="Deepfillv2/configs/train.yaml"): config .yaml file
 --box (default="box"): box or segmented mask type
 ```
+The .yaml file contains all the configuration parameters. In particular, set the "dataset_path" variable to 
+indicate the training dataset you want and "checkpoint_dir" to indicate where the model will be saved.
 
 ## Inference
 TODO
