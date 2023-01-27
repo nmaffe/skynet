@@ -101,9 +101,7 @@ TODO
 
 ## Acknowledgments
 
-<p align="center">
- [<img alt="CCAI" src="img/logo_CCAI.png" height="70" />](https://www.climatechange.ai/)
-</p>
+[<img align="center" alt="CCAI" src="img/logo_CCAI.png" height="70" />](https://www.climatechange.ai/)
 
 <img aligh="right" alt="EU" src="img/logoEU.png" height="70">](https://marie-sklodowska-curie-actions.ec.europa.eu/)
 
