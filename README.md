@@ -101,13 +101,9 @@ TODO
 
 ## Acknowledgments
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/senya-ashukha/senya-ashukha.github.io/master/images/FeatureRefinement.png" />
-</p>
+[<img src="img/myImage.png">](http://example.com/)
 
-<p align="center">
- [<img alt="CCAI" src="img/logo_CCAI.png" height="70" />](https://www.climatechange.ai/)
-</p>
+[<img alt="CCAI" src="img/logo_CCAI.png" height="70" />](https://www.climatechange.ai/)
 
 <img aligh="right" alt="EU" src="img/logoEU.png" height="70">](https://marie-sklodowska-curie-actions.ec.europa.eu/)
 
