@@ -93,7 +93,7 @@ the inner 96x96 box.
 Of all the created images, 90%-10% are saved as train-validation. The algorithm stop if no new patches can be created or
 the total amount of ```samples``` is reached.
 
-### Funding
+## Funding
 <!--
 [<img aligh="right" alt="CCAI" src="images/logoCCAI.png" height="70">](https://www.climatechange.ai/)
 [<img aligh="right" alt="EU" src="images/logoEU.png" height="70">](https://marie-sklodowska-curie-actions.ec.europa.eu/)
