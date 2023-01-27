@@ -102,8 +102,7 @@ TODO
 ## Acknowledgments
 
 [<img align="center" alt="CCAI" src="img/logo_CCAI.png" height="70" />](https://www.climatechange.ai/)
-
-<img aligh="right" alt="EU" src="img/logoEU.png" height="70">](https://marie-sklodowska-curie-actions.ec.europa.eu/)
+[<img aligh="right" alt="EU" src="img/logo_MSCA.png" height="70" />](https://marie-sklodowska-curie-actions.ec.europa.eu/)
 
 This project was funded by the Climate Change AI Innovation Grants program,
 hosted by Climate Change AI with the additional support of Canada Hub of Future
