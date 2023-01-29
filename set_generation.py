@@ -1,6 +1,7 @@
 import numpy as np
 import random
 import cv2
+import sys
 import xarray as xr
 from time import sleep
 from tqdm import tqdm
@@ -297,14 +298,11 @@ def flow_train_dataset(image, mask, region, patch_size, train_path, val_path, ma
 
     seen = xr.zeros_like(image)
 
-    cumulative_patch = np.zeros((1, patch_size[0], patch_size[1])) # ndarray used only for plotting
-
     num, limit = 0, total
     pbar = tqdm(total = limit)
     while True:
-        flow, seen = create_dataset_train(image, mask, patch_size, 50000, seen, max_height, threshold, mode, random_state, invalid_value)
 
-        cumulative_patch = np.append(cumulative_patch, np.array(flow), axis=0)
+        flow, seen = create_dataset_train(image, mask, patch_size, 50000, seen, max_height, threshold, mode, random_state, invalid_value)
 
         if len(flow) < 10:
             print("Unable to find new patches")
@@ -324,39 +322,8 @@ def flow_train_dataset(image, mask, region, patch_size, train_path, val_path, ma
 
     pbar.close()
 
-    """ inspect the mean training patch to see if there is any bias """
-    average_patch = np.average(cumulative_patch, axis=0)
-    print('Shapes: ', cumulative_patch.shape, average_patch.shape)
 
-    fig, axs = plt.subplots()
-    im0 = axs.imshow(average_patch, cmap='terrain')
-    cax = plt.axes([0.8, 0.12, 0.03, 0.75])
-    cbar = fig.colorbar(im0, cax=cax, orientation='vertical')
-    cbar.ax.set_ylabel('Height (m)', rotation=270, fontsize=13, fontweight='bold', labelpad=20)
-    cbar.ax.tick_params(labelsize=12)
-    plt.show()
-
-    show = True
-    if show:
-        """ Show the final maps. Note that the created 256x256 patches are only shown for the inner 32x32 center boxes. """
-        fig, (ax0, ax1) = plt.subplots(2,1, figsize=(6, 8))
-        im0 = image.rio.clip_box(minx=7.2,miny=45.5,maxx=8.0,maxy=46.3).plot.imshow(ax=ax0, cmap='terrain', cbar_kwargs={'label':'Height (m)'})
-        im1 = mask.rio.clip_box(minx=7.2,miny=45.5,maxx=8.0,maxy=46.3).plot.imshow(ax=ax1, cmap='Blues', add_colorbar=False)
-        im2 = seen.rio.clip_box(minx=7.2,miny=45.5,maxx=8.0,maxy=46.3).where(seen!=0.0).plot.imshow(ax=ax1, cmap='spring', cbar_kwargs={'label':'Training region'})
-        im3 = image.rio.clip_box(minx=7.2,miny=45.5,maxx=8.0,maxy=46.3).plot.imshow(ax=ax1, cmap='terrain', alpha=0.4, add_colorbar=False)
-        ax0.set_xlabel('')
-        ax0.set_ylabel('')
-        ax1.set_xlabel('')
-        ax1.set_ylabel('')
-        ax0.set_title('')
-        ax1.set_title('')
-        ax0.set_xlim(7.2, 8.0)
-        ax0.set_ylim(45.5, 46.3)
-        ax1.set_xlim(7.2, 8.0)
-        ax1.set_ylim(45.5, 46.3)
-        plt.show()
-
-    return seen
+    return seen # i may save/return this to check where the training patches have been created
 
 
 def create_test_images_full_noedge(image, mask, patch_size, coords_frame, create_blank=False, random_state=None, invalid_value=-32767.):
