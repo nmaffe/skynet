@@ -186,8 +186,7 @@ def main():
                 # save xarray.DataArray as tif files
                 mask_patch.rio.to_raster(args.outdir + 'masks/' + RGIId[glacier] + '_mask.tif', dtype=np.float32)
                 image_patch.rio.to_raster(args.outdir + 'images/' + RGIId[glacier] + '.tif', dtype=np.uint16)
-                #todo in the full mask folder the files should be called something like _masks_full.tif
-                full_mask.rio.to_raster(args.outdir + 'masks_full/' + RGIId[glacier] + '_mask.tif', dtype=np.float32)
+                full_mask.rio.to_raster(args.outdir + 'masks_full/' + RGIId[glacier] + '_mask_full.tif', dtype=np.float32)
 
             # remove mask
             mask.rio.write_nodata(0, inplace=True)
