@@ -12,7 +12,7 @@
 </p>
 -->
 
-## Download dem tiles ⛰️
+## Download dem tiles ️🛰 ⛰️
 This model uses ASTER GDEM v3. 
 Download it from https://search.earthdata.nasa.gov/search. 
  To select the region of interest you may specify the rectancle SW and NE coordinates:
@@ -24,7 +24,7 @@ Download it from https://search.earthdata.nasa.gov/search.
 | 13, 15, 15 (Asia) | 26, 66 | 47, 105 |
 | 18 (New Zealand) | -47, 166 | -38, 177 |
 
-## Create mosaic 🖼
+## Create mosaic 🗺️
 To create the DEM mosaic and the mosaic_mask where of all glaciers contained inside the region, run:
 ```
 python create_mosaic.py --input /PATH_TO_DEM_TILES/ --output /PATH_TO_OUTPUT_MOSAIC/ --create_mask True --version '62' --epsg "EPSG:4326" --region None
