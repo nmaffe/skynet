@@ -141,8 +141,6 @@ class ImageDataset_box(Dataset):
         returs PIL.Image.Image images. Afterwards we crop/resize and finally transform to torch tensors in [-1, 1] """
 
         img, bounds = cv_loader(self.data[index])  # PIL.Image.Image.
-        #print(type(img), img)
-        #input('wait')
 
         if self.random_crop: # at the end of this if/else we will have a resized image
             w, h = img.size
@@ -154,5 +152,7 @@ class ImageDataset_box(Dataset):
 
         img = self.transforms(img) # yields pytorch tensor in the [0, 1] range
         img.mul_(2).sub_(1) # multiply by 2 and subtract 1 to have a [-1, 1] range
+
+        bounds = torch.from_numpy(bounds)
 
         return img, bounds
