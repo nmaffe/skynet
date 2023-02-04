@@ -1,6 +1,7 @@
 import os
 import cv2
 import numpy as np
+import gdal
 
 from PIL import Image
 from torch.utils.data import Dataset
@@ -19,18 +20,23 @@ def pil_loader(path):
         return img
 
 def cv_loader(path):
-    """ Gets as input the path of .tif files and return C x H x W shaped PIL.Image.Image in the [0, 255] range. Note
-    that this results in loosing all georeferenced info contained in the .tif files. To avoid that I should modify
-    this function and open with rioxarray the .tif files, return the georeferences info as well as the image converted
-    to PIL images."""
+    """ Gets as input the path of .tif files and return C x H x W shaped PIL.Image.Image in the [0, 255] range."""
     """ I am not convinced by this per-image normalization (img - img_min) / (img_max - img_min) """
-    img = cv2.imread(path, -1)
+    # img = cv2.imread(path, -1) # old version that uses cv2
+    gdal_tile = gdal.Open(path) # new version use gdal instead of cv2
+    ulx, xres, _, uly, _, yres = gdal_tile.GetGeoTransform()
+    llx = ulx
+    lly = uly + (gdal_tile.RasterYSize * yres)
+    urx = ulx + (gdal_tile.RasterXSize * xres)
+    ury = uly
+    bounds = np.array([llx, lly, urx, ury]) # bounds
+    img = gdal_tile.GetRasterBand(1).ReadAsArray() # values
     img_max = np.amax(img)
     img_min = np.amin(img)
     img = (img - img_min) / (img_max - img_min) # normalize all images between 0 and 1
     img = (np.stack((img,)*3, axis=-1) * 255).astype(np.uint8) # rescale from 0 to 255
     img = Image.fromarray((img))
-    return img
+    return img, bounds
 
 def cv_loader_mask(path):
     mask = cv2.imread(path, -1)
@@ -132,10 +138,11 @@ class ImageDataset_box(Dataset):
     def __getitem__(self, index):
 
         """ Here we load the .tif images contained in the self.data list with the cv_loader method that
-        returs PIL.Image.Image images. Note that this results in loosing all other info contained in the tif files,
-        for e.g. the georeferences. Afterwards we crop/resize and finally transform to torch tensors in [-1, 1] """
+        returs PIL.Image.Image images. Afterwards we crop/resize and finally transform to torch tensors in [-1, 1] """
 
-        img = cv_loader(self.data[index])  # PIL.Image.Image. Da notare che la georeferenziazione del tif ora viene persa.
+        img, bounds = cv_loader(self.data[index])  # PIL.Image.Image.
+        #print(type(img), img)
+        #input('wait')
 
         if self.random_crop: # at the end of this if/else we will have a resized image
             w, h = img.size
@@ -148,4 +155,4 @@ class ImageDataset_box(Dataset):
         img = self.transforms(img) # yields pytorch tensor in the [0, 1] range
         img.mul_(2).sub_(1) # multiply by 2 and subtract 1 to have a [-1, 1] range
 
-        return img
+        return img, bounds
