@@ -59,22 +59,22 @@ def training_loop(generator,        # generator network
 
     # training loop
     init_n_iter = last_n_iter + 1
-    train_iter = iter(train_dataloader)
+    train_iter = iter(train_dataloader) # initialize the iterator over the dataloader
     time0 = time.time()
     for n_iter in range(init_n_iter, config.max_iters):
 
-        print(f"iter: {n_iter}/{config.max_iters}")
+        #print(f"iter: {n_iter}/{config.max_iters}")
 
         # load batch of raw data
         try:
             if args.mask == "box":
-                batch_real = next(train_iter) # fetch batch_real=(batch_size, 3, 256, 256)
+                batch_real, batch_bounds = next(train_iter) # fetch batch_real=(batch_size, 3, 256, 256)
             elif args.mask == "segmented":    
                 batch_real, mask = next(train_iter)
         except: # how are errors possibly triggered ?
             if args.mask == "box":
                 train_iter = iter(train_dataloader) # why define again an iterator ?
-                batch_real = next(train_iter)
+                batch_real, batch_bounds = next(train_iter)
             elif args.mask == "segmented":
                 train_iter = iter(train_dataloader)
                 batch_real, mask = next(train_iter)   
