@@ -293,6 +293,22 @@ def bounding_box(img, label):
         box = 0, 0, 0, 0
     return box
 
+def haversine(lon1, lat1, lon2, lat2):
+    """
+    Calculate the great circle distance in kilometers between two points
+    on the earth (specified in decimal degrees)
+    E.g. haversine(-1./3600, 0, 0, 0) returns 0.030 km.
+    """
+    # convert decimal degrees to radians
+    lon1, lat1, lon2, lat2 = np.radians([lon1, lat1, lon2, lat2])
+
+    # haversine formula
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+    c = 2 * np.arcsin(np.sqrt(a))
+    r = 6371 # Radius of earth in kilometers. Determines return value units.
+    return c * r
 
 
 def get_glacier_metrics(DEM, mask):
