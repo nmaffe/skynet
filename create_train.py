@@ -22,7 +22,7 @@ parser.add_argument("--max_height",  type=int, default=9999, help="Max desired h
 parser.add_argument("--threshold",  type=int, default=2000, help="Threshold value to sample high elevation regions")
 parser.add_argument("--mode",  type=str, default='average', help="Threshold mode: average or max")
 parser.add_argument("--samples",  type=int, default=40000, help="Number of samples to attempt to create")
-parser.add_argument("--postfix",  type=str, default='a', help="postfix added behind samples")
+parser.add_argument("--postfix",  type=str, default='', help="postfix added behind samples")
 
 
 def main():
