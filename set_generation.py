@@ -5,9 +5,20 @@ import sys
 import xarray as xr
 from time import sleep
 from tqdm import tqdm
+from utils import haversine
 import matplotlib.pyplot as plt
 
+def create_slope_from_patch(patch):
+    """input: patch (Xarray)
+        output: slope (ndarray)"""
+    lon_c = (0.5 * (patch.coords['x'][-1] + patch.coords['x'][0])).to_numpy()
+    lat_c = (0.5 * (patch.coords['y'][-1] + patch.coords['y'][0])).to_numpy()
+    ris_ang = patch.rio.resolution()[0]
+    ris_metre = haversine(lon_c, lat_c, lon_c + ris_ang, lat_c) * 1000
+    slope_dx, slope_dy = np.gradient(patch.values.squeeze(), ris_metre)
+    slope = np.sqrt(slope_dx ** 2 + slope_dy ** 2)
 
+    return slope
 
 def create_train_images_small(image, mask, patch_size, max_iter, threshold=None, mode=None, random_state=None, invalid_value=-32767.):
 
