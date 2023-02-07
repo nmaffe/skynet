@@ -35,4 +35,12 @@ def hinge_loss_g(neg):
     return g_loss
 
 
-# TODO: implement a Wasserstein loss ?
+def wesserstein_loss_d(pos, neg):
+    """ maffe implementation """
+    d_loss = 0.5 * torch.mean(neg) - 0.5 * torch.mean(pos)
+    return d_loss
+
+def wesserstein_loss_g(neg):
+    """ maffe implementation """
+    g_loss = -torch.mean(neg)
+    return g_loss
