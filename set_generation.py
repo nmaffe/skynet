@@ -274,29 +274,31 @@ def create_dataset_train(image, mask, patch_size, max_iter, seen, max_height, th
         if float(seen[center_i-15:center_i+16, center_j-15:center_j+16].sum()) > 200: # discard if the 32x32 region around the center has been previously sampled to some extent.
             append = False
 
+        max = float(patch.max()) #max = np.max(patch[int(p_h/2)-47:int(p_h/2)+48, int(p_w/2)-47:int(p_w/2)+48])
+        min = float(patch.min())
+        avg = float(patch.mean())
+
         # CONDITION 3: do not exceed a maximum height value
         # modified for other mountain ranges
-        if float(patch.max()) > max_height:
+        if max > max_height:
             append = False
 
-        # CONDITION 4: the patch should be above a certain threshold (mean or max)
+        # CONDITION 4: the patch should exceed certain threshold (mean or max) and max-min>300 metres
         if mode == 'max':
-            #max = np.max(patch[int(p_h/2)-47:int(p_h/2)+48, int(p_w/2)-47:int(p_w/2)+48])
-            max = float(patch.max())
-            if max < threshold:
+            if ( (max < threshold) or (max-min<300.) ):
                 append = False
         if mode == 'average':
-            #avg = np.mean(patch[int(p_h/2)-47:int(p_h/2)+48, int(p_w/2)-47:int(p_w/2)+48])
-            avg = float(patch.mean())
-            if avg < threshold:
+            if ( (avg < threshold) or (max-min<300.) ):
                 append = False
 
-        if append and patch.size == size:
+        if (append and patch.size == size):
             seen[center_i-15:center_i+16, center_j-15:center_j+16] += 1 # To keep track of created patch regions, fill a 32x32 box centered on the patch region with 1.
             patches.append(patch)
-            #fig, axs = plt.subplots(2,1)
+            #slope=create_slope_from_patch(patch)
+            #fig, axs = plt.subplots(1,3, figsize=(10,4))
             #im0 = axs[0].imshow(patch, cmap='terrain')
-            #im1 = axs[1].imshow(mask_patch)
+            #im1 = axs[1].imshow(slope)
+            #im2 = axs[2].imshow(mask_patch)
             #plt.show()
 
         if len(patches) == 10:
@@ -305,7 +307,9 @@ def create_dataset_train(image, mask, patch_size, max_iter, seen, max_height, th
     return patches, seen
 
 
-def flow_train_dataset(image, mask, region, patch_size, train_path, val_path, max_height, threshold=None, mode=None, total=15000, postfix='', random_state=None, invalid_value=-32767.):
+def flow_train_dataset(image, mask, region, patch_size, train_path, val_path,
+                       max_height, threshold=None, mode=None, total=15000, postfix='',
+                       random_state=None, invalid_value=-32767.):
 
     seen = xr.zeros_like(image)
 
@@ -313,7 +317,8 @@ def flow_train_dataset(image, mask, region, patch_size, train_path, val_path, ma
     pbar = tqdm(total = limit)
     while True:
 
-        flow, seen = create_dataset_train(image, mask, patch_size, 50000, seen, max_height, threshold, mode, random_state, invalid_value)
+        flow, seen = create_dataset_train(image, mask, patch_size, 50000, seen, max_height,
+                                          threshold, mode, random_state, invalid_value)
 
         if len(flow) < 10:
             print("Unable to find new patches")
