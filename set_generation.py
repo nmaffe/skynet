@@ -212,7 +212,8 @@ def create_test_images_from_glacier_center(image, mask, patch_size, coords_frame
     return np.array(patches), np.array(masks), np.array(RGI)
 
 
-def create_dataset_train(image, mask, patch_size, max_iter, seen, max_height, threshold=None, mode=None, random_state=None, invalid_value=-32767.):
+def create_dataset_train(image, mask, patch_size, max_iter, seen, max_height,
+                         threshold=None, mode=None, random_state=None, invalid_value=-32767.):
 
     """
     This function only creates the train/val images (not the masks).
@@ -274,6 +275,7 @@ def create_dataset_train(image, mask, patch_size, max_iter, seen, max_height, th
         if float(seen[center_i-15:center_i+16, center_j-15:center_j+16].sum()) > 200: # discard if the 32x32 region around the center has been previously sampled to some extent.
             append = False
 
+        # Now we need to calculate this stuff for the following conditions
         max = float(patch.max()) #max = np.max(patch[int(p_h/2)-47:int(p_h/2)+48, int(p_w/2)-47:int(p_w/2)+48])
         min = float(patch.min())
         avg = float(patch.mean())
@@ -339,7 +341,7 @@ def flow_train_dataset(image, mask, region, patch_size, train_path, val_path,
     pbar.close()
 
 
-    return seen # i may save/return this to check where the training patches have been created
+    return seen # you can save/return this to check where the training patches have been created
 
 
 def create_test_images_full_noedge(image, mask, patch_size, coords_frame, create_blank=False, random_state=None, invalid_value=-32767.):
