@@ -1,13 +1,14 @@
 import argparse
-from PIL import Image
+import os
+import time
+import rioxarray
+import xarray as xr
 import torch
 import torchvision.transforms as T
 import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
-import glob
-
-input('WAIT')
 
 def str2bool(s):
     if isinstance(s, bool):
@@ -22,40 +23,47 @@ def str2bool(s):
 
 parser = argparse.ArgumentParser(description='Test inpainting')
 parser.add_argument("--image", type=str,
-                    default="examples/inpaint/case1.png", help="path to the image file")
+                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/RGI_11_size_256/images/",
+                    help="input folder with image files")
 parser.add_argument("--mask", type=str,
-                    default="examples/inpaint/case1_mask.png", help="path to the mask file")
+                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/RGI_11_size_256/masks/",
+                    help="input folder with mask files")
+parser.add_argument("--fullmask", type=str,
+                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/RGI_11_size_256/masks_full/",
+                    help="input folder with full mask files")
 parser.add_argument("--out", type=str,
-                    default="examples/inpaint/case1_out_test.png", help="path for the output file")
+                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/",
+                    help="path to saved results")
 parser.add_argument("--checkpoint", type=str,
-                    default="pretrained/states_tf_places2.pth", help="path to the checkpoint file")
+                    default="/home/nico/PycharmProjects/skynet/code/Deepfillv2/callbacks/checkpoints/box_model/states.pth",
+                    help="path to the checkpoint file")
 parser.add_argument("--tfmodel", action='store_true',
                     default=False, help="use model from models_tf.py?")
 parser.add_argument('--burned', default=False, type=str2bool, const=True, 
-                    nargs='?', help='Run all burned glaciers')
+                    nargs='?', help='Run all burned glaciers in input folder')
 parser.add_argument('--all',  default=False, type=str2bool, const=True, 
-                    nargs='?', help='Run all glaciers')
+                    nargs='?', help='Run all glaciers in input folder')
 
-
-
-def pt_to_rgb(pt): return pt[0].cpu().permute(1, 2, 0)*0.5 + 0.5
 
 def main():
-
+    # --------------------------------------------------------------------------------------- #
+    #                                         Config                                          #
+    # --------------------------------------------------------------------------------------- #
     args = parser.parse_args()
 
-    IMG             = args.image
-    MASK            = args.mask
-    if args.all:
-        if IMG[:-1] != '/':
-            IMG = ''.join((IMG, '/'))
-        if MASK[:-1] != '/':
-            MASK = ''.join((MASK, '/'))
-        
-        OUTDIR          = args.out
-        if OUTDIR[:-1] != '/':
-            OUTDIR = ''.join((OUTDIR, '/'))
+    if args.image[-1] != '/':
+        args.image = ''.join((args.image, '/'))
+    if args.mask[-1] != '/':
+        args.mask = ''.join((args.mask, '/'))
+        print(args.mask)
+    if args.out[-1] != '/':
+        args.out = ''.join((args.out, '/'))
 
+    # --------------------------------------------------------------------------------------- #
+    #                                         Model                                           #
+    # --------------------------------------------------------------------------------------- #
+
+    # What is Deepfillv2.libs.networks_tf as compared to Deepfillv2.libs.networks ?
     if args.tfmodel:
         from Deepfillv2.libs.networks_tf import Generator
     else:
@@ -67,11 +75,15 @@ def main():
 
     # set up network
     generator = Generator(cnum_in=5, cnum=48, return_flow=False).to(device)
-
     generator_state_dict = torch.load(args.checkpoint)['G']
     generator.load_state_dict(generator_state_dict)
+    generator.eval() # maffe added this: eval mode
 
-    RGI_burned = ['RGI60-11.00562', 'RGI60-11.00590', 'RGI60-11.00603', 'RGI60-11.00638', 'RGI60-11.00647', 
+    # --------------------------------------------------------------------------------------- #
+    #                             Setup the glacier list                                      #
+    # --------------------------------------------------------------------------------------- #
+
+    RGI_burned = ['RGI60-11.00562', 'RGI60-11.00590', 'RGI60-11.00603', 'RGI60-11.00638', 'RGI60-11.00647',
                   'RGI60-11.00689', 'RGI60-11.00695', 'RGI60-11.00846', 'RGI60-11.00950', 'RGI60-11.01024', 
                   'RGI60-11.01041', 'RGI60-11.01067', 'RGI60-11.01144', 'RGI60-11.01199', 'RGI60-11.01296', 
                   'RGI60-11.01344', 'RGI60-11.01367', 'RGI60-11.01376', 'RGI60-11.01473', 'RGI60-11.01509', 
@@ -87,109 +99,134 @@ def main():
                   'RGI60-11.02890', 'RGI60-11.02909', 'RGI60-11.03249']
 
     if args.burned:
-        for i in range(len(RGI_burned)):
+        list_of_glaciers = [gl + '.tif' for gl in RGI_burned]
+        print(f"We burn: {len(list_of_glaciers)} images.")
+        if os.path.isfile(args.image + list_of_glaciers[0]) is True:
+            pass
+        else:
+            print("Oops! Burned glaciers not found. Check input folder and try again. Bye bye")
+            exit()
 
-            # load image and mask
-            img = cv2.imread(args.image + RGI_burned[i] + '.tif', -1)
-            img_max = np.amax(img)
-            img_min = np.amin(img)
-            img = (img - img_min) / (img_max - img_min)
-            img = (np.stack((img,)*3, axis=-1) * 255).astype(np.uint8)
-            #print(np.mean(img), img.shape)
-
-            image = Image.fromarray((img))#.astype(np.uint8))
-
-            mask = cv2.imread(args.mask + RGI_burned[i] + '_mask.tif', -1)
-            #mask_save = mask
-            mask = np.stack((mask,)*3, axis=-1).astype(np.uint8)
-            mask = Image.fromarray((mask))
-
-            # prepare input
-            image = T.ToTensor()(image)
-            mask = T.ToTensor()(mask)
-
-            _, h, w = image.shape
-            grid = 8
-
-            image = image[:3, :h//grid*grid, :w//grid*grid].unsqueeze(0)
-            mask = mask[0:1, :h//grid*grid, :w//grid*grid].unsqueeze(0)
-
-            image = (image*2 - 1.).to(device)  # map image values to [-1, 1] range
-            mask = (mask > 0.).to(dtype=torch.float32,
-                                device=device)  # 1.: masked 0.: unmasked
-
-            image_masked = image * (1.-mask)  # mask image
-
-            ones_x = torch.ones_like(image_masked)[:, 0:1, :, :]
-            x = torch.cat([image_masked, ones_x, ones_x*mask],
-                        dim=1)  # concatenate channels
-
-            with torch.no_grad():
-                _, x_stage2 = generator(x, mask)
-
-            # complete image
-            image_inpainted = image * (1.-mask) + x_stage2 * mask
-
-            # save inpainted image
-            output_denorm = (pt_to_rgb(image_inpainted)[:,:,0].numpy() * (img_max - img_min) + img_min)
-            cv2.imwrite(args.out + RGI_burned[i] + '.tif', output_denorm.astype(np.uint16))
-
-            print(f"Saved output file at: {args.out + RGI_burned[i] + '.tif'}")#, with denormalised max: {np.max(output_denorm)}")
-    
     elif args.all:
+        list_of_glaciers = os.listdir(args.image)
+        print(f"We process: {len(os.listdir(args.image))} images and {len(os.listdir(args.mask))} masks.")
 
-        image_paths, mask_paths = [], []
-        for filename in glob.iglob(IMG + '*'):
-            image_paths.append(filename)
-        for filename in glob.iglob(MASK + '*'):
-            mask_paths.append(filename)
-        print("# images: {} and # masks: {}".format(len(image_paths), len(mask_paths)))
-
-         # load image and mask
-        for i in tqdm(range(len(image_paths))):
-            img = cv2.imread(image_paths[i], -1)
-            img_max = np.amax(img)
-            img_min = np.amin(img)
-            img = (img - img_min) / (img_max - img_min)
-            img = (np.stack((img,)*3, axis=-1) * 255).astype(np.uint8)
-
-            image = Image.fromarray((img))
-
-            mask = cv2.imread(mask_paths[i], -1)
-            mask = np.stack((mask,)*3, axis=-1).astype(np.uint8)
-            mask = Image.fromarray((mask))
-
-            # prepare input
-            image = T.ToTensor()(image)
-            mask = T.ToTensor()(mask)
-
-            _, h, w = image.shape
-            grid = 8
-
-            image = image[:3, :h//grid*grid, :w//grid*grid].unsqueeze(0)
-            mask = mask[0:1, :h//grid*grid, :w//grid*grid].unsqueeze(0)
-
-
-            image = (image*2 - 1.).to(device)  # map image values to [-1, 1] range
-            mask = (mask > 0.).to(dtype=torch.float32,
-                                device=device)  # 1.: masked 0.: unmasked
-
-            image_masked = image * (1.-mask)  # mask image
-
-            ones_x = torch.ones_like(image_masked)[:, 0:1, :, :]
-            x = torch.cat([image_masked, ones_x, ones_x*mask],
-                        dim=1)  # concatenate channels
-
-            with torch.no_grad():
-                _, x_stage2 = generator(x, mask)
-
-            # complete image
-            image_inpainted = image * (1.-mask) + x_stage2 * mask
-            output_denorm = (pt_to_rgb(image_inpainted)[:,:,0].numpy() * (img_max - img_min) + img_min)
-            cv2.imwrite(OUTDIR + image_paths[i][-18:], output_denorm.squeeze().astype(np.uint16))
-    
     else:
         print("Invalid option, choices: --burned true and/or --all true")
+
+    # --------------------------------------------------------------------------------------- #
+    #                                 Main Inference loop                                     #
+    # --------------------------------------------------------------------------------------- #
+    # MAIN LOOP OVER ALL GLACIERS
+    for imgfile in tqdm(list_of_glaciers):
+        tqdm.write(imgfile)
+
+        # import dem and mask
+        dem = rioxarray.open_rasterio(args.image+imgfile)
+        img_orig_values = dem.values.squeeze()
+        # img = cv2.imread(args.image+imgfile, -1) # OLD
+        # mask = cv2.imread(args.mask + imgfile.replace('.tif', '_mask.tif') , -1) # OLD
+
+        mask_rs = rioxarray.open_rasterio(args.mask + imgfile.replace('.tif', '_mask.tif'))
+        mask_orig_values = mask_rs.values.squeeze()
+
+        # normalize ndarray image to [0,1] and scale to [-1, 1]
+        img_max = np.amax(img_orig_values)
+        img_min = np.amin(img_orig_values)
+        img = (img_orig_values - img_min) / (img_max - img_min)
+        img = img * 2. -1.
+
+        # OLD
+        # passando ndarray -- PIL -- torch si ha un risultato leggermente diverso
+        # rispetto ad andare direttamente ndarray -- torch. Questo perchè
+        # perchè la conversione .astype(np.uint8) approssima a integer !
+        # inoltre odio sta roba perchè noi non stiamo usando colori
+        # img = (np.stack((img,)*3, axis=-1) * 255).astype(np.uint8)
+        # image = Image.fromarray((img)) # to PIL.
+        # image = T.ToTensor()(image)
+
+        # NEW
+        # ndarray --> torch
+        img = np.stack((img,)*3, axis=0)
+        img = torch.from_numpy(img).to(dtype=torch.float32)
+
+        # OLD ndarray -- PIL -- torch
+        #mask = np.stack((mask_orig_values,)*3, axis=-1).astype(np.uint8)
+        #mask = Image.fromarray((mask)) # to PIL
+        #mask = T.ToTensor()(mask) # NB non è in [0,1] ma non importa perchè andrà in [0,1] con mask=(mask>0)
+
+        # NEW
+        # ndarray --> torch
+        mask = np.stack((mask_orig_values,)*3, axis=0) # 1.: masked 0.: unmasked
+        mask = torch.from_numpy(mask).to(dtype=torch.float32)
+
+        _, h, w = img.shape
+        grid = 8
+
+        # in case the shape is not multiple of 8, we take the closest (//) 8* multiple
+        # e.g. if the image is (513, 513), this results in an (512, 512) image
+        # we also add one extra dimension at the beginning
+        img = img[:3, :h//grid*grid, :w//grid*grid].unsqueeze(0) # (1, 3, 256, 256)
+        mask = mask[0:1, :h//grid*grid, :w//grid*grid].unsqueeze(0) # (1, 1, 256, 256)
+
+        img = img.to(device)
+        mask = mask.to(device)
+
+        img_masked = img * (1.-mask)  # mask image
+
+        ones_x = torch.ones_like(img_masked)[:, 0:1, :, :] # (1, 1, 256, 256)
+        x = torch.cat([img_masked, ones_x, ones_x*mask], dim=1)  # (1, 5, 256, 256)
+
+        with torch.no_grad():
+            _, x_stage2 = generator(x, mask) # x_stage2 will have values in [-1, 1]
+
+
+        # 1. complete image
+        image_inpainted = img * (1.-mask) + x_stage2 * mask # (1, 3, 256, 256)
+        # 2. rescale
+        image_rescaled = image_inpainted.squeeze()[0,:,:] * 0.5 + 0.5 # rescale to [0,1]
+        image_rescaled = image_rescaled.cpu().numpy()
+        # 3. denormalize
+        image_denorm = image_rescaled * (img_max - img_min) + img_min # denormalize to orig values
+
+        # ground truth - prediction
+        icethick = img_orig_values - image_denorm # ndarray (256, 256)
+        # icethick = np.where((mask_orig_values > 0.), icethick, np.nan) # if i want nan outside mask
+        tqdm.write(f"Glacier summed thickness: {np.nansum(icethick):.1f} m")
+
+        show2d = True
+        if show2d:
+            mask_to_show = np.where((mask_orig_values == 1), 1, np.nan)
+            fig, axes = plt.subplots(1,3, figsize=(10,3))
+            ax1, ax2, ax3 = axes.flatten()
+
+            im1 = ax1.imshow(img_orig_values, cmap='terrain')
+            im1_1 = ax1.imshow(mask_to_show, alpha=.3, cmap='gray')
+            im2 = ax2.imshow(image_denorm, cmap='terrain')
+            im3 = ax3.imshow(icethick, vmin=-500, vmax=500, cmap='seismic')
+            plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04, label='H (m)')
+            plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04, label='H (m)')
+            plt.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04, label='th (m)')
+
+            ax1.title.set_text(f'{imgfile[:-4]} - DEM')
+            ax2.title.set_text('Inpainted')
+            ax3.title.set_text('Ice thickness')
+
+            plt.tight_layout()
+            plt.show()
+
+
+        # Create Dataset to save
+        ds_tosave = xr.Dataset({'dem': dem.squeeze(),
+                               'mask': (('y', 'x'), mask_orig_values),
+                               'inp': (('y', 'x'), image_denorm),
+                               'icethick': (('y', 'x'), icethick)
+                               })
+        # save
+        # cv2.imwrite(args.out + imgfile.replace('.tif', '_inp.png') , image_denorm.astype(np.uint16))
+        save = False
+        if save: ds_tosave.rio.to_raster(args.out + imgfile.replace('.tif', '_res.tif'))
+
 
 
 
