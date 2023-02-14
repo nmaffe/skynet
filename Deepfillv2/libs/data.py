@@ -12,7 +12,7 @@ from albumentations.pytorch import ToTensorV2
 IMG_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.ppm', '.bmp',
                   '.pgm', '.tif', '.tiff', '.webp')
 
-
+# useless
 def pil_loader(path):
     # open path as file to avoid ResourceWarning (https://github.com/python-pillow/Pillow/issues/835)
     with open(path, 'rb') as f:
@@ -20,6 +20,7 @@ def pil_loader(path):
         img = img.convert('RGB')
         return img
 
+# useless
 def cv_loader(path):
     """ Gets as input the path of .tif files and return C x H x W shaped PIL.Image.Image in the [0, 255] range."""
     # img = cv2.imread(path, -1) # old version that uses cv2
@@ -112,6 +113,7 @@ class ImageDataset_segmented(Dataset):
 
         return img, mask
 
+# useless
 class ImageDataset_box_old(Dataset):
     def __init__(self, folder_path, 
                        img_shape, 
