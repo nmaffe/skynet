@@ -2,11 +2,12 @@ import os
 import cv2
 import numpy as np
 import gdal
-
-from PIL import Image
+# from PIL import Image
 from torch.utils.data import Dataset
 import torchvision.transforms as T
 import torch
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 IMG_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.ppm', '.bmp',
                   '.pgm', '.tif', '.tiff', '.webp')
@@ -21,7 +22,6 @@ def pil_loader(path):
 
 def cv_loader(path):
     """ Gets as input the path of .tif files and return C x H x W shaped PIL.Image.Image in the [0, 255] range."""
-    """ I am not convinced by this per-image normalization (img - img_min) / (img_max - img_min) """
     # img = cv2.imread(path, -1) # old version that uses cv2
     gdal_tile = gdal.Open(path) # new version use gdal instead of cv2
     ulx, xres, _, uly, _, yres = gdal_tile.GetGeoTransform()
@@ -36,6 +36,17 @@ def cv_loader(path):
     img = (img - img_min) / (img_max - img_min) # normalize all images between 0 and 1
     img = (np.stack((img,)*3, axis=-1) * 255).astype(np.uint8) # rescale from 0 to 255
     img = Image.fromarray((img))
+    return img, bounds
+
+def img_loader(path):
+    gdal_tile = gdal.Open(path)  # new version use gdal instead of cv2
+    ulx, xres, _, uly, _, yres = gdal_tile.GetGeoTransform()
+    llx = ulx
+    lly = uly + (gdal_tile.RasterYSize * yres)
+    urx = ulx + (gdal_tile.RasterXSize * xres)
+    ury = uly
+    bounds = np.array([llx, lly, urx, ury])  # bounds
+    img = gdal_tile.GetRasterBand(1).ReadAsArray()  # values
     return img, bounds
 
 def cv_loader_mask(path):
@@ -101,7 +112,7 @@ class ImageDataset_segmented(Dataset):
 
         return img, mask
 
-class ImageDataset_box(Dataset):
+class ImageDataset_box_old(Dataset):
     def __init__(self, folder_path, 
                        img_shape, 
                        random_crop=False, 
@@ -156,3 +167,76 @@ class ImageDataset_box(Dataset):
         bounds = torch.from_numpy(bounds)
 
         return img, bounds
+
+def get_transforms(config, data='train'):
+
+    # extract some useful stuff from train.yaml
+    H, W = config.img_shapes[:2]
+    p_random_crop = config.random_crop
+    p_horflip = config.random_horizontal_flip
+    p_verflip = config.random_vertical_flip
+
+    if data == 'train':
+        return A.Compose([
+            A.HorizontalFlip(p=p_horflip),
+            A.VerticalFlip(p=p_verflip),
+            #A.SmallestMaxSize(max(H, W)),
+            A.RandomSizedCrop(min_max_height=[200, 200], height=H, width=W,
+                              w2h_ratio=1.0, p=p_random_crop),
+            #A.RandomCrop(H, W, p=p_random_crop),
+            #A.Resize(H, W),
+            ToTensorV2()
+        ])
+
+    elif data == 'val':
+        return A.Compose([
+            A.Resize(H, W, p=1),
+            ToTensorV2()
+        ])
+
+class ImageDataset_box(Dataset):
+    def __init__(self, folder_path,
+                 img_shape,
+                 scan_subdirs=False,
+                 transforms=None
+                 ):
+        super().__init__()
+        self.img_shape = img_shape  # [256, 256]
+
+        if scan_subdirs:
+            self.data = self.make_dataset_from_subdirs(folder_path)
+        else:
+            self.data = [entry.path for entry in os.scandir(folder_path) if is_image_file(entry.name)]
+
+        print(f'Training images: {len(self.data)}')
+
+        self.transforms = transforms
+
+    def make_dataset_from_subdirs(self, folder_path):
+        samples = []
+        for root, _, fnames in os.walk(folder_path, followlinks=True):
+            print(root)
+            for fname in fnames:
+                if is_image_file(fname):
+                    samples.append(os.path.join(root, fname))
+        return samples
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+
+        img, bounds = img_loader(self.data[index])  # img ndarray uint16 (256, 256)
+        img = img.astype(np.float32)  # convert to float32
+
+        img = self.transforms(image=img)['image']
+
+        img_max = torch.max(img)  # normalize to [0, 1]
+        img_min = torch.min(img)
+        img = (img - img_min) / (img_max - img_min)
+
+        img.mul_(2).sub_(1)  # scale to [-1, 1]
+
+        img = img.repeat(3, 1, 1)  # convert to (3, 256, 256)
+
+        return img, torch.from_numpy(bounds)

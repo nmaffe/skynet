@@ -14,7 +14,7 @@ from torchmetrics.functional import structural_similarity_index_measure as SSIM
 import Deepfillv2.libs.losses as gan_losses
 import Deepfillv2.libs.misc as misc
 from Deepfillv2.libs.networks import Generator, Discriminator
-from Deepfillv2.libs.data import ImageDataset_box, ImageDataset_segmented
+from Deepfillv2.libs.data import ImageDataset_box, ImageDataset_segmented, get_transforms
 
 parser = argparse.ArgumentParser()
 mask_modes = ["box", "segmented"]
@@ -49,6 +49,7 @@ def training_loop(generator,        # generator network
     # initialize dict for logging
     losses_log = {'d_loss': [],
                   'g_loss': [],
+                  'g_loss_adv': [],
                   'ae_loss': [],
                   'ae_loss1': [],
                   'ae_loss2': [],
@@ -181,8 +182,8 @@ def training_loop(generator,        # generator network
 
         g_loss = gan_loss_g(d_gen)
         losses['g_loss'] = g_loss
-        #print(losses)
         losses['g_loss'] = config.gan_loss_alpha * losses['g_loss']
+        losses['g_loss_adv'] = g_loss
 
         if config.ae_loss:
             losses['g_loss'] += losses['ae_loss']
@@ -275,17 +276,14 @@ def main():
 
 
     # transforms
-    # ha senso un random horizonal flip ? probabilmente si
-    transforms = [T.RandomHorizontalFlip(0.0)] if config.random_horizontal_flip else None
-
+    transforms_train = get_transforms(config, data='train')
 
     # dataloading
     if args.mask == "box":
         train_dataset = ImageDataset_box(config.dataset_path,
                                         img_shape=config.img_shapes[:2],
-                                        random_crop=config.random_crop,
                                         scan_subdirs=config.scan_subdirs,
-                                        transforms=transforms)
+                                        transforms=transforms_train)
     elif args.mask == "segmented":
         train_dataset = ImageDataset_segmented(config.dataset_path,
                                         img_shape=config.img_shapes[:2],
