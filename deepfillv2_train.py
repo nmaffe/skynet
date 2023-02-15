@@ -277,28 +277,49 @@ def main():
 
     # transforms
     transforms_train = get_transforms(config, data='train')
+    transforms_val = get_transforms(config, data='val')
 
     # dataloading
     if args.mask == "box":
-        train_dataset = ImageDataset_box(config.dataset_path,
+        train_dataset = ImageDataset_box(config.dataset_train_path,
                                         img_shape=config.img_shapes[:2],
                                         scan_subdirs=config.scan_subdirs,
                                         transforms=transforms_train)
+        val_dataset = ImageDataset_box(config.dataset_val_path,
+                                         img_shape=config.img_shapes[:2],
+                                         scan_subdirs=config.scan_subdirs,
+                                         transforms=transforms_val)
+
+
     elif args.mask == "segmented":
-        train_dataset = ImageDataset_segmented(config.dataset_path,
+        train_dataset = ImageDataset_segmented(config.dataset_train_path,
                                         img_shape=config.img_shapes[:2],
                                         random_crop=config.random_crop,
                                         scan_subdirs=config.scan_subdirs,
                                         transforms=transforms)
     else:
-        print("Invalid mask option: {}".format(args.mask))
+        print(f'Invalid mask option: {args.mask}')
         exit()
 
+
+    #for i in range(100):
+        #            img, b = val_dataset[i]
+        #            img = img.numpy()
+        #            fig, ax = plt.subplots()
+        #            ax.imshow(img[0,:,:], cmap='terrain')
+        #            plt.show()
 
     # dataloader
     train_dataloader = torch.utils.data.DataLoader(train_dataset,
                                                    batch_size=config.batch_size,
                                                    shuffle=True,
+                                                   drop_last=True,
+                                                   num_workers=config.num_workers,
+                                                   pin_memory=True)
+
+    val_dataloader = torch.utils.data.DataLoader(val_dataset,
+                                                   batch_size=config.batch_size,
+                                                   shuffle=False,
                                                    drop_last=True,
                                                    num_workers=config.num_workers,
                                                    pin_memory=True)
@@ -350,6 +371,8 @@ def main():
     if config.tb_logging:
         from torch.utils.tensorboard import SummaryWriter
         writer = SummaryWriter(config.log_dir)
+
+    input('wait')
 
 
     # start training
