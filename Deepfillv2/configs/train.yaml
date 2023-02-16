@@ -6,9 +6,11 @@ model_restore: '' # start new training
 dataset_train_path: 'dataset/train/RGI_08_average_1000_size_256/' #'dataset/train/RGI_11_average_2000_size_256/'
 dataset_val_path: 'dataset/val/RGI_08_average_1000_size_256/' #'dataset/train/RGI_11_average_2000_size_256/'
 scan_subdirs: True # Are the images organized in subfolders ?
-random_crop: 0.0  # Probability of random cropping (followed by Resize)
-random_horizontal_flip: 0.0 # Probability of flipping horizontally
-random_vertical_flip: 0.0 # Probability of flipping vertically
+random_crop: 0.5  # Probability of random cropping (followed by Resize)
+random_crop_hmin: 100 # Minimum height of cropped image
+random_crop_hmax: 200  # Maximum height of cropped image
+random_horizontal_flip: 0.5 # Probability of flipping horizontally
+random_vertical_flip: 0.5 # Probability of flipping vertically
 batch_size: 16
 batch_size_val: 4
 num_workers: 8 # qua se metto > 0 attivo multi processori.

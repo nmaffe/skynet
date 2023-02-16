@@ -177,13 +177,15 @@ def get_transforms(config, data='train'):
     p_random_crop = config.random_crop
     p_horflip = config.random_horizontal_flip
     p_verflip = config.random_vertical_flip
+    h_min_crop = config.random_crop_hmin
+    h_max_crop = config.random_crop_hmax
 
     if data == 'train':
         return A.Compose([
             A.HorizontalFlip(p=p_horflip),
             A.VerticalFlip(p=p_verflip),
-            #A.SmallestMaxSize(max(H, W)),
-            A.RandomSizedCrop(min_max_height=[200, 200], height=H, width=W,
+            A.SmallestMaxSize(max(H, W), p=0.0),
+            A.RandomSizedCrop(min_max_height=[150, 200], height=H, width=W,
                               w2h_ratio=1.0, p=p_random_crop),
             #A.RandomCrop(H, W, p=p_random_crop),
             #A.Resize(H, W),
@@ -192,7 +194,7 @@ def get_transforms(config, data='train'):
 
     elif data == 'val':
         return A.Compose([
-            A.Resize(H, W, p=1),
+            A.Resize(H, W, p=0.0),
             ToTensorV2()
         ])
 
