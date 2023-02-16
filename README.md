@@ -95,16 +95,32 @@ the total amount of ```samples``` is reached.
 
 ## Train
 ```
-python deepfillv2_train.py --config YAML_FILE --mask MASKTYPE
+python deepfillv2_train.py --config CONFIGFILE.yaml --mask MASKTYPE
 
 --config (default="Deepfillv2/configs/train.yaml"): config .yaml file
---box (default="box"): box or segmented mask type
+--mask (default="box"): box or segmented mask type
 ```
 The .yaml file contains all the configuration parameters. In particular, set the "dataset_path" variable to 
 indicate the training dataset you want and "checkpoint_dir" to indicate where the model will be saved.
 
-## Inference
-TODO
+## Test
+```
+ python deepfillv2_test.py --image PATH --mask PATH --fullmask PATH --out PATH --checkpoint PTHFILE --tfmodel False --all False --burned False
+
+--image: input folder with image files
+--mask: input folder with mask files
+--fullmask: input folder with full mask files
+--out: path to saved results 
+--checkpoint: path to the checkpoint file
+--tfmodel (default=False): use model from models_tf.py?
+--all (default=False): run all glaciers in input folder
+--burned (default=False): run all burned glaciers in input folder 
+ ```
+If ```--all``` is True, the code inpaints all images contained in ```--image``` using the masks contained in ```--mask```.
+The results are saved as ```.tif``` files in the ```--out``` folder. # TODO: give option to use either mask or full masks.
+
+If ```--burned``` is True, the code only inpaints 68 glaciers of RGI11. In this case the relevant input paths
+(```image/mask/fullmask```) should necessarily be those that contain the relevant RGI11 files. 
 
 ## Acknowledgments
 
