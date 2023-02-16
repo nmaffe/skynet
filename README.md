@@ -1,4 +1,4 @@
-# Estimate the ice volume of Earth's glaciers with deep learning
+# The ice volume of Earth's glaciers with deep learning
 
 <!--
 <p align="center">
