@@ -130,7 +130,7 @@ indicate the training dataset you want and "checkpoint_dir" to indicate where th
 --burned (default=False): run all burned glaciers in input folder 
  ```
 If ```--all``` is True, the code inpaints all images contained in ```--image``` using the masks contained in ```--mask```.
-The results are saved as ```.tif``` files in the ```--out``` folder. # TODO: give option to use either mask or full masks.
+The results are saved as ```.tif``` files in the ```--out``` folder. 
 
 If ```--burned``` is True, the code only inpaints 68 glaciers of RGI11. In this case the relevant input paths
 (```image/mask/fullmask```) should necessarily be those that contain the relevant RGI11 files.
