@@ -1,4 +1,7 @@
-# The ice volume of Earth's glaciers with deep learning
+# SKYNET
+
+---
+The ice volume of Earth's glaciers with deep learning
 
 <!--
 <p align="center">
@@ -12,7 +15,7 @@
 </p>
 -->
 
-## Download dem tiles ️🛰 ⛰️
+### Download dem tiles ️🛰 ⛰️
 This model uses ASTER GDEM v3. 
 Download it from https://search.earthdata.nasa.gov/search. 
  To select the region of interest you may specify the rectancle SW and NE coordinates:
@@ -24,7 +27,9 @@ Download it from https://search.earthdata.nasa.gov/search.
 | 13, 15, 15 (Asia) | 26, 66 | 47, 105 |
 | 18 (New Zealand) | -47, 166 | -38, 177 |
 
-## Create mosaic 🗺️
+### Create mosaic 🗺️
+
+---
 To create the DEM mosaic and the mosaic_mask where of all glaciers contained inside the region, run:
 ```
 python create_mosaic.py --input /PATH_TO_DEM_TILES/ --output /PATH_TO_OUTPUT_MOSAIC/ --create_mask True --version '62' --epsg "EPSG:4326" --region None
@@ -38,7 +43,9 @@ This code creates two files: ```mosaic_RGI_xx.tif``` and ```mosaic_RGI_xx_mask.t
 The mask file contains 1 if the pixel belongs to a glacier (segmented using Bresenham’s line algorithm), and 0 otherwise.
 The glacier shapefiles are extracted from ```oggm``` library.
 
-## Create test dataset 🕵🏿
+### Create test dataset 🕵🏿
+
+---
 This code creates the test dataset of all glaciers contained in the mosaic. It consists of three folders of .tif files: 
 - images/: glacier DEM patch
 - masks/: glacier mask 
@@ -63,7 +70,9 @@ presence of all the surrounding glaciers should be accounted for.
 dimensions, it is discarded. A solution could be to keep them as their original shape and scaling as data transformation
 to the same size before the forward pass. Or to increase to 512x512. Currently, roughly up to 3% of glaciers are discarded.
 
-## Create train dataset 🏋️
+### Create train dataset 🏋️
+
+---
 This code creates the training dataset. 
 ```
 python create_train.py --input PATH --outdir PATH --region None --threshold 1500
@@ -93,7 +102,9 @@ the inner 96x96 box.
 Of all the created images, 90%-10% are saved as train-validation. The algorithm stop if no new patches can be created or
 the total amount of ```samples``` is reached.
 
-## Train
+### Train 🤖
+
+---
 ```
 python deepfillv2_train.py --config CONFIGFILE.yaml --mask MASKTYPE
 
@@ -103,7 +114,9 @@ python deepfillv2_train.py --config CONFIGFILE.yaml --mask MASKTYPE
 The .yaml file contains all the configuration parameters. In particular, set the "dataset_path" variable to 
 indicate the training dataset you want and "checkpoint_dir" to indicate where the model will be saved.
 
-## Test
+### Test 🏔️
+
+---
 ```
  python deepfillv2_test.py --image PATH --mask PATH --fullmask PATH --out PATH --checkpoint PTHFILE --tfmodel False --all False --burned False
 
@@ -120,9 +133,18 @@ If ```--all``` is True, the code inpaints all images contained in ```--image``` 
 The results are saved as ```.tif``` files in the ```--out``` folder. # TODO: give option to use either mask or full masks.
 
 If ```--burned``` is True, the code only inpaints 68 glaciers of RGI11. In this case the relevant input paths
-(```image/mask/fullmask```) should necessarily be those that contain the relevant RGI11 files. 
+(```image/mask/fullmask```) should necessarily be those that contain the relevant RGI11 files.
 
-## Acknowledgments
+### Analysis of the results
+
+---
+The test code has produced the 'tif files contained the inpainted topography, as well as the original glacier dem, mask and 
+the resulting ice thickness distribution. 
+Analysis of the results is done in 
+- ```analysis_results.ipynb``` (see gdrive, under development).
+- Another ```.py``` script will be added to inspect the 3D distributions using pyvista.
+
+### Acknowledgments
 
 [<img align="left" alt="CCAI" src="img/logo_CCAI.png" height="70" />](https://www.climatechange.ai/)
 [<img aligh="right" alt="EU" src="img/logo_MSCA.png" height="70" />](https://marie-sklodowska-curie-actions.ec.europa.eu/)
@@ -131,5 +153,6 @@ This project was funded by the Climate Change AI Innovation Grants program,
 hosted by Climate Change AI with the additional support of Canada Hub of Future
 Earth.
 
-The project has also received funding from the European Union’s Horizon Europe research 
-and innovation programme under the Marie Skłodowska-Curie program.
+The SKYNET project has also received funding from the European Union’s Horizon Europe research 
+and innovation programme under the Marie Skłodowska-Curie program (Grant Agreement 101066651).
+
