@@ -22,6 +22,7 @@ Download it from https://search.earthdata.nasa.gov/search.
 
 | RGI | SW (lat, lon) | NE (lat, lon)|
 | :---:  | :---: | :---: |
+| 03 (Arctic Canada, North)  | 74.0, -125.0 | 85.0, -60.0 |
 | 08 (Scandinavia)  | 58, 4 | 72, 35 |
 | 11 (Central Europe)  | 41, -2 | 49, 21 |
 | 13, 15, 15 (Asia) | 26, 66 | 47, 105 |
