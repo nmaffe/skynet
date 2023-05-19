@@ -64,7 +64,7 @@ def main():
         src = rioxarray.open_rasterio(tile)
         src_files_to_mosaic.append(src)
 
-    mosaic = merge_arrays(src_files_to_mosaic)
+    mosaic = merge_arrays(src_files_to_mosaic) # if nodata is not specified, it will use 0 to fill non-squared regions.
     mosaic.rio.to_raster(OUTPUT+f"mosaic_RGI_{args.region}.tif")
     print('Created mosaic.')
 
