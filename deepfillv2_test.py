@@ -23,16 +23,16 @@ def str2bool(s):
 
 parser = argparse.ArgumentParser(description='Test inpainting')
 parser.add_argument("--image", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/RGI_11_size_256/images/",
+                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/examples/images/",
                     help="input folder with image files")
 parser.add_argument("--mask", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/RGI_11_size_256/masks/",
+                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/examples/masks/",
                     help="input folder with mask files")
 parser.add_argument("--fullmask", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/RGI_11_size_256/masks_full/",
+                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/examples/masks_full/",
                     help="input folder with full mask files")
 parser.add_argument("--out", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/",
+                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/examples/",
                     help="path to saved results")
 parser.add_argument("--checkpoint", type=str,
                     default="/home/nico/PycharmProjects/skynet/code/Deepfillv2/callbacks/checkpoints/box_model/states.pth",
@@ -121,19 +121,24 @@ def main():
     for imgfile in tqdm(list_of_glaciers):
         tqdm.write(imgfile)
 
-        # import dem and mask
+        # import dem
         dem = rioxarray.open_rasterio(args.image+imgfile)
-        img_orig_values = dem.values.squeeze()
+        dem_values = dem.values.squeeze()
         # img = cv2.imread(args.image+imgfile, -1) # OLD
         # mask = cv2.imread(args.mask + imgfile.replace('.tif', '_mask.tif') , -1) # OLD
 
+        # import mask
         mask_rs = rioxarray.open_rasterio(args.mask + imgfile.replace('.tif', '_mask.tif'))
-        mask_orig_values = mask_rs.values.squeeze()
+        mask_values = mask_rs.values.squeeze()
+
+        # import full mask
+        mask_full_rs = rioxarray.open_rasterio(args.fullmask + imgfile.replace('.tif', '_mask_full.tif'))
+        mask_full_values = mask_full_rs.values.squeeze()
 
         # normalize ndarray image to [0,1] and scale to [-1, 1]
-        img_max = np.amax(img_orig_values)
-        img_min = np.amin(img_orig_values)
-        img = (img_orig_values - img_min) / (img_max - img_min)
+        img_max = np.amax(dem_values)
+        img_min = np.amin(dem_values)
+        img = (dem_values - img_min) / (img_max - img_min)
         img = img * 2. -1.
 
         # OLD
@@ -156,8 +161,8 @@ def main():
         #mask = T.ToTensor()(mask) # NB non è in [0,1] ma non importa perchè andrà in [0,1] con mask=(mask>0)
 
         # NEW
-        # ndarray --> torch
-        mask = np.stack((mask_orig_values,)*3, axis=0) # 1.: masked 0.: unmasked
+        # NB the mask should be the full mask to account for all other neighbouring glaciers
+        mask = np.stack((mask_full_values,)*3, axis=0) # 1.: masked 0.: unmasked
         mask = torch.from_numpy(mask).to(dtype=torch.float32)
 
         _, h, w = img.shape
@@ -190,20 +195,22 @@ def main():
         image_denorm = image_rescaled * (img_max - img_min) + img_min # denormalize to orig values
 
         # ground truth - prediction
-        icethick = img_orig_values - image_denorm # ndarray (256, 256)
-        # icethick = np.where((mask_orig_values > 0.), icethick, np.nan) # if i want nan outside mask
+        icethick = dem_values - image_denorm # ndarray (256, 256)
+        icethick = np.where((mask_values > 0.), icethick, np.nan) # Glacier (central!) ice thickness calculation
         tqdm.write(f"Glacier summed thickness: {np.nansum(icethick):.1f} m")
 
         show2d = True
         if show2d:
-            mask_to_show = np.where((mask_orig_values == 1), 1, np.nan)
+            mask_to_show = np.where((mask_full_values > 0.), mask_full_values, np.nan)
             fig, axes = plt.subplots(1,3, figsize=(10,3))
             ax1, ax2, ax3 = axes.flatten()
 
-            im1 = ax1.imshow(img_orig_values, cmap='terrain')
+            im1 = ax1.imshow(dem_values, cmap='terrain')
             im1_1 = ax1.imshow(mask_to_show, alpha=.3, cmap='gray')
             im2 = ax2.imshow(image_denorm, cmap='terrain')
-            im3 = ax3.imshow(icethick, vmin=-500, vmax=500, cmap='seismic')
+            vmin, vmax = abs(np.nanmin(icethick)), abs(np.nanmax(icethick))
+            v = max(vmin, vmax)
+            im3 = ax3.imshow(icethick, vmin=-v, vmax=v, cmap='bwr_r')
             plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04, label='H (m)')
             plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04, label='H (m)')
             plt.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04, label='th (m)')
@@ -218,13 +225,13 @@ def main():
 
         # Create Dataset to save
         ds_tosave = xr.Dataset({'dem': dem.squeeze(),
-                               'mask': (('y', 'x'), mask_orig_values),
+                               'mask': (('y', 'x'), mask_values),
                                'inp': (('y', 'x'), image_denorm),
                                'icethick': (('y', 'x'), icethick)
                                })
         # save
         # cv2.imwrite(args.out + imgfile.replace('.tif', '_inp.png') , image_denorm.astype(np.uint16))
-        save = False
+        save = True
         if save: ds_tosave.rio.to_raster(args.out + imgfile.replace('.tif', '_res.tif'))
 
 
