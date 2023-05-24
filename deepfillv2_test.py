@@ -3,12 +3,14 @@ import os
 import time
 import rioxarray
 import xarray as xr
+import pandas as pd
 import torch
 import torchvision.transforms as T
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
+from haversine import haversine
 
 def str2bool(s):
     if isinstance(s, bool):
@@ -23,24 +25,24 @@ def str2bool(s):
 
 parser = argparse.ArgumentParser(description='Test inpainting')
 parser.add_argument("--image", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/examples/images/",
+                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/RGI_11_size_256/images/",
                     help="input folder with image files")
 parser.add_argument("--mask", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/examples/masks/",
+                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/RGI_11_size_256/masks/",
                     help="input folder with mask files")
 parser.add_argument("--fullmask", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/examples/masks_full/",
+                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/RGI_11_size_256/masks_full/",
                     help="input folder with full mask files")
 parser.add_argument("--out", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/examples/",
+                    default="/home/nico/PycharmProjects/skynet/code/dataset/output/RGI_11_size_256/",
                     help="path to saved results")
 parser.add_argument("--checkpoint", type=str,
                     default="/home/nico/PycharmProjects/skynet/code/Deepfillv2/callbacks/checkpoints/box_model/states.pth",
                     help="path to the checkpoint file")
 parser.add_argument("--tfmodel", action='store_true',
                     default=False, help="use model from models_tf.py?")
-parser.add_argument('--burned', default=False, type=str2bool, const=True, 
-                    nargs='?', help='Run all burned glaciers in input folder')
+parser.add_argument('--burned', default=True, type=str2bool, const=True,
+                    nargs='?', help='Run all burned glaciers')
 parser.add_argument('--all',  default=False, type=str2bool, const=True, 
                     nargs='?', help='Run all glaciers in input folder')
 
@@ -117,6 +119,15 @@ def main():
     # --------------------------------------------------------------------------------------- #
     #                                 Main Inference loop                                     #
     # --------------------------------------------------------------------------------------- #
+    # for csv
+    names = []
+    d1 = [] # size of mask in %
+    d2 = [] # size of full mask in %
+    means = []
+    negatives = []
+    areas = []
+    volumes = []
+
     # MAIN LOOP OVER ALL GLACIERS
     for imgfile in tqdm(list_of_glaciers):
         tqdm.write(imgfile)
@@ -197,9 +208,26 @@ def main():
         # ground truth - prediction
         icethick = dem_values - image_denorm # ndarray (256, 256)
         icethick = np.where((mask_values > 0.), icethick, np.nan) # Glacier (central!) ice thickness calculation
-        tqdm.write(f"Glacier summed thickness: {np.nansum(icethick):.1f} m")
+        tqdm.write(f"Glacier total thickness: {np.nansum(icethick):.1f} m")
 
-        show2d = True
+        ris_ang = dem.rio.resolution()[0]
+        lon_c = (0.5 * (dem.coords['x'][-1] + dem.coords['x'][0])).to_numpy()
+        lat_c = (0.5 * (dem.coords['y'][-1] + dem.coords['y'][0])).to_numpy()
+        ris_metre_lon = haversine(lon_c, lat_c, lon_c+ris_ang, lat_c) * 1000  # m
+        ris_metre_lat = haversine(lon_c, lat_c, lon_c, lat_c+ ris_ang) * 1000  # m
+
+        # stats for csv
+        names.append(imgfile)
+        d1.append(mask_values.sum()/np.prod(dem_values.shape))
+        d2.append(mask_full_values.sum()/np.prod(dem_values.shape))
+        means.append(np.nanmean(icethick))
+        areas.append(mask_values.sum() * ris_metre_lon * ris_metre_lat * 1e-6) # km2
+        volumes.append(np.nansum(icethick) * ris_metre_lon * ris_metre_lat * 1e-9) # km3
+        negatives.append(np.nansum(icethick <= 0)/mask_values.sum())
+        tqdm.write(f"Glacier area: {mask_values.sum() * ris_metre_lon * ris_metre_lat * 1e-6} km2")
+        tqdm.write(f"Glacier volume: {np.nansum(icethick) * ris_metre_lon * ris_metre_lat * 1e-9} km3")
+
+        show2d = False
         if show2d:
             mask_to_show = np.where((mask_full_values > 0.), mask_full_values, np.nan)
             fig, axes = plt.subplots(1,3, figsize=(10,3))
@@ -223,19 +251,21 @@ def main():
             plt.show()
 
 
+
         # Create Dataset to save
         ds_tosave = xr.Dataset({'dem': dem.squeeze(),
                                'mask': (('y', 'x'), mask_values),
                                'inp': (('y', 'x'), image_denorm),
                                'icethick': (('y', 'x'), icethick)
                                })
+
         # save
         # cv2.imwrite(args.out + imgfile.replace('.tif', '_inp.png') , image_denorm.astype(np.uint16))
-        save = True
+        save = False
         if save: ds_tosave.rio.to_raster(args.out + imgfile.replace('.tif', '_res.tif'))
 
-
-
+    results = pd.DataFrame({'glacier': names, 'd1': d1, 'd2': d2, 'mean (m)': means, 'area (km2)':areas, 'vol (km3)': volumes, 'NP': negatives})
+    results.to_csv(args.out+'results.csv', index=False)
 
 
 if __name__ == '__main__':
