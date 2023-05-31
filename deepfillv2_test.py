@@ -10,7 +10,7 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
-from haversine import haversine
+from utils import haversine
 
 def str2bool(s):
     if isinstance(s, bool):
