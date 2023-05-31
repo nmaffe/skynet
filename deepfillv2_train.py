@@ -9,6 +9,7 @@ import torchvision as tv
 import torchvision.transforms as T
 from torchmetrics.functional import peak_signal_noise_ratio as PSNR
 from torchmetrics.functional import structural_similarity_index_measure as SSIM
+from haversine import haversine_torch
 
 import Deepfillv2.libs.losses as gan_losses
 import Deepfillv2.libs.misc as misc
@@ -92,6 +93,45 @@ def training_loop(generator,        # generator network
                 break
             except StopIteration:
                 train_iter = iter(train_dataloader)
+
+        # Calculate slope_lat, slope_lon (N,256,256)
+        # Note: we use step=1 for both lat and lon, since the slopes will be normalized in [-1, 1]
+        slope_lat, slope_lon = torch.gradient(batch_real[:, 0, :, :], spacing=[1., 1.], dim=(1, 2))
+        #print(f'slope lat: {slope_lat.shape}')
+        #print(f'slope lon: {slope_lon.shape}')
+        maxs_lat = torch.amax(slope_lat, dim=(1,2)).unsqueeze(1).unsqueeze(2) #(N,1,1)
+        mins_lat = torch.amin(slope_lat, dim=(1,2)).unsqueeze(1).unsqueeze(2) #(N,1,1)
+        maxs_lon = torch.amax(slope_lon, dim=(1,2)).unsqueeze(1).unsqueeze(2) #(N,1,1)
+        mins_lon = torch.amin(slope_lon, dim=(1,2)).unsqueeze(1).unsqueeze(2) #(N,1,1)
+        #print(maxs_lat)
+        #print(mins_lat)
+        slope_lat = (slope_lat - mins_lat)/(maxs_lat-mins_lat) # normalize to [0, 1]
+        slope_lon = (slope_lon - mins_lon)/(maxs_lon-mins_lon) # normalize to [0, 1]
+        slope_lat.mul_(2).sub_(1) # scale to [-1, 1]
+        slope_lon.mul_(2).sub_(1) # scale to [-1, 1]
+        #print(torch.amin(slope_lon, dim=(1,2)))
+        #print(torch.amax(slope_lon, dim=(1,2)))
+
+        show_input_examples = False
+        if show_input_examples:
+            img = batch_real[0,0].numpy()
+            img_slope_lat = slope_lat[0].numpy()
+            img_slope_lon = slope_lon[0].numpy()
+
+            fig, axes = plt.subplots(nrows=1, ncols=3)
+            im0 = axes[0].imshow(img, cmap='terrain')
+            colorbar0 = fig.colorbar(im0, ax=axes[0], shrink=.3)
+            axes[0].set_title('DEM')
+            im1 = axes[1].imshow(img_slope_lat, cmap='Greys')
+            colorbar1 = fig.colorbar(im1, ax=axes[1], shrink=.3)
+            axes[1].set_title('Slope Latitude')
+            im2 = axes[2].imshow(img_slope_lon, cmap='Greys')
+            colorbar2 = fig.colorbar(im2, ax=axes[2], shrink=.3)
+            axes[2].set_title('Slope Longitude')
+
+            fig.tight_layout()
+            plt.show()
+            input('wait')
 
         batch_real = batch_real.to(device)
 
@@ -419,6 +459,7 @@ def main():
     if config.tb_logging:
         from torch.utils.tensorboard import SummaryWriter
         writer = SummaryWriter(config.log_dir)
+    else: writer = None
 
 
     # start training
