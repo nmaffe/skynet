@@ -9,7 +9,6 @@ import torchvision as tv
 import torchvision.transforms as T
 from torchmetrics.functional import peak_signal_noise_ratio as PSNR
 from torchmetrics.functional import structural_similarity_index_measure as SSIM
-from haversine import haversine_torch
 
 import Deepfillv2.libs.losses as gan_losses
 import Deepfillv2.libs.misc as misc
@@ -94,7 +93,7 @@ def training_loop(generator,        # generator network
             except StopIteration:
                 train_iter = iter(train_dataloader)
 
-        # Calculate slope_lat, slope_lon (N,256,256)
+        # Calculate slope_lat, slope_lon
         # Note: we use step=1 for both lat and lon, since the slopes will be normalized in [-1, 1]
         slope_lat, slope_lon = torch.gradient(batch_real[:, 0, :, :], spacing=[1., 1.], dim=(1, 2))
         #print(f'slope lat: {slope_lat.shape}')
@@ -107,10 +106,10 @@ def training_loop(generator,        # generator network
         #print(mins_lat)
         slope_lat = (slope_lat - mins_lat)/(maxs_lat-mins_lat) # normalize to [0, 1]
         slope_lon = (slope_lon - mins_lon)/(maxs_lon-mins_lon) # normalize to [0, 1]
-        slope_lat.mul_(2).sub_(1) # scale to [-1, 1]
-        slope_lon.mul_(2).sub_(1) # scale to [-1, 1]
-        #print(torch.amin(slope_lon, dim=(1,2)))
-        #print(torch.amax(slope_lon, dim=(1,2)))
+        slope_lat.mul_(2).sub_(1).unsqueeze_(1) # scale to [-1, 1] and reshape to (N, 1, 256, 256)
+        slope_lon.mul_(2).sub_(1).unsqueeze_(1) # scale to [-1, 1] and reshape to (N, 1, 256, 256)
+        #print(torch.amin(slope_lon, dim=(2,3)))
+        #print(torch.amax(slope_lon, dim=(2,3)))
 
         show_input_examples = False
         if show_input_examples:
@@ -134,12 +133,14 @@ def training_loop(generator,        # generator network
             input('wait')
 
         batch_real = batch_real.to(device)
+        slope_lat = slope_lat.to(device)
+        slope_lon = slope_lon.to(device)
 
         # prepare input for generator
         batch_incomplete = batch_real*(1.-mask)                             # (batch_size,3,256,256)
         ones_x = torch.ones_like(batch_incomplete)[:, 0:1, :, :].to(device) # (batch_size,1,256,256)
-        # TODO usare mappa dello slope al posto di ones_x
-        x = torch.cat([batch_incomplete, ones_x, ones_x*mask], axis=1)      # (batch_size,5,256,256)
+
+        x = torch.cat([batch_incomplete, slope_lat, slope_lon, ones_x*mask], axis=1)      # (batch_size,6,256,256)
 
         # generate inpainted images
         x1, x2 = generator(x, mask)     # sia x1 che x2 sono (batch_size,3,256,256)
@@ -228,11 +229,25 @@ def training_loop(generator,        # generator network
                 # print(f'Exausted val iterator at it: {n_iter}')
                 val_iter = iter(val_dataloader)
 
+        # Calculate slope_lat_val, slope_lon_val
+        slope_lat_val, slope_lon_val = torch.gradient(batch_real_val[:, 0, :, :], spacing=[1., 1.], dim=(1, 2))
+        maxs_lat_val = torch.amax(slope_lat_val, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (N,1,1)
+        mins_lat_val = torch.amin(slope_lat_val, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (N,1,1)
+        maxs_lon_val = torch.amax(slope_lon_val, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (N,1,1)
+        mins_lon_val = torch.amin(slope_lon_val, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (N,1,1)
+        slope_lat_val = (slope_lat_val - mins_lat_val) / (maxs_lat_val - mins_lat_val)  # normalize to [0, 1]
+        slope_lon_val = (slope_lon_val - mins_lon_val) / (maxs_lon_val - mins_lon_val)  # normalize to [0, 1]
+        slope_lat_val.mul_(2).sub_(1).unsqueeze_(1)  # scale to [-1, 1] and reshape to (N, 1, 256, 256)
+        slope_lon_val.mul_(2).sub_(1).unsqueeze_(1)  # scale to [-1, 1] and reshape to (N, 1, 256, 256)
+
         batch_real_val = batch_real_val.to(device)
+        slope_lat_val = slope_lat_val.to(device)
+        slope_lon_val = slope_lon_val.to(device)
 
         batch_incomplete = batch_real_val * (1. - mask)  # (batch_size,3,256,256)
         ones_x = torch.ones_like(batch_incomplete)[:, 0:1, :, :].to(device)  # (batch_size,1,256,256)
-        x = torch.cat([batch_incomplete, ones_x, ones_x * mask], axis=1)  # (batch_size,5,256,256)
+        #x = torch.cat([batch_incomplete, ones_x, ones_x * mask], axis=1)  # (batch_size,5,256,256)
+        x = torch.cat([batch_incomplete, slope_lat_val, slope_lon_val, ones_x * mask], axis=1)  # (batch_size,6,256,256)
 
         # generate inpainted images
         x1_val, x2_val = generator(x, mask)  # sia x1 che x2 sono (batch_size,3,256,256)
@@ -340,7 +355,7 @@ def training_loop(generator,        # generator network
             tv.utils.save_image(img_grids, f"{config.checkpoint_dir}/images/iter_{n_iter}.png", nrow=2)
 
         # save model at the (almost) last training iteration
-        if (n_iter%config.save_checkpoint_iter==0 and n_iter>init_n_iter):
+        if (config.save_checkpoint_iter and n_iter%config.save_checkpoint_iter==0 and n_iter>init_n_iter):
             misc.save_states("states.pth", generator, discriminator, g_optimizer, d_optimizer, n_iter, config)
 
         # save model versions during training
@@ -390,12 +405,6 @@ def main():
         print(f'Invalid mask option: {args.mask}')
         exit()
 
-    #for i in range(100):
-        #            img, b = val_dataset[i]
-        #            img = img.numpy()
-        #            fig, ax = plt.subplots()
-        #            ax.imshow(img[0,:,:], cmap='terrain')
-        #            plt.show()
 
     # dataloader
     train_dataloader = torch.utils.data.DataLoader(train_dataset,
@@ -419,7 +428,7 @@ def main():
 
     
     # construct networks
-    generator = Generator(cnum_in=5, cnum=48, return_flow=False)
+    generator = Generator(cnum_in=6, cnum=48, return_flow=False)
     discriminator = Discriminator(cnum_in=4, cnum=64)
 
     # push models to device
