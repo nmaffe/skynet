@@ -177,14 +177,15 @@ def get_transforms(config, data='train'):
     p_random_crop = config.random_crop
     p_horflip = config.random_horizontal_flip
     p_verflip = config.random_vertical_flip
-    h_min_crop = config.random_crop_hmin
-    h_max_crop = config.random_crop_hmax
+    h_min_crop = config.random_crop_hmin # WHY AM I NOT USING THOSE BELOW IN RandomSizedCrop ?
+    h_max_crop = config.random_crop_hmax # WHY AM I NOT USING THOSE BELOW IN RandomSizedCrop ?
 
     if data == 'train':
         return A.Compose([
             A.HorizontalFlip(p=p_horflip),
             A.VerticalFlip(p=p_verflip),
             A.SmallestMaxSize(max(H, W), p=0.0),
+            # A.ShiftScaleRotate an option ?
             A.RandomSizedCrop(min_max_height=[150, 200], height=H, width=W,
                               w2h_ratio=1.0, p=p_random_crop),
             #A.RandomCrop(H, W, p=p_random_crop),
@@ -233,6 +234,7 @@ class ImageDataset_box(Dataset):
         img, bounds = img_loader(self.data[index])  # img ndarray uint16 (256, 256)
         img = img.astype(np.float32)  # convert to float32
 
+        # Note: since the transformations include cropping, the original bounds do not correspond to the transformed image.
         img = self.transforms(image=img)['image']
 
         img_max = torch.max(img)  # normalize to [0, 1]
