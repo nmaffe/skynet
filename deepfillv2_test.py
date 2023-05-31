@@ -227,7 +227,7 @@ def main():
         tqdm.write(f"Glacier area: {mask_values.sum() * ris_metre_lon * ris_metre_lat * 1e-6} km2")
         tqdm.write(f"Glacier volume: {np.nansum(icethick) * ris_metre_lon * ris_metre_lat * 1e-9} km3")
 
-        show2d = False
+        show2d = True
         if show2d:
             mask_to_show = np.where((mask_full_values > 0.), mask_full_values, np.nan)
             fig, axes = plt.subplots(1,3, figsize=(10,3))
