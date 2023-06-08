@@ -45,10 +45,11 @@ def wesserstein_loss_g(neg):
     g_loss = -torch.mean(neg)
     return g_loss
 
-def ae_loss_overshoot_pen(x_in, x_out, penalty=2.0):
-    """ maffe implementation: asymmetrical l1 loss that penalizes twice if out>in """
-    # Note that if penalty=1.0 this is just the original l1 loss
-    # x_in, x_out are torch tensors (batch_size, 3, 256, 256)
+def loss_l1(x_in, x_out, penalty=1.0):
+    """ maffe implementation: asymmetrical l1 loss that penalizes more if out>in
+    Note that if penalty=1.0 this is just the original l1 loss
+    x_in: input tensor
+    x_out: output tensor. Both are torch tensors (batch_size, 3, 256, 256) """
     diff = x_out - x_in
-    loss = torch.where(diff>0, penalty * torch.abs(diff), 1.0 * torch.abs(diff))
+    loss = torch.where(diff > 0, penalty*torch.abs(diff), 1.0*torch.abs(diff))
     return torch.mean(loss)
