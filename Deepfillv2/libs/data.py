@@ -177,8 +177,8 @@ def get_transforms(config, data='train'):
     p_random_crop = config.random_crop
     p_horflip = config.random_horizontal_flip
     p_verflip = config.random_vertical_flip
-    h_min_crop = config.random_crop_hmin # WHY AM I NOT USING THOSE BELOW IN RandomSizedCrop ?
-    h_max_crop = config.random_crop_hmax # WHY AM I NOT USING THOSE BELOW IN RandomSizedCrop ?
+    h_min_crop = config.random_crop_hmin
+    h_max_crop = config.random_crop_hmax
 
     if data == 'train':
         return A.Compose([
@@ -186,7 +186,7 @@ def get_transforms(config, data='train'):
             A.VerticalFlip(p=p_verflip),
             A.SmallestMaxSize(max(H, W), p=0.0),
             # A.ShiftScaleRotate an option ?
-            A.RandomSizedCrop(min_max_height=[150, 200], height=H, width=W,
+            A.RandomSizedCrop(min_max_height=[h_min_crop, h_max_crop], height=H, width=W,
                               w2h_ratio=1.0, p=p_random_crop),
             #A.RandomCrop(H, W, p=p_random_crop),
             #A.Resize(H, W),
@@ -235,14 +235,29 @@ class ImageDataset_box(Dataset):
         img = img.astype(np.float32)  # convert to float32
 
         # Note: since the transformations include cropping, the original bounds do not correspond to the transformed image.
-        img = self.transforms(image=img)['image']
-
+        img = self.transforms(image=img)['image'] # (1, 256, 256)
+        # normalize to [0, 1] and scale to [-1, 1]
         img_max = torch.max(img)  # normalize to [0, 1]
         img_min = torch.min(img)
-        img = (img - img_min) / (img_max - img_min)
+        img = (img - img_min) / (img_max - img_min) # note that this can cause nans
+        img.mul_(2).sub_(1) # (1, 256, 256)
 
-        img.mul_(2).sub_(1)  # scale to [-1, 1]
+        # Slopes. Normalize to [0, 1] and scale to [-1, 1]
+        slope_lat, slope_lon = torch.gradient(img, spacing=[1., 1.], dim=(1, 2))  # (1, 256, 256)
+        maxs_lat = torch.amax(slope_lat, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (1,1,1)
+        mins_lat = torch.amin(slope_lat, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (1,1,1)
+        maxs_lon = torch.amax(slope_lon, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (1,1,1)
+        mins_lon = torch.amin(slope_lon, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (1,1,1)
+        slope_lat = (slope_lat - mins_lat) / (maxs_lat - mins_lat)  # (1, 256, 256)
+        slope_lon = (slope_lon - mins_lon) / (maxs_lon - mins_lon)  # (1, 256, 256)
+        slope_lat.mul_(2).sub_(1)
+        slope_lon.mul_(2).sub_(1)
 
         img = img.repeat(3, 1, 1)  # convert to (3, 256, 256)
 
-        return img, torch.from_numpy(bounds)
+        # To avoid singularities in the normalizations we replace nans with 0s
+        img = torch.nan_to_num(img)             # (3, 256, 256)
+        slope_lat = torch.nan_to_num(slope_lat) # (1, 256, 256)
+        slope_lon = torch.nan_to_num(slope_lon) # (1, 256, 256)
+
+        return img, slope_lat, slope_lon, torch.from_numpy(bounds)
