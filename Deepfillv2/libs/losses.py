@@ -53,3 +53,21 @@ def loss_l1(x_in, x_out, penalty=1.0):
     diff = x_out - x_in
     loss = torch.where(diff > 0, penalty*torch.abs(diff), 1.0*torch.abs(diff))
     return torch.mean(loss)
+
+def loss_power_law(dem, bed, mask, c, gamma):
+    """
+    maffe implementation
+    c: scaling parameter [ca. 0.03]
+    gamma: exponent [ca. 1.4]
+    dem (N, 256, 256)
+    bed (N, 256, 256)
+    mask (1, 256, 256)
+    V_th = c * A^gamma
+    """
+    areas = torch.sum(mask) # scalar
+    thickness = dem - bed # (N, 256, 256)
+    vol_exp = torch.sum(thickness, dim=(1, 2)) * areas # (N,)
+    vol_th = c * torch.pow(areas, gamma) # scalar
+    loss = torch.abs(vol_th - vol_exp) # (N,)
+
+    return torch.mean(loss)
