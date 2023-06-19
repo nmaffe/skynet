@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import gdal
 # from PIL import Image
+from utils import haversine
 from torch.utils.data import Dataset
 import torchvision.transforms as T
 import torch
@@ -48,7 +49,7 @@ def img_loader(path):
     ury = uly
     bounds = np.array([llx, lly, urx, ury])  # bounds
     img = gdal_tile.GetRasterBand(1).ReadAsArray()  # values
-    return img, bounds
+    return img, bounds, xres
 
 def cv_loader_mask(path):
     mask = cv2.imread(path, -1)
@@ -231,8 +232,13 @@ class ImageDataset_box(Dataset):
 
     def __getitem__(self, index):
 
-        img, bounds = img_loader(self.data[index])  # img ndarray uint16 (256, 256)
+        img, bounds, ris_ang = img_loader(self.data[index])  # img ndarray uint16 (256, 256)
         img = img.astype(np.float32)  # convert to float32
+
+        lon_c = 0.5 * (bounds[0] + bounds[2])
+        lat_c = 0.5 * (bounds[1] + bounds[3])
+        ris_metre_lon = haversine(lon_c, lat_c, lon_c + ris_ang, lat_c) * 1000  # m
+        ris_metre_lat = haversine(lon_c, lat_c, lon_c, lat_c + ris_ang) * 1000  # m
 
         # Note: since the transformations include cropping, the original bounds do not correspond to the transformed image.
         img = self.transforms(image=img)['image'] # (1, 256, 256)
@@ -253,11 +259,11 @@ class ImageDataset_box(Dataset):
         slope_lat.mul_(2).sub_(1)
         slope_lon.mul_(2).sub_(1)
 
-        img = img.repeat(3, 1, 1)  # convert to (3, 256, 256)
+        img = img.repeat(3, 1, 1)  # convert to (3, 256, 256) # todo this should be avoided in the future
 
         # To avoid singularities in the normalizations we replace nans with 0s
         img = torch.nan_to_num(img)             # (3, 256, 256)
         slope_lat = torch.nan_to_num(slope_lat) # (1, 256, 256)
         slope_lon = torch.nan_to_num(slope_lon) # (1, 256, 256)
 
-        return img, slope_lat, slope_lon, torch.from_numpy(bounds)
+        return img, slope_lat, slope_lon, img_min, img_max, ris_metre_lon, ris_metre_lat, torch.from_numpy(bounds)
