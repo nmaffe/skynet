@@ -34,10 +34,10 @@ parser.add_argument("--fullmask", type=str,
                     default="/home/nico/PycharmProjects/skynet/code/dataset/test/RGI_11_size_256/masks_full/",
                     help="input folder with full mask files")
 parser.add_argument("--out", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/dataset/output/RGI_11_size_256/",
+                    default="/home/nico/PycharmProjects/skynet/code/dataset/output/RGI_11_size_256_slopemasked/",
                     help="path to saved results")
 parser.add_argument("--checkpoint", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/Deepfillv2/callbacks/checkpoints/box_model/states.pth",
+                    default="/home/nico/PycharmProjects/skynet/code/Deepfillv2/callbacks/checkpoints/box_model/states_slope_masked.pth",
                     help="path to the checkpoint file")
 parser.add_argument("--tfmodel", action='store_true',
                     default=False, help="use model from models_tf.py?")
@@ -76,7 +76,7 @@ def main():
                           and use_cuda_if_available else 'cpu')
 
     # set up network
-    generator = Generator(cnum_in=5, cnum=48, return_flow=False).to(device)
+    generator = Generator(cnum_in=4, cnum=48, return_flow=False).to(device)
     generator_state_dict = torch.load(args.checkpoint)['G']
     generator.load_state_dict(generator_state_dict)
     generator.eval() # maffe added this: eval mode
@@ -135,8 +135,6 @@ def main():
         # import dem
         dem = rioxarray.open_rasterio(args.image+imgfile)
         dem_values = dem.values.squeeze()
-        # img = cv2.imread(args.image+imgfile, -1) # OLD
-        # mask = cv2.imread(args.mask + imgfile.replace('.tif', '_mask.tif') , -1) # OLD
 
         # import mask
         mask_rs = rioxarray.open_rasterio(args.mask + imgfile.replace('.tif', '_mask.tif'))
@@ -146,32 +144,44 @@ def main():
         mask_full_rs = rioxarray.open_rasterio(args.fullmask + imgfile.replace('.tif', '_mask_full.tif'))
         mask_full_values = mask_full_rs.values.squeeze()
 
-        # normalize ndarray image to [0,1] and scale to [-1, 1]
+        # normalize to [-1, 1]
         img_max = np.amax(dem_values)
         img_min = np.amin(dem_values)
         img = (dem_values - img_min) / (img_max - img_min)
         img = img * 2. -1.
 
-        # OLD
-        # passando ndarray -- PIL -- torch si ha un risultato leggermente diverso
-        # rispetto ad andare direttamente ndarray -- torch. Questo perchè
-        # perchè la conversione .astype(np.uint8) approssima a integer !
-        # inoltre odio sta roba perchè noi non stiamo usando colori
-        # img = (np.stack((img,)*3, axis=-1) * 255).astype(np.uint8)
-        # image = Image.fromarray((img)) # to PIL.
-        # image = T.ToTensor()(image)
-
-        # NEW
         # ndarray --> torch
         img = np.stack((img,)*3, axis=0)
-        img = torch.from_numpy(img).to(dtype=torch.float32)
+        img = torch.from_numpy(img).to(dtype=torch.float32) # (3, 256, 256)
 
-        # OLD ndarray -- PIL -- torch
-        #mask = np.stack((mask_orig_values,)*3, axis=-1).astype(np.uint8)
-        #mask = Image.fromarray((mask)) # to PIL
-        #mask = T.ToTensor()(mask) # NB non è in [0,1] ma non importa perchè andrà in [0,1] con mask=(mask>0)
+        # calculate slopes
+        slope_lat, slope_lon = torch.gradient(img[0, :, :], spacing=[1., 1.], dim=(0, 1)) # (256, 256)
+        slope_lat = (slope_lat-torch.amin(slope_lat))/(torch.amax(slope_lat)-torch.amin(slope_lat))
+        slope_lon = (slope_lon-torch.amin(slope_lon))/(torch.amax(slope_lon)-torch.amin(slope_lon))
+        slope_lat.mul_(2).sub_(1).unsqueeze_(0).unsqueeze_(1) # (1, 1, 256, 256)
+        slope_lon.mul_(2).sub_(1).unsqueeze_(0).unsqueeze_(1) # (1, 1, 256, 256)
 
-        # NEW
+        show_input_examples = False
+        if show_input_examples:
+            img = img[0,:,:].numpy()
+            img_slope_lat = slope_lat[0,0,:,:].numpy()
+            img_slope_lon = slope_lon[0,0,:,:].numpy()
+
+            fig, axes = plt.subplots(nrows=1, ncols=3)
+            im0 = axes[0].imshow(img, cmap='terrain')
+            colorbar0 = fig.colorbar(im0, ax=axes[0], shrink=.3)
+            axes[0].set_title('DEM')
+            im1 = axes[1].imshow(img_slope_lat, cmap='Greys')
+            colorbar1 = fig.colorbar(im1, ax=axes[1], shrink=.3)
+            axes[1].set_title('Slope Latitude')
+            im2 = axes[2].imshow(img_slope_lon, cmap='Greys')
+            colorbar2 = fig.colorbar(im2, ax=axes[2], shrink=.3)
+            axes[2].set_title('Slope Longitude')
+
+            fig.tight_layout()
+            plt.show()
+            input('wait')
+
         # NB the mask should be the full mask to account for all other neighbouring glaciers
         mask = np.stack((mask_full_values,)*3, axis=0) # 1.: masked 0.: unmasked
         mask = torch.from_numpy(mask).to(dtype=torch.float32)
@@ -186,12 +196,17 @@ def main():
         mask = mask[0:1, :h//grid*grid, :w//grid*grid].unsqueeze(0) # (1, 1, 256, 256)
 
         img = img.to(device)
+        slope_lat = slope_lat.to(device)
+        slope_lon = slope_lon.to(device)
         mask = mask.to(device)
 
+        img = torch.cat([img[:, 0:1, :, :], slope_lat, slope_lon], axis=1)
         img_masked = img * (1.-mask)  # mask image
 
         ones_x = torch.ones_like(img_masked)[:, 0:1, :, :] # (1, 1, 256, 256)
-        x = torch.cat([img_masked, ones_x, ones_x*mask], dim=1)  # (1, 5, 256, 256)
+        #x = torch.cat([img_masked, ones_x, ones_x*mask], dim=1)  # (1, 5, 256, 256)
+        #x = torch.cat([img_masked, slope_lat, slope_lon, ones_x*mask], dim=1)  # (1, 6, 256, 256)
+        x = torch.cat([img_masked, ones_x * mask], dim=1)  # (1, 4, 256, 256)
 
         with torch.no_grad():
             _, x_stage2 = generator(x, mask) # x_stage2 will have values in [-1, 1]
@@ -224,14 +239,25 @@ def main():
         areas.append(mask_values.sum() * ris_metre_lon * ris_metre_lat * 1e-6) # km2
         volumes.append(np.nansum(icethick) * ris_metre_lon * ris_metre_lat * 1e-9) # km3
         negatives.append(np.nansum(icethick <= 0)/mask_values.sum())
+        tqdm.write(f"Glacier bounds: {dem.rio.bounds()}")
         tqdm.write(f"Glacier area: {mask_values.sum() * ris_metre_lon * ris_metre_lat * 1e-6} km2")
         tqdm.write(f"Glacier volume: {np.nansum(icethick) * ris_metre_lon * ris_metre_lat * 1e-9} km3")
 
         show2d = True
         if show2d:
             mask_to_show = np.where((mask_full_values > 0.), mask_full_values, np.nan)
-            fig, axes = plt.subplots(1,3, figsize=(10,3))
-            ax1, ax2, ax3 = axes.flatten()
+            fig, axes = plt.subplots(2,3, figsize=(11,6))
+            ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
+
+            N = dem_values.shape[0]
+            y_lon_dem = dem_values[int(N / 2), :]
+            y_lat_dem = dem_values[:, int(N / 2)]
+            y_lon_bed = image_denorm[int(N / 2), :]
+            y_lat_bed = image_denorm[:, int(N / 2)]
+            y_lon_mask = mask_full_values[int(N / 2), :]  # 1 mask, 0 non mask
+            y_lat_mask = mask_full_values[:, int(N / 2)]
+            y_lon_mask = np.where(y_lon_mask == 0, np.nan, y_lon_mask)
+            y_lat_mask = np.where(y_lat_mask == 0, np.nan, y_lat_mask)
 
             im1 = ax1.imshow(dem_values, cmap='terrain')
             im1_1 = ax1.imshow(mask_to_show, alpha=.3, cmap='gray')
@@ -239,10 +265,23 @@ def main():
             vmin, vmax = abs(np.nanmin(icethick)), abs(np.nanmax(icethick))
             v = max(vmin, vmax)
             im3 = ax3.imshow(icethick, vmin=-v, vmax=v, cmap='bwr_r')
+            im4 = ax4.scatter(range(N), y_lon_dem, s=5, c='k', label='dem along lon')
+            im4_1 = ax4.plot(range(N), y_lon_bed*y_lon_mask, c='r', label='bed along lon')
+            im5 = ax5.scatter(range(N), y_lat_dem, s=5, c='k', label='dem along lat')
+            im5_1 = ax5.plot(range(N), y_lat_bed*y_lat_mask, c='r', label='bed along lat')
+
+            ice_farinotti = rioxarray.open_rasterio('/home/nico/PycharmProjects/skynet/Extra_Data/Farinotti/composite_thickness_RGI60-11/RGI60-11/'
+                                                    +imgfile.replace('.tif', '_thickness.tif'))
+            ice_farinotti = ice_farinotti.values.squeeze()
+            im6 = ax6.imshow(ice_farinotti, vmin=-v, vmax=v, cmap='bwr_r')
+
             plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04, label='H (m)')
             plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04, label='H (m)')
             plt.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04, label='th (m)')
+            plt.colorbar(im6, ax=ax6, fraction=0.046, pad=0.04, label='th (m)')
 
+            ax4.legend()
+            ax5.legend()
             ax1.title.set_text(f'{imgfile[:-4]} - DEM')
             ax2.title.set_text('Inpainted')
             ax3.title.set_text('Ice thickness')
