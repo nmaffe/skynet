@@ -14,6 +14,7 @@ import Deepfillv2.libs.losses as gan_losses
 import Deepfillv2.libs.misc as misc
 from Deepfillv2.libs.networks import Generator, Discriminator
 from Deepfillv2.libs.data import ImageDataset_box, ImageDataset_segmented, get_transforms
+from Deepfillv2.libs.losses import *
 
 parser = argparse.ArgumentParser()
 mask_modes = ["box", "segmented"]
@@ -49,6 +50,7 @@ def training_loop(generator,        # generator network
                   'ae_loss': [],
                   'ae_loss1': [],
                   'ae_loss2': [],
+                  'scaling_loss': [],
                   }
     losses_log_val = {'d_loss': [],
                   'g_loss': [],
@@ -56,6 +58,7 @@ def training_loop(generator,        # generator network
                   'ae_loss': [],
                   'ae_loss1': [],
                   'ae_loss2': [],
+                  'scaling_loss': [],
                   }
 
     metrics_log = {'ssim': [], 'psnr': []}
@@ -81,7 +84,7 @@ def training_loop(generator,        # generator network
         while True:
             try:
                 if args.mask == "box":
-                    batch_real, batch_bounds = next(train_iter) # fetch batch_real=(batch_size, 3, 256, 256)
+                    batch_real, slope_lat, slope_lon, batch_mins, batch_maxs, batch_ris_lon, batch_ris_lat, batch_bounds = next(train_iter) # fetch batch_real=(N, 3, 256, 256)
                     bbox = misc.random_bbox(config)  # restituisce valori random (top, left, height, width) di un box quadrato.
                     regular_mask = misc.bbox2mask(config, bbox).to(device)  # (1, 1, 256, 256)
                     irregular_mask = misc.brush_stroke_mask(config).to(device)  # (1,1,256,256)
@@ -93,72 +96,85 @@ def training_loop(generator,        # generator network
             except StopIteration:
                 train_iter = iter(train_dataloader)
 
-        # Calculate slope_lat, slope_lon
-        # Note: we use step=1 for both lat and lon, since the slopes will be normalized in [-1, 1]
-        slope_lat, slope_lon = torch.gradient(batch_real[:, 0, :, :], spacing=[1., 1.], dim=(1, 2))
-        #print(f'slope lat: {slope_lat.shape}')
-        #print(f'slope lon: {slope_lon.shape}')
-        maxs_lat = torch.amax(slope_lat, dim=(1,2)).unsqueeze(1).unsqueeze(2) #(N,1,1)
-        mins_lat = torch.amin(slope_lat, dim=(1,2)).unsqueeze(1).unsqueeze(2) #(N,1,1)
-        maxs_lon = torch.amax(slope_lon, dim=(1,2)).unsqueeze(1).unsqueeze(2) #(N,1,1)
-        mins_lon = torch.amin(slope_lon, dim=(1,2)).unsqueeze(1).unsqueeze(2) #(N,1,1)
-        #print(maxs_lat)
-        #print(mins_lat)
-        slope_lat = (slope_lat - mins_lat)/(maxs_lat-mins_lat) # normalize to [0, 1]
-        slope_lon = (slope_lon - mins_lon)/(maxs_lon-mins_lon) # normalize to [0, 1]
-        slope_lat.mul_(2).sub_(1).unsqueeze_(1) # scale to [-1, 1] and reshape to (N, 1, 256, 256)
-        slope_lon.mul_(2).sub_(1).unsqueeze_(1) # scale to [-1, 1] and reshape to (N, 1, 256, 256)
-        #print(torch.amin(slope_lon, dim=(2,3)))
-        #print(torch.amax(slope_lon, dim=(2,3)))
-
         show_input_examples = False
         if show_input_examples:
             img = batch_real[0,0].numpy()
-            img_slope_lat = slope_lat[0].numpy()
-            img_slope_lon = slope_lon[0].numpy()
+            img_slope_lat = slope_lat[0,0].numpy()
+            img_slope_lon = slope_lon[0,0].numpy()
 
             fig, axes = plt.subplots(nrows=1, ncols=3)
             im0 = axes[0].imshow(img, cmap='terrain')
             colorbar0 = fig.colorbar(im0, ax=axes[0], shrink=.3)
             axes[0].set_title('DEM')
-            im1 = axes[1].imshow(img_slope_lat, cmap='Greys')
+            im1 = axes[1].imshow(img_slope_lat, cmap='terrain')
             colorbar1 = fig.colorbar(im1, ax=axes[1], shrink=.3)
             axes[1].set_title('Slope Latitude')
-            im2 = axes[2].imshow(img_slope_lon, cmap='Greys')
+            im2 = axes[2].imshow(img_slope_lon, cmap='terrain')
             colorbar2 = fig.colorbar(im2, ax=axes[2], shrink=.3)
             axes[2].set_title('Slope Longitude')
 
             fig.tight_layout()
             plt.show()
-            input('wait')
+            #input('wait')
 
-        batch_real = batch_real.to(device)
-        slope_lat = slope_lat.to(device)
-        slope_lon = slope_lon.to(device)
+        batch_real = batch_real.to(device)  # (N,3,256,256)
+        slope_lat = slope_lat.to(device)    # (N,1,256,256)
+        slope_lon = slope_lon.to(device)    # (N,1,256,256)
+        batch_mins = batch_mins.to(device) # (N,)
+        batch_maxs = batch_maxs.to(device) # (N,)
+        batch_ris_lon = batch_ris_lon.to(device) # (N,)
+        batch_ris_lat = batch_ris_lat.to(device) # (N,)
+
+        # NB QUESTO COMANDO E' IMPORTANTE!
+        batch_real = torch.cat([batch_real[:,0:1,:,:], slope_lat, slope_lon], axis=1)
 
         # prepare input for generator
-        batch_incomplete = batch_real*(1.-mask)                             # (batch_size,3,256,256)
-        ones_x = torch.ones_like(batch_incomplete)[:, 0:1, :, :].to(device) # (batch_size,1,256,256)
+        batch_incomplete = batch_real*(1.-mask) # (N,3,256,256)
+        #batch_incomplete = torch.cat([batch_real[:,0:1,:,:], slope_lat, slope_lon], axis=1) * (1. - mask) # (N,3,256,256)
+        ones_x = torch.ones_like(batch_incomplete)[:, 0:1, :, :].to(device) # (N,1,256,256)
 
-        x = torch.cat([batch_incomplete, slope_lat, slope_lon, ones_x*mask], axis=1)      # (batch_size,6,256,256)
+        #x = torch.cat([batch_incomplete, slope_lat, slope_lon, ones_x*mask], axis=1)      # (N,6,256,256)
+        x = torch.cat([batch_incomplete, ones_x*mask], axis=1)      # (N,4,256,256)
 
         # generate inpainted images
-        x1, x2 = generator(x, mask)     # sia x1 che x2 sono (batch_size,3,256,256)
+        x1, x2 = generator(x, mask)     # sia x1 che x2 sono (N,3,256,256)
         batch_predicted = x2            # this is the output of the fine generator
 
+        check_x2 = False
+        if n_iter%500 == 0: check_x2 = True
+        if check_x2:
+            x_inspect = x.cpu().numpy()
+            x2_inspect = x2.detach().cpu().numpy()
+            fig, axes = plt.subplots(nrows=1, ncols=4)
+            im0 = axes[0].imshow(x2_inspect[0, 0, :, :], cmap='terrain')
+            colorbar0 = fig.colorbar(im0, ax=axes[0], shrink=.3)
+            axes[0].set_title('DEM')
+            im1 = axes[1].imshow(x2_inspect[0, 1, :, :], cmap='terrain')
+            colorbar1 = fig.colorbar(im1, ax=axes[1], shrink=.3)
+            axes[1].set_title('Slope Latitude')
+            im2 = axes[2].imshow(x2_inspect[0, 2, :, :], cmap='terrain')
+            colorbar2 = fig.colorbar(im2, ax=axes[2], shrink=.3)
+            axes[2].set_title('Slope Longitude')
+            im3 = axes[3].imshow(x_inspect[0, 0, :, :], cmap='terrain')
+            colorbar3 = fig.colorbar(im3, ax=axes[3], shrink=.3)
+            axes[3].set_title('input')
+
+            fig.tight_layout()
+            plt.show()
+
         # use the fine generator prediction inside the mask while keeping the original image elsewhere
-        batch_complete = batch_predicted*mask + batch_incomplete*(1.-mask) # (batch_size,3,256,256)
+        batch_complete = batch_predicted*mask + batch_incomplete*(1.-mask) # (N,3,256,256)
 
         # D training steps:
-        batch_real_mask = torch.cat((batch_real, torch.tile(mask, [config.batch_size, 1, 1, 1])), dim=1) # (batch_size,4,256,256)
-        batch_filled_mask = torch.cat((batch_complete.detach(), torch.tile(mask, [config.batch_size, 1, 1, 1])), dim=1) # (batch_size,4,256,256)
+        batch_real_mask = torch.cat((batch_real, torch.tile(mask, [config.batch_size, 1, 1, 1])), dim=1) # (N,4,256,256)
+        batch_filled_mask = torch.cat((batch_complete.detach(), torch.tile(mask, [config.batch_size, 1, 1, 1])), dim=1) # (N,4,256,256)
         # oss: batch_filled_mask e batch_real_filled avranno requires_grad=False, quindi saranno staccati dal graph. Perche ?
-        batch_real_filled = torch.cat((batch_real_mask, batch_filled_mask)) # (2*batch_size,4,256,256)
+        batch_real_filled = torch.cat((batch_real_mask, batch_filled_mask)) # (2*N,4,256,256)
 
         # we apply the discriminator to the whole batch containing both real and generated (and completed) images
-        d_real_gen = discriminator(batch_real_filled) # (32, 4096)
+        d_real_gen = discriminator(batch_real_filled) # (2*N, 4096)
         # we extract the separate outputs for the real/generated images
-        d_real, d_gen = torch.split(d_real_gen, config.batch_size) # (16, 4096), # (16, 4096)
+        d_real, d_gen = torch.split(d_real_gen, config.batch_size) # (N, 4096), # (N, 4096)
 
         d_loss = gan_loss_d(d_real, d_gen)
         losses['d_loss'] = d_loss
@@ -169,23 +185,30 @@ def training_loop(generator,        # generator network
         d_optimizer.step()
 
         # G training steps:
-        losses['ae_loss1'] = config.l1_loss_alpha * torch.mean((torch.abs(batch_real - x1)))
-        losses['ae_loss2'] = config.l1_loss_alpha * torch.mean((torch.abs(batch_real - x2)))
+        losses['ae_loss1'] = config.l1_loss_alpha * loss_l1(batch_real, x1, penalty=1.0)
+        losses['ae_loss2'] = config.l1_loss_alpha * loss_l1(batch_real, x2, penalty=1.0)
         losses['ae_loss'] = losses['ae_loss1'] + losses['ae_loss2']
 
         batch_gen = batch_predicted # perche usare un altra variabile quando avrei sia batch_predicted che x2 ?
-        batch_gen = torch.cat((batch_gen, torch.tile(mask, [config.batch_size, 1, 1, 1])), dim=1) # (batch_size, 4, 256, 256)
+        batch_gen = torch.cat((batch_gen, torch.tile(mask, [config.batch_size, 1, 1, 1])), dim=1) # (N, 4, 256, 256)
 
         # apply the discriminator to the generated (not completed) images
-        d_gen = discriminator(batch_gen) # (batch_size, 4096)
+        d_gen = discriminator(batch_gen) # (N, 4096)
 
         g_loss = gan_loss_g(d_gen)
         losses['g_loss'] = g_loss
         losses['g_loss'] = config.gan_loss_alpha * losses['g_loss']
         losses['g_loss_adv'] = g_loss
-
+        losses['scaling_loss'] = config.power_law_alpha * loss_power_law(dem=batch_real[:, 0, :, :],
+                                                                    bed=x2[:, 0, :, :],
+                                                                    mask=mask[:, 0, :, :],
+                                                                    c=config.power_law_c,
+                                                                    gamma=config.power_law_gamma,
+                                                                    mins=batch_mins, maxs=batch_maxs, ris_lon=batch_ris_lon, ris_lat=batch_ris_lat)
         if config.ae_loss:
             losses['g_loss'] += losses['ae_loss']
+        if config.power_law_loss:
+            losses['g_loss'] += losses['scaling_loss']
 
         # update G parameters
         g_optimizer.zero_grad()
@@ -216,7 +239,7 @@ def training_loop(generator,        # generator network
         while True:
             try:
                 if args.mask == "box":
-                    batch_real_val, batch_bounds_val = next(val_iter)  # fetch batch_real=(batch_size, 3, 256, 256)
+                    batch_real_val, slope_lat_val, slope_lon_val, batch_mins_val, batch_maxs_val, batch_ris_lon_val, batch_ris_lat_val, batch_bounds_val = next(val_iter)  # fetch batch_real=(batch_size, 3, 256, 256)
                     bbox = misc.random_bbox(config)  # restituisce valori random (top, left, height, width) di un box quadrato.
                     regular_mask = misc.bbox2mask(config, bbox).to(device)  # (1, 1, 256, 256)
                     irregular_mask = misc.brush_stroke_mask(config).to(device)  # (1,1,256,256)
@@ -229,25 +252,22 @@ def training_loop(generator,        # generator network
                 # print(f'Exausted val iterator at it: {n_iter}')
                 val_iter = iter(val_dataloader)
 
-        # Calculate slope_lat_val, slope_lon_val
-        slope_lat_val, slope_lon_val = torch.gradient(batch_real_val[:, 0, :, :], spacing=[1., 1.], dim=(1, 2))
-        maxs_lat_val = torch.amax(slope_lat_val, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (N,1,1)
-        mins_lat_val = torch.amin(slope_lat_val, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (N,1,1)
-        maxs_lon_val = torch.amax(slope_lon_val, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (N,1,1)
-        mins_lon_val = torch.amin(slope_lon_val, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (N,1,1)
-        slope_lat_val = (slope_lat_val - mins_lat_val) / (maxs_lat_val - mins_lat_val)  # normalize to [0, 1]
-        slope_lon_val = (slope_lon_val - mins_lon_val) / (maxs_lon_val - mins_lon_val)  # normalize to [0, 1]
-        slope_lat_val.mul_(2).sub_(1).unsqueeze_(1)  # scale to [-1, 1] and reshape to (N, 1, 256, 256)
-        slope_lon_val.mul_(2).sub_(1).unsqueeze_(1)  # scale to [-1, 1] and reshape to (N, 1, 256, 256)
-
         batch_real_val = batch_real_val.to(device)
         slope_lat_val = slope_lat_val.to(device)
         slope_lon_val = slope_lon_val.to(device)
+        batch_mins_val = batch_mins_val.to(device)
+        batch_maxs_val = batch_maxs_val.to(device)
+        batch_ris_lon_val = batch_ris_lon_val.to(device)
+        batch_ris_lat_val = batch_ris_lat_val.to(device)
+
+        # NB QUESTO COMANDO E' IMPORTANTE!
+        batch_real_val = torch.cat([batch_real_val[:, 0:1, :, :], slope_lat_val, slope_lon_val], axis=1)
 
         batch_incomplete = batch_real_val * (1. - mask)  # (batch_size,3,256,256)
+        #batch_incomplete = torch.cat([batch_real_val[:,0:1,:,:], slope_lat_val, slope_lon_val], axis=1) * (1. - mask) # (N,3,256,256)
         ones_x = torch.ones_like(batch_incomplete)[:, 0:1, :, :].to(device)  # (batch_size,1,256,256)
         #x = torch.cat([batch_incomplete, ones_x, ones_x * mask], axis=1)  # (batch_size,5,256,256)
-        x = torch.cat([batch_incomplete, slope_lat_val, slope_lon_val, ones_x * mask], axis=1)  # (batch_size,6,256,256)
+        x = torch.cat([batch_incomplete, ones_x * mask], axis=1)  # (batch_size,6,256,256)
 
         # generate inpainted images
         x1_val, x2_val = generator(x, mask)  # sia x1 che x2 sono (batch_size,3,256,256)
@@ -272,8 +292,8 @@ def training_loop(generator,        # generator network
         losses_val['d_loss'] = d_loss
 
         # G training steps:
-        losses_val['ae_loss1'] = config.l1_loss_alpha * torch.mean((torch.abs(batch_real_val - x1_val)))
-        losses_val['ae_loss2'] = config.l1_loss_alpha * torch.mean((torch.abs(batch_real_val - x2_val)))
+        losses_val['ae_loss1'] = config.l1_loss_alpha * loss_l1(batch_real_val, x1_val, penalty=1.0)
+        losses_val['ae_loss2'] = config.l1_loss_alpha * loss_l1(batch_real_val, x2_val, penalty=1.0)
         losses_val['ae_loss'] = losses_val['ae_loss1'] + losses_val['ae_loss2']
 
         batch_gen = batch_predicted  # perche usare un altra variabile quando avrei sia batch_predicted che x2 ?
@@ -287,9 +307,17 @@ def training_loop(generator,        # generator network
         losses_val['g_loss'] = g_loss
         losses_val['g_loss'] = config.gan_loss_alpha * losses_val['g_loss']
         losses_val['g_loss_adv'] = g_loss
-
+        losses_val['scaling_loss'] = config.power_law_alpha * loss_power_law(dem=batch_real_val[:, 0, :, :],
+                                                                            bed=x2_val[:, 0, :, :],
+                                                                            mask=mask[:, 0, :, :],
+                                                                            c=config.power_law_c,
+                                                                            gamma=config.power_law_gamma,
+                                                                            mins=batch_mins_val, maxs=batch_maxs_val, ris_lon=batch_ris_lon_val,
+                                                                            ris_lat=batch_ris_lat_val)
         if config.ae_loss:
             losses_val['g_loss'] += losses_val['ae_loss']
+        if config.power_law_loss:
+            losses_val['g_loss'] += losses_val['scaling_loss']
 
         # calculate similarity metrics
         ssim = SSIM(batch_real_val, batch_predicted).detach()
@@ -428,7 +456,8 @@ def main():
 
     
     # construct networks
-    generator = Generator(cnum_in=6, cnum=48, return_flow=False)
+    # NB: se cambio cnum_in del generator devo farlo anche al discriminator credo !
+    generator = Generator(cnum_in=4, cnum=48, return_flow=False)
     discriminator = Discriminator(cnum_in=4, cnum=64)
 
     # push models to device
