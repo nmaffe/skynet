@@ -242,26 +242,37 @@ class ImageDataset_box(Dataset):
 
         # Note: since the transformations include cropping, the original bounds do not correspond to the transformed image.
         img = self.transforms(image=img)['image'] # (1, 256, 256)
+        # Calculate slope
+        slope_lat, slope_lon = torch.gradient(img, spacing=[ris_metre_lat, ris_metre_lon], dim=(1, 2))  # (1, 256, 256)
+
+        # Normalize dem
         # normalize to [0, 1] and scale to [-1, 1]
-        #img_max = torch.max(img)  # normalize to [0, 1]
-        #img_min = torch.min(img)
-        img_max = 9000  # normalize to [0, 1]
-        img_min = 0
+        # img_max = torch.max(img)  # normalize to [0, 1]
+        # img_min = torch.min(img)
+        img_max = 9000.0  # normalize to [0, 1]
+        img_min = 0.0
         img = (img - img_min) / (img_max - img_min) # note that this can cause nans
         img.mul_(2).sub_(1) # (1, 256, 256)
 
-        # Slopes. Normalize to [0, 1] and scale to [-1, 1]
-        slope_lat, slope_lon = torch.gradient(img, spacing=[1., 1.], dim=(1, 2))  # (1, 256, 256)
-        maxs_lat = torch.amax(slope_lat, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (1,1,1)
-        mins_lat = torch.amin(slope_lat, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (1,1,1)
-        maxs_lon = torch.amax(slope_lon, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (1,1,1)
-        mins_lon = torch.amin(slope_lon, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (1,1,1)
+        # Normalize slopes
+        # Normalize to [0, 1] and scale to [-1, 1]
+        # maxs_lat = torch.amax(slope_lat, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (1,1,1)
+        # mins_lat = torch.amin(slope_lat, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (1,1,1)
+        # maxs_lon = torch.amax(slope_lon, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (1,1,1)
+        # mins_lon = torch.amin(slope_lon, dim=(1, 2)).unsqueeze(1).unsqueeze(2)  # (1,1,1)
+        # print(mins_lat, maxs_lat, mins_lon, maxs_lon)
+        mins_lat, maxs_lat = -10., 10.
+        mins_lon, maxs_lon = -10., 10.
+
+        # normalization slopes
+        slope_lat = torch.clip(slope_lat, min=-10., max=10.)
+        slope_lon = torch.clip(slope_lon, min=-10., max=10.)
         slope_lat = (slope_lat - mins_lat) / (maxs_lat - mins_lat)  # (1, 256, 256)
         slope_lon = (slope_lon - mins_lon) / (maxs_lon - mins_lon)  # (1, 256, 256)
         slope_lat.mul_(2).sub_(1)
         slope_lon.mul_(2).sub_(1)
 
-        img = img.repeat(3, 1, 1)  # convert to (3, 256, 256) # todo this should be avoided in the future
+        img = img.repeat(3, 1, 1)  # convert to (3, 256, 256)
 
         # To avoid singularities in the normalizations we replace nans with 0s
         img = torch.nan_to_num(img)             # (3, 256, 256)
