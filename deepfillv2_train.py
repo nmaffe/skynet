@@ -18,7 +18,7 @@ from Deepfillv2.libs.losses import *
 
 parser = argparse.ArgumentParser()
 mask_modes = ["box", "segmented"]
-parser.add_argument('--config', type=str,default="Deepfillv2/configs/train.yaml", help="Path to yaml config file")
+parser.add_argument('--config', type=str,default="/home/user/Documents/icenet/skynet/Deepfillv2/configs/train.yaml", help="Path to yaml config file")
 parser.add_argument('--mask', type=str, default="box", help="mask used for training (box, segmented)")
 
 
@@ -126,7 +126,7 @@ def training_loop(generator,        # generator network
         batch_ris_lat = batch_ris_lat.to(device) # (N,)
 
         # NB QUESTO COMANDO E' IMPORTANTE!
-        batch_real = torch.cat([batch_real[:,0:1,:,:], slope_lat, slope_lon], axis=1)
+        #batch_real = torch.cat([batch_real[:,0:1,:,:], slope_lat, slope_lon], axis=1)
 
         # prepare input for generator
         batch_incomplete = batch_real*(1.-mask) # (N,3,256,256)
@@ -141,7 +141,8 @@ def training_loop(generator,        # generator network
         batch_predicted = x2            # this is the output of the fine generator
 
         check_x2 = False
-        if n_iter%500 == 0: check_x2 = True
+        #print plot every 500
+        #if n_iter%500 == 0: check_x2 = True
         if check_x2:
             x_inspect = x.cpu().numpy()
             x2_inspect = x2.detach().cpu().numpy()
@@ -204,7 +205,7 @@ def training_loop(generator,        # generator network
                                                                     mask=mask[:, 0, :, :],
                                                                     c=config.power_law_c,
                                                                     gamma=config.power_law_gamma,
-                                                                    mins=batch_mins, maxs=batch_maxs, ris_lon=batch_ris_lon, ris_lat=batch_ris_lat)
+                                                                    mins=0.0, maxs=9000., ris_lon=batch_ris_lon, ris_lat=batch_ris_lat)
         if config.ae_loss:
             losses['g_loss'] += losses['ae_loss']
         if config.power_law_loss:
@@ -261,7 +262,7 @@ def training_loop(generator,        # generator network
         batch_ris_lat_val = batch_ris_lat_val.to(device)
 
         # NB QUESTO COMANDO E' IMPORTANTE!
-        batch_real_val = torch.cat([batch_real_val[:, 0:1, :, :], slope_lat_val, slope_lon_val], axis=1)
+        #batch_real_val = torch.cat([batch_real_val[:, 0:1, :, :], slope_lat_val, slope_lon_val], axis=1)
 
         batch_incomplete = batch_real_val * (1. - mask)  # (batch_size,3,256,256)
         #batch_incomplete = torch.cat([batch_real_val[:,0:1,:,:], slope_lat_val, slope_lon_val], axis=1) * (1. - mask) # (N,3,256,256)

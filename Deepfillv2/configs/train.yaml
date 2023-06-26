@@ -3,8 +3,8 @@ model_restore: '' # start new training
 #model_restore: 'checkpoints/celebahq/model_exp0/states.pth'
 
 # dataloading
-dataset_train_path: 'dataset/train/RGI_08_average_1000_size_256/' #'dataset/train/RGI_11_average_2000_size_256/'
-dataset_val_path: 'dataset/val/RGI_08_average_1000_size_256/' #'dataset/train/RGI_11_average_2000_size_256/'
+dataset_train_path: '/home/user/Documents/dataset_train/RGI_08_average_1000_size_256/' #'dataset/train/RGI_11_average_2000_size_256/'
+dataset_val_path: '/home/user/Documents/dataset_val/RGI_08_average_1000_size_256/' #'dataset/train/RGI_11_average_2000_size_256/'
 scan_subdirs: True # Are the images organized in subfolders ?
 random_crop: 0.5  # Probability of random cropping (followed by Resize)
 random_crop_hmin: 100 # Minimum height of cropped image
@@ -17,9 +17,9 @@ num_workers: 8 # qua se metto > 0 attivo multi processori.
 
 # training
 tb_logging: True # Enable Tensorboard logging?
-log_dir: 'Deepfillv2/callbacks/logs/' # Tensorboard logging folder
+log_dir: '/home/user/Documents/icenet/skynet/Deepfillv2/callbacks/logs/' # Tensorboard logging folder
 #checkpoint_dir: 'Deepfillv2/callbacks/checkpoints/segmented_model/' # Checkpoint folder
-checkpoint_dir: 'Deepfillv2/callbacks/checkpoints/box_model/' # Checkpoint folder
+checkpoint_dir: '/home/user/Documents/icenet/skynet/Deepfillv2/callbacks/checkpoints/box_model/' # Checkpoint folder
 
 use_cuda_if_available: True
 random_seed: False # options: False | <int>
@@ -35,6 +35,7 @@ d_beta2: 0.999 # beta2 for Adam optimizer (discriminator)
 max_iters: 100000 # number of batches to train the models (e.g. 100000)
 
 # logging
+tb_logging: False
 viz_max_out: 10 # number of images from batch 
 # if optional: set to False to deactivate
 print_iter: 100 # write losses to console and tensorboard
@@ -59,3 +60,11 @@ gan_loss_alpha: 1.
 
 ae_loss: True
 l1_loss_alpha: 1.
+
+
+# scaling loss parameters
+power_law_loss: False
+power_law_alpha: 1.e-12
+power_law_c: 0.03
+power_law_gamma: 1.37
+
