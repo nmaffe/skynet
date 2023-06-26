@@ -205,7 +205,7 @@ def training_loop(generator,        # generator network
                                                                     mask=mask[:, 0, :, :],
                                                                     c=config.power_law_c,
                                                                     gamma=config.power_law_gamma,
-                                                                    mins=0.0, maxs=9000., ris_lon=batch_ris_lon, ris_lat=batch_ris_lat)
+                                                                    mins=0.0, maxs=2500., ris_lon=batch_ris_lon, ris_lat=batch_ris_lat)
         if config.ae_loss:
             losses['g_loss'] += losses['ae_loss']
         if config.power_law_loss:
