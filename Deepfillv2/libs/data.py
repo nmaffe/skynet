@@ -214,7 +214,7 @@ class ImageDataset_box(Dataset):
         else:
             self.data = [entry.path for entry in os.scandir(folder_path) if is_image_file(entry.name)]
 
-        print(f'Training images: {len(self.data)}')
+        print(f'Number of images: {len(self.data)}')
 
         self.transforms = transforms
 
