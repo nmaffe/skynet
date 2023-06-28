@@ -3,20 +3,19 @@ model_restore: '' # start new training
 #model_restore: 'checkpoints/celebahq/model_exp0/states.pth'
 
 # dataloading
-dataset_train_path: 'dataset/train/RGI_08_average_1000_size_256/' #'dataset/train/RGI_11_average_2000_size_256/'
-dataset_val_path: 'dataset/val/RGI_08_average_1000_size_256/' #'dataset/train/RGI_11_average_2000_size_256/'
+dataset_train_path: 'dataset/train/RGI_13_average_2500_size_256/' #'dataset/train/RGI_11_average_2000_size_256/'
+dataset_val_path: 'dataset/val/RGI_13_average_2500_size_256/' #'dataset/train/RGI_11_average_2000_size_256/'
 scan_subdirs: True # Are the images organized in subfolders ?
 random_crop: 0.5  # Probability of random cropping (followed by Resize)
-random_crop_hmin: 100 # Minimum height of cropped image
-random_crop_hmax: 200  # Maximum height of cropped image
+random_crop_hmin: 100 # Minimum height of cropped image #100
+random_crop_hmax: 256  # Maximum height of cropped image #256
 random_horizontal_flip: 0.5 # Probability of flipping horizontally
 random_vertical_flip: 0.5 # Probability of flipping vertically
-batch_size: 16
+batch_size: 16 #16
 batch_size_val: 4
 num_workers: 8 # qua se metto > 0 attivo multi processori.
 
 # training
-tb_logging: True # Enable Tensorboard logging?
 log_dir: 'Deepfillv2/callbacks/logs/' # Tensorboard logging folder
 #checkpoint_dir: 'Deepfillv2/callbacks/checkpoints/segmented_model/' # Checkpoint folder
 checkpoint_dir: 'Deepfillv2/callbacks/checkpoints/box_model/' # Checkpoint folder
@@ -35,12 +34,13 @@ d_beta2: 0.999 # beta2 for Adam optimizer (discriminator)
 max_iters: 100000 # number of batches to train the models (e.g. 100000)
 
 # logging
+tb_logging: False # Enable Tensorboard logging?
 viz_max_out: 10 # number of images from batch 
 # if optional: set to False to deactivate
 print_iter: 100 # write losses to console and tensorboard
-save_imgs_to_tb_iter: 1000 #1000 #500 # (optional) add image grids to tensorboard
-save_imgs_to_dics_iter: 1000 #1000 #500 # (optional) save image grids in checkpoint folder
-save_checkpoint_iter: 999999 #1000 #500 # save model checkpoint file and overwrite last one
+save_imgs_to_tb_iter: 10000 #1000 #500 # (optional) add image grids to tensorboard
+save_imgs_to_dics_iter: 0 #1000 #500 # (optional) save image grids in checkpoint folder
+save_checkpoint_iter: 10000 #1000 #500 # save model checkpoint file and overwrite last one
 save_cp_backup_iter: 0 # (optional) save model file named states_{n_iter}.pth.
 
 img_shapes: [256, 256, 1]
@@ -54,8 +54,13 @@ vertical_margin: 0
 horizontal_margin: 0
 
 # loss
-gan_loss: 'hinge' # options: 'hinge', 'ls'
+gan_loss: 'hinge' # options: 'hinge', 'ls', 'wasserstein'
 gan_loss_alpha: 1.
 
 ae_loss: True
 l1_loss_alpha: 1.
+
+power_law_loss: False
+power_law_alpha: 1.e-11
+power_law_c: 0.03
+power_law_gamma: 1.37
