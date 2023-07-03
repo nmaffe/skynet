@@ -23,7 +23,8 @@ def hinge_loss_d(pos, neg):
     """
     hinge_pos = torch.mean(torch.relu(1-pos))
     hinge_neg = torch.mean(torch.relu(1+neg))
-    d_loss = 0.5*hinge_pos + 0.5*hinge_neg   
+    d_loss = 0.5*hinge_pos + 0.5*hinge_neg
+    #print(f'D(x): {torch.mean(pos):.5f}, D(G(z)): {torch.mean(neg):.5f}, dloss: {d_loss:.4f}')
     return d_loss
 
 def hinge_loss_g(neg):
@@ -32,15 +33,16 @@ def hinge_loss_g(neg):
     https://github.com/pfnet-research/sngan_projection/blob/c26cedf7384c9776bcbe5764cb5ca5376e762007/updater.py
     """
     g_loss = -torch.mean(neg)
+    #print(f'D(G(z)): {torch.mean(neg):.5f}')
     return g_loss
 
 
-def wesserstein_loss_d(pos, neg):
+def wasserstein_loss_d(pos, neg):
     """ maffe implementation """
     d_loss = 0.5 * torch.mean(neg) - 0.5 * torch.mean(pos)
     return d_loss
 
-def wesserstein_loss_g(neg):
+def wasserstein_loss_g(neg):
     """ maffe implementation """
     g_loss = -torch.mean(neg)
     return g_loss
@@ -49,9 +51,17 @@ def loss_l1(x_in, x_out, penalty=1.0):
     """ maffe implementation: asymmetrical l1 loss that penalizes more if out>in
     Note that if penalty=1.0 this is just the original l1 loss
     x_in: input tensor
-    x_out: output tensor. Both are torch tensors (batch_size, 3, 256, 256) """
-    diff = x_out - x_in
-    loss = torch.where(diff > 0, penalty*torch.abs(diff), 1.0*torch.abs(diff))
+    x_out: output tensor. Both are torch tensors (N, 3, 256, 256) """
+    diff = x_out - x_in # (N, 3, 256, 256)
+    loss = torch.where(diff > 0, penalty*torch.abs(diff), 1.0*torch.abs(diff)) # (N, 3, 256, 256)
+    return torch.mean(loss)
+
+def loss_l1_l2(x_in, x_out):
+    """
+    x_in: input tensor
+    x_out: output tensor. Both are torch tensors (N, 3, 256, 256) """
+    diff = x_out - x_in # (N, 3, 256, 256)
+    loss = torch.where(diff > 0, torch.pow(diff, 2), torch.abs(diff)) # (N, 3, 256, 256)
     return torch.mean(loss)
 
 def loss_power_law(dem, bed, mask, c, gamma, mins, maxs, ris_lon, ris_lat):
