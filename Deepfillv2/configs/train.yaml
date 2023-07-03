@@ -3,8 +3,8 @@ model_restore: '' # start new training
 #model_restore: 'checkpoints/celebahq/model_exp0/states.pth'
 
 # dataloading
-dataset_train_path: 'dataset/train/RGI_13_average_2500_size_256/' #'dataset/train/RGI_11_average_2000_size_256/'
-dataset_val_path: 'dataset/val/RGI_13_average_2500_size_256/' #'dataset/train/RGI_11_average_2000_size_256/'
+dataset_train_path: ['dataset/train/RGI_13_average_2500_size_256/',] # 'dataset/train/RGI_11_average_2000_size_256/', #RGI_13_average_2500_size_256
+dataset_val_path: ['dataset/val/RGI_13_average_2500_size_256/',] #'dataset/val/RGI_11_average_2000_size_256/', #RGI_13_average_2500_size_256
 scan_subdirs: True # Are the images organized in subfolders ?
 random_crop: 0.5  # Probability of random cropping (followed by Resize)
 random_crop_hmin: 100 # Minimum height of cropped image #100
@@ -38,7 +38,7 @@ tb_logging: False # Enable Tensorboard logging?
 viz_max_out: 10 # number of images from batch 
 # if optional: set to False to deactivate
 print_iter: 100 # write losses to console and tensorboard
-save_imgs_to_tb_iter: 10000 #1000 #500 # (optional) add image grids to tensorboard
+save_imgs_to_tb_iter: 1000 #10000 #1000 #500 # (optional) add image grids to tensorboard
 save_imgs_to_dics_iter: 0 #1000 #500 # (optional) save image grids in checkpoint folder
 save_checkpoint_iter: 10000 #1000 #500 # save model checkpoint file and overwrite last one
 save_cp_backup_iter: 0 # (optional) save model file named states_{n_iter}.pth.
@@ -57,10 +57,10 @@ horizontal_margin: 0
 gan_loss: 'hinge' # options: 'hinge', 'ls', 'wasserstein'
 gan_loss_alpha: 1.
 
-ae_loss: True
-l1_loss_alpha: 1.
+ae_loss: 'l1l2' # True # options: 'l1', 'l1l2'
+ae_loss_alpha: 1.
 
 power_law_loss: False
-power_law_alpha: 1.e-11
+power_law_alpha: 1.e-10
 power_law_c: 0.03
 power_law_gamma: 1.37
