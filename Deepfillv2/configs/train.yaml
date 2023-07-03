@@ -3,7 +3,7 @@ model_restore: '' # start new training
 #model_restore: 'checkpoints/celebahq/model_exp0/states.pth'
 
 # dataloading
-dataset_train_path: ['dataset/train/RGI_13_average_2500_size_256/',] # 'dataset/train/RGI_11_average_2000_size_256/', #RGI_13_average_2500_size_256
+dataset_train_path: ['dataset/train/RGI_13_average_2500_size_256/',] #'dataset/train/RGI_11_average_2000_size_256/', #RGI_13_average_2500_size_256
 dataset_val_path: ['dataset/val/RGI_13_average_2500_size_256/',] #'dataset/val/RGI_11_average_2000_size_256/', #RGI_13_average_2500_size_256
 scan_subdirs: True # Are the images organized in subfolders ?
 random_crop: 0.5  # Probability of random cropping (followed by Resize)
