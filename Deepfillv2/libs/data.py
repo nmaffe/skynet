@@ -209,22 +209,34 @@ class ImageDataset_box(Dataset):
         super().__init__()
         self.img_shape = img_shape  # [256, 256]
 
-        if scan_subdirs:
-            self.data = self.make_dataset_from_subdirs(folder_path)
-        else:
-            self.data = [entry.path for entry in os.scandir(folder_path) if is_image_file(entry.name)]
+        self.data_all_folders = []
 
-        print(f'Number of images: {len(self.data)}')
+        if scan_subdirs:
+            for ifolder in folder_path:
+                self.data = self.make_dataset_from_subdirs(ifolder) #folder_path
+                self.data_all_folders.extend(self.data)
+
+        else:
+            for ifolder in folder_path:
+            #self.data = [entry.path for entry in os.scandir(folder_path) if is_image_file(entry.name)]
+                self.data = [entry.path for entry in os.scandir(ifolder) if is_image_file(entry.name)]
+                print(f'Folder: {ifolder}, No. images: {len(self.data)}')
+                self.data_all_folders.extend(self.data)
+
+        print(f'Total number of images: {len(self.data_all_folders)}')
 
         self.transforms = transforms
 
     def make_dataset_from_subdirs(self, folder_path):
         samples = []
         for root, _, fnames in os.walk(folder_path, followlinks=True):
-            print(root)
             for fname in fnames:
                 if is_image_file(fname):
                     samples.append(os.path.join(root, fname))
+            if len(samples)>0:
+                print(f'Folder: {root}, No. images: {len(samples)}')
+            else:
+                print(f'Folder: {root}')
         return samples
 
     def __len__(self):
