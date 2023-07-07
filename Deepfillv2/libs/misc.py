@@ -43,9 +43,7 @@ def pt_to_image_denorm(img, min, max):
         max = max.detach().cpu()
         max = max[:, None, None, None]
 
-    img = img.mul_(0.5).add_(0.5)
-    img = img.mul_(max-min).add_(min)
-    return img
+    return img.mul_(0.5).add_(0.5).mul_(max-min).add_(min)
 
 def show_grid(imgs):
     """# maffe add, from:
