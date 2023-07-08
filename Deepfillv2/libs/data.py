@@ -245,8 +245,8 @@ class ImageDataset_box(Dataset):
         # normalize to [0, 1] and scale to [-1, 1]
         #img_max = torch.max(img)  # normalize to [0, 1]
         #img_min = torch.min(img)
-        img_max = 9000.  # normalize to [0, 1]
-        img_min = 0.
+        img_max = 4500.  # normalize to [0, 1]
+        img_min = 1000.
         img = (img - img_min) / (img_max - img_min) # note that this can cause nans
         img.mul_(2).sub_(1) # (1, 256, 256)
 

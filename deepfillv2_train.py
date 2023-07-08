@@ -50,7 +50,7 @@ def training_loop(generator,        # generator network
                   'ae_loss': [],
                   'ae_loss1': [],
                   'ae_loss2': [],
-                  'scaling_loss': [],
+          #        'scaling_loss': [],
                   }
     losses_log_val = {'d_loss': [],
                   'g_loss': [],
@@ -58,11 +58,13 @@ def training_loop(generator,        # generator network
                   'ae_loss': [],
                   'ae_loss1': [],
                   'ae_loss2': [],
-                  'scaling_loss': [],
+         #         'scaling_loss': [],
                   }
 
-    metrics_log = {'ssim': [], 'psnr': []}
-    metrics_log_val = {'ssim': [], 'psnr': []}
+#    metrics_log = {'ssim': [], 'psnr': []}
+#    metrics_log_val = {'ssim': [], 'psnr': []}
+    metrics_log = {'d_real': [], 'd_fake': []}
+    metrics_log_val = {'d_real': [], 'd_fake': []}
 
     # training loop
     init_n_iter = last_n_iter + 1
@@ -176,6 +178,8 @@ def training_loop(generator,        # generator network
         d_real_gen = discriminator(batch_real_filled) # (2*N, 4096)
         # we extract the separate outputs for the real/generated images
         d_real, d_gen = torch.split(d_real_gen, config.batch_size) # (N, 4096), # (N, 4096)
+        metrics['d_real'] = torch.mean(d_real)
+        metrics['d_fake'] = torch.mean(d_gen)
 
         d_loss = gan_loss_d(d_real, d_gen)
         losses['d_loss'] = d_loss
@@ -200,16 +204,16 @@ def training_loop(generator,        # generator network
         losses['g_loss'] = g_loss
         losses['g_loss'] = config.gan_loss_alpha * losses['g_loss']
         losses['g_loss_adv'] = g_loss
-        losses['scaling_loss'] = config.power_law_alpha * loss_power_law(dem=batch_real[:, 0, :, :],
-                                                                    bed=x2[:, 0, :, :],
-                                                                    mask=mask[:, 0, :, :],
-                                                                    c=config.power_law_c,
-                                                                    gamma=config.power_law_gamma,
-                                                                    mins=0.0, maxs=2500., ris_lon=batch_ris_lon, ris_lat=batch_ris_lat)
+#        losses['scaling_loss'] = config.power_law_alpha * loss_power_law(dem=batch_real[:, 0, :, :],
+                                                                   # bed=x2[:, 0, :, :],
+                                                                   # mask=mask[:, 0, :, :],
+                                                                   # c=config.power_law_c,
+                                                                   # gamma=config.power_law_gamma,
+                                                                   # mins=0.0, maxs=9000., ris_lon=batch_ris_lon, ris_lat=batch_ris_lat)
         if config.ae_loss:
             losses['g_loss'] += losses['ae_loss']
-        if config.power_law_loss:
-            losses['g_loss'] += losses['scaling_loss']
+ #       if config.power_law_loss:
+ #           losses['g_loss'] += losses['scaling_loss']
 
         # update G parameters
         g_optimizer.zero_grad()
@@ -217,10 +221,10 @@ def training_loop(generator,        # generator network
         g_optimizer.step()
 
         # calculate similarity metrics
-        ssim = SSIM(batch_real, batch_predicted).detach()
-        psnr = PSNR(batch_real, batch_predicted).detach()
-        metrics['ssim'] = ssim
-        metrics['psnr'] = psnr
+#        ssim = SSIM(batch_real, batch_predicted).detach()
+#        psnr = PSNR(batch_real, batch_predicted).detach()
+#        metrics['ssim'] = ssim
+#        metrics['psnr'] = psnr
 
         # LOGGING TRAIN LOSSES AND METRICS
         for k in losses_log.keys():
@@ -288,6 +292,9 @@ def training_loop(generator,        # generator network
         d_real_gen = discriminator(batch_real_filled)  # (32, 4096)
         # we extract the separate outputs for the real/generated images
         d_real, d_gen = torch.split(d_real_gen, config.batch_size_val)  # (16, 4096), # (16, 4096)
+        metrics_val['d_real'] = torch.mean(d_real)
+        metrics_val['d_fake'] = torch.mean(d_gen)
+        
 
         d_loss = gan_loss_d(d_real, d_gen)
         losses_val['d_loss'] = d_loss
@@ -308,23 +315,23 @@ def training_loop(generator,        # generator network
         losses_val['g_loss'] = g_loss
         losses_val['g_loss'] = config.gan_loss_alpha * losses_val['g_loss']
         losses_val['g_loss_adv'] = g_loss
-        losses_val['scaling_loss'] = config.power_law_alpha * loss_power_law(dem=batch_real_val[:, 0, :, :],
-                                                                            bed=x2_val[:, 0, :, :],
-                                                                            mask=mask[:, 0, :, :],
-                                                                            c=config.power_law_c,
-                                                                            gamma=config.power_law_gamma,
-                                                                            mins=batch_mins_val, maxs=batch_maxs_val, ris_lon=batch_ris_lon_val,
-                                                                            ris_lat=batch_ris_lat_val)
+     #   losses_val['scaling_loss'] = config.power_law_alpha * loss_power_law(dem=batch_real_val[:, 0, :, :],
+     #                                                                       bed=x2_val[:, 0, :, :],
+     #                                                                       mask=mask[:, 0, :, :],
+     #                                                                       c=config.power_law_c,
+     #                                                                       gamma=config.power_law_gamma,
+     #                                                                       mins=batch_mins_val, maxs=batch_maxs_val, ris_lon=batch_ris_lon_val,
+     #                                                                       ris_lat=batch_ris_lat_val)
         if config.ae_loss:
             losses_val['g_loss'] += losses_val['ae_loss']
-        if config.power_law_loss:
-            losses_val['g_loss'] += losses_val['scaling_loss']
+     #   if config.power_law_loss:
+     #       losses_val['g_loss'] += losses_val['scaling_loss']
 
         # calculate similarity metrics
-        ssim = SSIM(batch_real_val, batch_predicted).detach()
-        psnr = PSNR(batch_real_val, batch_predicted).detach()
-        metrics_val['ssim'] = ssim
-        metrics_val['psnr'] = psnr
+#        ssim = SSIM(batch_real_val, batch_predicted).detach()
+#        psnr = PSNR(batch_real_val, batch_predicted).detach()
+#        metrics_val['ssim'] = ssim
+#        metrics_val['psnr'] = psnr
 
         # LOGGING VAL LOSSES AND METRICS
         for k in losses_log_val.keys():
@@ -468,7 +475,7 @@ def main():
     # optimizers
     g_optimizer = torch.optim.Adam(generator.parameters(), lr=config.g_lr, betas=(config.g_beta1, config.g_beta2))
     d_optimizer = torch.optim.Adam(discriminator.parameters(), lr=config.d_lr, betas=(config.d_beta1, config.d_beta2))
-
+ #   g_optimizer = torch.optim.SGD(generator.parameters(), lr=config.d_lr,momentum=0.9)
     # losses
     if config.gan_loss == 'hinge':
         gan_loss_d, gan_loss_g = gan_losses.hinge_loss_d, gan_losses.hinge_loss_g
