@@ -2,26 +2,26 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.utils.parametrizations import spectral_norm
+#from torch.nn.utils.parametrizations import spectral_norm
 
 #----------------------------------------------------------------------------
 
 def _init_conv_layer(conv, activation, mode='fan_out'):
     if isinstance(activation, nn.LeakyReLU):
-        torch.nn.init.kaiming_uniform_(conv.weight, 
+        torch.nn.init.kaiming_uniform_(conv.weight,
                                        a=activation.negative_slope,
-                                       nonlinearity='leaky_relu', 
+                                       nonlinearity='leaky_relu',
                                        mode=mode)
     elif isinstance(activation, (nn.ReLU, nn.ELU)):
         torch.nn.init.kaiming_uniform_(conv.weight,
-                                       nonlinearity='relu', 
+                                       nonlinearity='relu',
                                        mode=mode)
     else:
         pass
     if conv.bias != None:
         torch.nn.init.zeros_(conv.bias)
 
-#----------------------------------------------------------------------------
+# qui manca output_to_image
 
 #################################
 ########### GENERATOR ###########
@@ -38,29 +38,39 @@ class GConv(nn.Module):
                  padding='auto',
                  rate=1,                 
                  activation=nn.ELU(),
-                 bias=True
-                 ):
+                 bias=True, gated=True):
 
         super().__init__()
 
         padding = rate*(ksize-1)//2 if padding == 'auto' else padding
         self.activation = activation
         self.cnum_out = cnum_out
-        num_conv_out = cnum_out if self.cnum_out == 3 or self.activation is None else 2*cnum_out
-        self.conv = nn.Conv2d(cnum_in, num_conv_out, kernel_size=ksize, stride=stride, padding=padding, dilation=rate, bias=bias)
+        #num_conv_out = cnum_out if self.cnum_out == 3 or self.activation is None else 2*cnum_out
+        num_conv_out = 2*cnum_out if gated else cnum_out
+        self.conv = nn.Conv2d(cnum_in,
+                              num_conv_out,
+                              kernel_size=ksize,
+                              stride=stride,
+                              padding=padding,
+                              dilation=rate,
+                              bias=bias)
 
         _init_conv_layer(self.conv, activation=self.activation)
 
-        self.ksize = ksize # cosa serve definire questa instance attribute se poi non la uso ?
-        self.stride = stride # cosa serve definire questa instance attribute se poi non la uso ?
-        self.rate = rate # cosa serve definire questa instance attribute se poi non la uso ?
-        self.padding = padding # cosa serve definire questa instance attribute se poi non la uso ?
+        self.ksize = ksize
+        self.stride = stride
+        self.rate = rate
+        self.padding = padding
+        self.gated = gated
+
 
     def forward(self, x):
+        if not self.gated: return self.conv(x)
+
         x = self.conv(x)
-        if self.cnum_out == 3 or self.activation is None:
-            return x
-        x, y = torch.split(x, self.cnum_out, dim=1) #dim=1 si riferisce alle features per un tensore (N,C,H,W). Questo comando di fatto dimezza (nella maggior parte dei casi) x.
+        #if self.cnum_out == 3 or self.activation is None:
+        #    return x  not in nippon
+        x, y = torch.split(x, self.cnum_out, dim=1)
         x = self.activation(x)
         y = torch.sigmoid(y)
         x = x * y
@@ -69,25 +79,30 @@ class GConv(nn.Module):
 #----------------------------------------------------------------------------
 
 class GDeConv(nn.Module):
-    """Upsampling followed by convolution"""
+    """Upsampling (x2) followed by convolution"""
+
     def __init__(self, cnum_in, cnum_out, padding=1):
         super().__init__()
-        self.conv = GConv(cnum_in, cnum_out, 3, 1, padding=padding)
+
+        self.conv = GConv(cnum_in, cnum_out, ksize=3, stride=1,
+                          padding=padding)
 
     def forward(self, x):
-        # F.interpolate doubles the size of minibatches of images. if x=(N,C,H,W) this command will yield x=(N,C,2H,2W)
-        x = F.interpolate(x, scale_factor=2, mode='nearest', recompute_scale_factor=False)
+        x = F.interpolate(x, scale_factor=2, mode='nearest',
+                          recompute_scale_factor=False)
         x = self.conv(x)
         return x
 
 #----------------------------------------------------------------------------
 
 class GDownsamplingBlock(nn.Module):
-    def __init__(self, cnum_in, cnum_out, cnum_hidden = None):
+    """Strided convolution (s=2) followed by convolution (s=1)"""
+
+    def __init__(self, cnum_in, cnum_out, cnum_hidden=None):
         super().__init__()
         cnum_hidden = cnum_out if cnum_hidden == None else cnum_hidden
-        self.conv1_downsample = GConv(cnum_in, cnum_hidden, 3, 2)
-        self.conv2 = GConv(cnum_hidden, cnum_out, 3, 1)
+        self.conv1_downsample = GConv(cnum_in, cnum_hidden, ksize=3, stride=2)
+        self.conv2 = GConv(cnum_hidden, cnum_out, ksize=3, stride=1)
 
     def forward(self, x):
         x = self.conv1_downsample(x)
@@ -97,11 +112,13 @@ class GDownsamplingBlock(nn.Module):
 #----------------------------------------------------------------------------
 
 class GUpsamplingBlock(nn.Module):
+    """Upsampling (x2) followed by two convolutions"""
+
     def __init__(self, cnum_in, cnum_out, cnum_hidden = None):
         super().__init__()
         cnum_hidden = cnum_out if cnum_hidden == None else cnum_hidden
         self.conv1_upsample = GDeConv(cnum_in, cnum_hidden)
-        self.conv2 = GConv(cnum_hidden, cnum_out, 3, 1)
+        self.conv2 = GConv(cnum_hidden, cnum_out,ksize= 3,stride= 1)
 
     def forward(self, x):
         x = self.conv1_upsample(x)
@@ -111,29 +128,34 @@ class GUpsamplingBlock(nn.Module):
 #----------------------------------------------------------------------------
 
 class CoarseGenerator(nn.Module):
-    def __init__(self, cnum_in, cnum):
+    """Coarse Network (Stage I)"""
+
+    def __init__(self, cnum_in, cnum_out, cnum):
         super().__init__()
-        self.conv1 = GConv(cnum_in, cnum//2, 5, 1, padding=2)
+        self.conv1 = GConv(cnum_in, cnum//2, ksize=5, stride=1, padding=2)
 
         # downsampling
         self.down_block1 = GDownsamplingBlock(cnum//2, cnum)  
         self.down_block2 = GDownsamplingBlock(cnum, 2*cnum)
 
         # bottleneck
-        self.conv_bn1 = GConv(2*cnum, 2*cnum, 3, 1)
-        self.conv_bn2 = GConv(2*cnum, 2*cnum, 3, rate=2, padding=2)
-        self.conv_bn3 = GConv(2*cnum, 2*cnum, 3, rate=4, padding=4)
-        self.conv_bn4 = GConv(2*cnum, 2*cnum, 3, rate=8, padding=8)
-        self.conv_bn5 = GConv(2*cnum, 2*cnum, 3, rate=16, padding=16)
-        self.conv_bn6 = GConv(2*cnum, 2*cnum, 3, 1)
-        self.conv_bn7 = GConv(2*cnum, 2*cnum, 3, 1)
+        self.conv_bn1 = GConv(2*cnum, 2*cnum, ksize=3, stride=1)
+        self.conv_bn2 = GConv(2*cnum, 2*cnum, ksize=3, rate=2, padding=2)
+        self.conv_bn3 = GConv(2*cnum, 2*cnum, ksize=3, rate=4, padding=4)
+        self.conv_bn4 = GConv(2*cnum, 2*cnum, ksize=3, rate=8, padding=8)
+        self.conv_bn5 = GConv(2*cnum, 2*cnum, ksize=3, rate=16, padding=16)
+        self.conv_bn6 = GConv(2*cnum, 2*cnum, ksize=3, stride=1)
+        self.conv_bn7 = GConv(2*cnum, 2*cnum, ksize=3, stride=1)
+
 
         # upsampling
         self.up_block1 = GUpsamplingBlock(2*cnum, cnum)   
         self.up_block2 = GUpsamplingBlock(cnum, cnum//4, cnum_hidden=cnum//2)
 
         # to RGB
-        self.conv_to_rgb = GConv(cnum//4, 3, 3, 1, activation=None)
+        #fai occhio a come deve essere modificata conv_to_rgb su nippon
+        self.conv_to_rgb = GConv(cnum//4, cnum_out, ksize=3, stride=1, 
+                                 activation=None, gated=False) #nippon 1ch
         self.tanh = nn.Tanh()
 
     def forward(self, x):
@@ -164,25 +186,29 @@ class CoarseGenerator(nn.Module):
 #----------------------------------------------------------------------------
 
 class FineGenerator(nn.Module):
-    def __init__(self, cnum, return_flow=False):
+    """Two Branch Refinement Network with Contextual Attention (Stage II)"""
+#nippon
+    def __init__(self, cnum_in, cnum_out, cnum, return_flow=False):
         super().__init__()
      
         ### CONV BRANCH (B1) ### 
-        self.conv_conv1 = GConv(3, cnum//2, 5, 1, padding=2)
+        self.conv_conv1 = GConv(cnum_in, cnum//2, ksize=5, stride=1, padding=2)
 
         # downsampling
-        self.conv_down_block1 = GDownsamplingBlock(cnum//2, cnum, cnum_hidden=cnum//2)  
-        self.conv_down_block2 = GDownsamplingBlock(cnum, 2*cnum, cnum_hidden=cnum)
+        self.conv_down_block1 = GDownsamplingBlock(
+            cnum//2, cnum, cnum_hidden=cnum//2)  
+        self.conv_down_block2 = GDownsamplingBlock(
+            cnum, 2*cnum, cnum_hidden=cnum)
 
         # bottleneck
-        self.conv_conv_bn1 = GConv(2*cnum, 2*cnum, 3, 1)
-        self.conv_conv_bn2 = GConv(2*cnum, 2*cnum, 3, rate=2, padding=2)
-        self.conv_conv_bn3 = GConv(2*cnum, 2*cnum, 3, rate=4, padding=4)
-        self.conv_conv_bn4 = GConv(2*cnum, 2*cnum, 3, rate=8, padding=8)
-        self.conv_conv_bn5 = GConv(2*cnum, 2*cnum, 3, rate=16, padding=16)
+        self.conv_conv_bn1 = GConv(2*cnum, 2*cnum, ksize=3, stride=1)
+        self.conv_conv_bn2 = GConv(2*cnum, 2*cnum, ksize=3, rate=2, padding=2)
+        self.conv_conv_bn3 = GConv(2*cnum, 2*cnum, ksize=3, rate=4, padding=4)
+        self.conv_conv_bn4 = GConv(2*cnum, 2*cnum, ksize=3, rate=8, padding=8)
+        self.conv_conv_bn5 = GConv(2*cnum, 2*cnum, ksize=3, rate=16, padding=16)
 
         ### ATTENTION BRANCH (B2) ###
-        self.ca_conv1 = GConv(3, cnum//2, 5, 1, padding=2)
+        self.ca_conv1 = GConv(cnum_in, cnum//2, 5, 1, padding=2)
 
         # downsampling
         self.ca_down_block1 = GDownsamplingBlock(cnum//2, cnum, cnum_hidden=cnum//2)  
@@ -199,19 +225,20 @@ class FineGenerator(nn.Module):
                                                         device_ids=None,
                                                         return_flow=return_flow,
                                                         n_down=2)
-        self.ca_conv_bn4 = GConv(2*cnum, 2*cnum, 3, 1)
-        self.ca_conv_bn5 = GConv(2*cnum, 2*cnum, 3, 1)
+        self.ca_conv_bn4 = GConv(2*cnum, 2*cnum, ksize=3, stride=1)
+        self.ca_conv_bn5 = GConv(2*cnum, 2*cnum, ksize=3, stride=1)
 
         ### UNITED BRANCHES ###
-        self.conv_bn6 = GConv(4*cnum, 2*cnum, 3, 1)
-        self.conv_bn7 = GConv(2*cnum, 2*cnum, 3, 1)
+        self.conv_bn6 = GConv(4*cnum, 2*cnum, ksize=3, stride=1)
+        self.conv_bn7 = GConv(2*cnum, 2*cnum, ksize=3, stride=1)
 
         # upsampling
         self.up_block1 = GUpsamplingBlock(2*cnum, cnum)   
         self.up_block2 = GUpsamplingBlock(cnum, cnum//4, cnum_hidden=cnum//2)
 
         # to RGB
-        self.conv_to_rgb = GConv(cnum//4, 3, 3, 1, activation=None)
+        self.conv_to_rgb = GConv(cnum//4, cnum_out, ksize=3, stride=1, 
+                                 activation=None, gated=False)
         self.tanh = nn.Tanh()
 
     def forward(self, x, mask):        
@@ -264,26 +291,98 @@ class FineGenerator(nn.Module):
 #----------------------------------------------------------------------------
 
 class Generator(nn.Module):
-    def __init__(self, cnum_in, cnum, return_flow=False):
+    """Inpainting network consisting of a coarse and a refinement network. 
+    Described in the paper 
+    `Free-Form Image Inpainting with Gated Convolution, Yu et. al`.
+    """
+    def __init__(self, cnum_in=5, cnum_out=3, cnum=48, 
+                 return_flow=False, checkpoint=None):
         super().__init__()
-        self.stage1 = CoarseGenerator(cnum_in, cnum)
-        self.stage2 = FineGenerator(cnum, return_flow) 
+
+        self.stage1 = CoarseGenerator(cnum_in, cnum_out, cnum)
+        self.stage2 = FineGenerator(cnum_out, cnum_out, cnum, return_flow)
         self.return_flow = return_flow
+        self.cnum_in = cnum_in
+
+        if checkpoint is not None:
+            generator_state_dict = torch.load(checkpoint)['G']
+            self.load_state_dict(generator_state_dict, strict=True)
+
+        self.eval()
 
     def forward(self, x, mask):
-        xin = x                                         # xin: [batch_size, 5, 256, 256]. The last channel is the mask.
+        """
+        Args:
+            x (Tensor): input of shape [batch, cnum_in, H, W]
+            mask (Tensor): mask of shape [batch, 1, H, W]
+        """
+        xin = x         
         # get coarse result
-        x_stage1 = self.stage1(x)                       # x_stage1: [16, 3, 256, 256]
+        x_stage1 = self.stage1(x)    
         # inpaint input with coarse result
-        x = x_stage1*mask + xin[:, 0:3, :, :]*(1.-mask) # x: [16, 3, 256, 256]
+        x = x_stage1*mask + xin[:, :self.cnum_in-2]*(1.-mask)
         # get refined result
-        x_stage2, offset_flow = self.stage2(x, mask)    # x_stage2: [16, 3, 256, 256]
-        # note that the inpainting of the input with the fine result will be done in the main training_loop.
+        x_stage2, offset_flow = self.stage2(x, mask) 
 
-        if self.return_flow: # che cazzo e' return_flow del Fine Generator ?
+        if self.return_flow:
             return x_stage1, x_stage2, offset_flow
             
         return x_stage1, x_stage2
+    
+    #occhio che questa parte non c'era prima, a cosa serve?
+    @torch.inference_mode()
+    def infer(self, image, mask,
+              return_vals=['inpainted', 'stage1']):
+        """
+        Args:
+            image (Tensor): input image of shape [cnum_out, H, W]
+            mask (Tensor): mask of shape [*, H, W]
+            return_vals (str | List[str]): options: inpainted, stage1, stage2, flow
+        """
+
+        if isinstance(return_vals, str):
+            return_vals = [return_vals]
+
+        _, h, w = image.shape
+        grid = 8
+
+        image = image[None, :self.cnum_in, :h//grid*grid, :w//grid*grid]
+        mask = mask[None, :3, :h//grid*grid, :w//grid*grid].sum(1, keepdim=True)
+
+        image = (image*2 - 1.)  # map image values to [-1, 1] range
+        # 1.: masked 0.: unmasked
+        mask = (mask > 0.).to(dtype=torch.float32)
+
+        image_masked = image * (1.-mask)  # mask image
+
+        ones_x = torch.ones_like(image_masked)[:, :1]  # sketch channel
+        x = torch.cat([image_masked, ones_x, ones_x*mask],
+                      dim=1)  # concatenate channels
+
+        if self.return_flow:
+            x_stage1, x_stage2, offset_flow = self.forward(x, mask)
+        else:
+            x_stage1, x_stage2 = self.forward(x, mask)
+
+        image_compl = image * (1.-mask) + x_stage2 * mask
+
+        output = []
+        for return_val in return_vals:
+            if return_val.lower() == 'stage1':
+                output.append(output_to_image(x_stage1))
+            elif return_val.lower() == 'stage2':
+                output.append(output_to_image(x_stage2))
+            elif return_val.lower() == 'inpainted':
+                output.append(output_to_image(image_compl))
+            elif return_val.lower() == 'flow' and self.return_flow:
+                output.append(offset_flow)
+            else:
+                print(f'Invalid return value: {return_val}')
+
+        if len(output) == 1:
+            return output[0]
+
+        return output
 
 #----------------------------------------------------------------------------
 
@@ -315,7 +414,8 @@ class ContextualAttention(nn.Module):
                  fuse=False,
                  return_flow=False,
                  device_ids=None):
-        super(ContextualAttention, self).__init__()
+        super().__init__()
+
         self.ksize = ksize
         self.stride = stride
         self.rate = rate
@@ -325,6 +425,9 @@ class ContextualAttention(nn.Module):
         self.device_ids = device_ids
         self.n_down = n_down
         self.return_flow = return_flow
+        #new nippon
+        self.register_buffer('fuse_weight', torch.eye(
+            fuse_k).view(1, 1, fuse_k, fuse_k))
 
     def forward(self, f, b, mask=None):
         """
@@ -344,6 +447,7 @@ class ContextualAttention(nn.Module):
                                          stride=self.rate*self.stride,
                                          rate=1, padding='auto')  # [N, C*k*k, L]
         # raw_shape: [N, C, k, k, L]
+        L = raw_w.size(2) #new nippon
         raw_w = raw_w.view(raw_int_bs[0], raw_int_bs[1], kernel, kernel, -1)
         raw_w = raw_w.permute(0, 4, 1, 2, 3)    # raw_shape: [N, L, C, k, k]
         raw_w_groups = torch.split(raw_w, 1, dim=0)
@@ -362,7 +466,7 @@ class ContextualAttention(nn.Module):
                                      stride=self.stride,
                                      rate=1, padding='auto')
         # w shape: [N, C, k, k, L]
-        w = w.view(int_bs[0], int_bs[1], self.ksize, self.ksize, -1)
+        w = w.view(int_bs[0], int_bs[1], self.ksize, self.ksize, L) #-1 in place of L
         w = w.permute(0, 4, 1, 2, 3)    # w shape: [N, L, C, k, k]
         w_groups = torch.split(w, 1, dim=0)
 
@@ -378,7 +482,7 @@ class ContextualAttention(nn.Module):
                                         stride=self.stride,
                                         rate=1, padding='auto')
         # m shape: [N, C, k, k, L]
-        m = m.view(int_ms[0], int_ms[1], self.ksize, self.ksize, -1)
+        m = m.view(int_ms[0], int_ms[1], self.ksize, self.ksize, L)#nippon L in place of -1
         m = m.permute(0, 4, 1, 2, 3)    # m shape: [N, L, C, k, k]
         m = m[0]    # m shape: [L, C, k, k]
         # mm shape: [L, 1, 1, 1]
@@ -388,9 +492,9 @@ class ContextualAttention(nn.Module):
 
         y = []
         offsets = []
-        k = self.fuse_k
+#        k = self.fuse_k perchè non in nippon
         scale = self.softmax_scale    # to fit the PyTorch tensor image value range
-        fuse_weight = torch.eye(k, device=device).view(1, 1, k, k)  # 1*1*k*k
+#        fuse_weight = torch.eye(k, device=device).view(1, 1, k, k)  # 1*1*k*k perchè non in nippon
 
         for xi, wi, raw_wi in zip(f_groups, w_groups, raw_w_groups):
             '''
@@ -402,7 +506,7 @@ class ContextualAttention(nn.Module):
             '''
             # conv for compare
             wi = wi[0]  # [L, C, k, k]   
-            max_wi = torch.sqrt(torch.sum(torch.pow(wi, 2), dim=[1, 2, 3], keepdim=True)).clamp_min(1e-4)
+            max_wi = torch.sqrt(torch.sum(torch.square(wi), dim=[1, 2, 3], keepdim=True)).clamp_min(1e-4)
             wi_normed = wi / max_wi
             # xi shape: [1, C, H, W], yi shape: [1, L, H, W]
             yi = F.conv2d(xi, wi_normed, stride=1, padding=(self.ksize-1)//2)   # [1, L, H, W]
@@ -412,14 +516,19 @@ class ContextualAttention(nn.Module):
                 # (B=1, I=1, H=32*32, W=32*32)
                 yi = yi.view(1, 1, int_bs[2]*int_bs[3], int_fs[2]*int_fs[3])
                 # (B=1, C=1, H=32*32, W=32*32)
-                yi = F.conv2d(yi, fuse_weight, stride=1, padding=(k-1)//2)
+                yi = F.conv2d(yi, self.fuse_weight, stride=1,
+                              padding=(self.fuse_k-1)//2)
                 # (B=1, 32, 32, 32, 32)
-                yi = yi.contiguous().view(1, int_bs[2], int_bs[3], int_fs[2], int_fs[3])
+                yi = yi.contiguous().view(
+                    1, int_bs[2], int_bs[3], int_fs[2], int_fs[3])
                 yi = yi.permute(0, 2, 1, 4, 3)
-                
-                yi = yi.contiguous().view(1, 1, int_bs[2]*int_bs[3], int_fs[2]*int_fs[3])
-                yi = F.conv2d(yi, fuse_weight, stride=1, padding=(k-1)//2)
-                yi = yi.contiguous().view(1, int_bs[3], int_bs[2], int_fs[3], int_fs[2])
+
+                yi = yi.contiguous().view(
+                    1, 1, int_bs[2]*int_bs[3], int_fs[2]*int_fs[3])
+                yi = F.conv2d(yi, self.fuse_weight, stride=1,
+                              padding=(self.fuse_k-1)//2)
+                yi = yi.contiguous().view(
+                    1, int_bs[3], int_bs[2], int_fs[3], int_fs[2])
                 yi = yi.permute(0, 2, 1, 4, 3).contiguous()
 
             # (B=1, C=32*32, H=32, W=32)
@@ -442,7 +551,8 @@ class ContextualAttention(nn.Module):
 
             # deconv for patch pasting
             wi_center = raw_wi[0]
-            yi = F.conv_transpose2d(yi, wi_center, stride=self.rate, padding=1) / 4.  # (B=1, C=128, H=64, W=64)
+            yi = F.conv_transpose2d(
+                yi, wi_center, stride=self.rate, padding=1) / 4.  # (B=1, C=128, H=64, W=64)
             y.append(yi)
 
         y = torch.cat(y, dim=0)  # back to the mini-batch
@@ -455,17 +565,21 @@ class ContextualAttention(nn.Module):
         offsets = offsets.view(int_fs[0], 2, *int_fs[2:])
 
         # case1: visualize optical flow: minus current position
-        h_add = torch.arange(int_fs[2], device=device).view([1, 1, int_fs[2], 1]).expand(int_fs[0], -1, -1, int_fs[3])
-        w_add = torch.arange(int_fs[3], device=device).view([1, 1, 1, int_fs[3]]).expand(int_fs[0], -1, int_fs[2], -1)
+        h_add = torch.arange(int_fs[2], device=device).view(
+            [1, 1, int_fs[2], 1]).expand(int_fs[0], -1, -1, int_fs[3])
+        w_add = torch.arange(int_fs[3], device=device).view(
+            [1, 1, 1, int_fs[3]]).expand(int_fs[0], -1, int_fs[2], -1)
         offsets = offsets - torch.cat([h_add, w_add], dim=1)
         # to flow image
-        flow = torch.from_numpy(flow_to_image(offsets.permute(0, 2, 3, 1).cpu().data.numpy())) / 255.
+        flow = torch.from_numpy(flow_to_image(
+            offsets.permute(0, 2, 3, 1).cpu().data.numpy())) / 255.
         flow = flow.permute(0, 3, 1, 2)
         # case2: visualize which pixels are attended
         # flow = torch.from_numpy(highlight_flow((offsets * mask.long()).cpu().data.numpy()))
 
         if self.rate != 1:
-            flow = F.interpolate(flow, scale_factor=self.rate, mode='bilinear', align_corners=True)
+            flow = F.interpolate(flow, scale_factor=self.rate,
+                                 mode='bilinear', align_corners=True)
 
         return y, flow
 
@@ -623,10 +737,14 @@ class Conv2DSpectralNorm(nn.Conv2d):
 #----------------------------------------------------------------------------
 
 class DConv(nn.Module):
-    def __init__(self, cnum_in, cnum_out, ksize=5, stride=2, padding='auto'):
+    """Spectral-Normalized convolution followed by a LeakyReLU activation"""
+
+    def __init__(self, cnum_in, cnum_out, 
+                 ksize=5, stride=2, padding='auto'):
         super().__init__()
         padding = (ksize-1)//2 if padding == 'auto' else padding
-        self.conv_sn = Conv2DSpectralNorm(cnum_in, cnum_out, ksize, stride, padding)
+        self.conv_sn = Conv2DSpectralNorm(
+            cnum_in, cnum_out, ksize, stride, padding)
         #self.conv_sn = spectral_norm(nn.Conv2d(cnum_in, cnum_out, ksize, stride, padding))
         self.leaky = nn.LeakyReLU(negative_slope=0.2)
 
@@ -638,6 +756,9 @@ class DConv(nn.Module):
 #----------------------------------------------------------------------------
 
 class Discriminator(nn.Module):
+    """Fully Convolutional Spectral-Normalized Markovian Discriminator
+    from the paper `Free-Form Image Inpainting with Gated Convolution, Yu et. al`."""
+
     def __init__(self, cnum_in, cnum):
         super().__init__()
         self.conv1 = DConv(cnum_in, cnum)
