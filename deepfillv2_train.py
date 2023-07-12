@@ -185,10 +185,10 @@ def training_loop(generator,        # generator network
         losses['d_loss'] = d_loss
 
         # update D parameters
-        d_optimizer.zero_grad()
-        losses['d_loss'].backward()
-        d_optimizer.step()
-
+#        d_optimizer.zero_grad()  test con parte adversarial spenta
+#        losses['d_loss'].backward()
+#        d_optimizer.step()
+#
         # G training steps:
         losses['ae_loss1'] = config.l1_loss_alpha * loss_l1(batch_real, x1, penalty=1.0)
         losses['ae_loss2'] = config.l1_loss_alpha * loss_l1(batch_real, x2, penalty=1.0)
@@ -465,8 +465,12 @@ def main():
     
     # construct networks
     # NB: se cambio cnum_in del generator devo farlo anche al discriminator credo !
-    generator = Generator(cnum_in=4, cnum=48, return_flow=False)
-    discriminator = Discriminator(cnum_in=4, cnum=64)
+    #generator = Generator(cnum_in=4, cnum=48, return_flow=False)
+    #discriminator = Discriminator(cnum_in=4, cnum=64)
+    # construct networks
+    cnum_in = config.img_shapes[2]
+    generator = Generator(cnum_in=cnum_in+2, cnum_out=cnum_in, cnum=48, return_flow=False)
+    discriminator = Discriminator(cnum_in=cnum_in+1, cnum=64)
 
     # push models to device
     generator = generator.to(device)

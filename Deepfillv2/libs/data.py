@@ -261,10 +261,10 @@ class ImageDataset_box(Dataset):
         slope_lat.mul_(2).sub_(1)
         slope_lon.mul_(2).sub_(1)
 
-        img = img.repeat(3, 1, 1)  # convert to (3, 256, 256) # todo this should be avoided in the future
+       # img = img.repeat(3, 1, 1)  # convert to (3, 256, 256) # todo this should be avoided in the future
 
         # To avoid singularities in the normalizations we replace nans with 0s
-        img = torch.nan_to_num(img)             # (3, 256, 256)
+        img = torch.nan_to_num(img)             # (1, 256, 256)
         slope_lat = torch.nan_to_num(slope_lat) # (1, 256, 256)
         slope_lon = torch.nan_to_num(slope_lon) # (1, 256, 256)
 
