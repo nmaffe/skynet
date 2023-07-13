@@ -67,6 +67,7 @@ class GConv(nn.Module):
     def forward(self, x):
         if not self.gated: return self.conv(x)
 
+
         x = self.conv(x)
         #if self.cnum_out == 3 or self.activation is None:
         #    return x  not in nippon
@@ -320,7 +321,7 @@ class Generator(nn.Module):
         # get coarse result
         x_stage1 = self.stage1(x)    
         # inpaint input with coarse result
-        x = x_stage1*mask + xin[:, :self.cnum_in-2]*(1.-mask)
+        x = x_stage1*mask + xin[:, :self.cnum_in-1]*(1.-mask)  #-2 -1 ?
         # get refined result
         x_stage2, offset_flow = self.stage2(x, mask) 
 

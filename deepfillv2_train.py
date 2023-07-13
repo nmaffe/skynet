@@ -118,14 +118,15 @@ def training_loop(generator,        # generator network
             fig.tight_layout()
             plt.show()
             #input('wait')
+   #     print(torch.cuda.memory_summary(device=None, abbreviated=False))
 
         batch_real = batch_real.to(device)  # (N,3,256,256)
-        slope_lat = slope_lat.to(device)    # (N,1,256,256)
-        slope_lon = slope_lon.to(device)    # (N,1,256,256)
+  #      slope_lat = slope_lat.to(device)    # (N,1,256,256)
+  #      slope_lon = slope_lon.to(device)    # (N,1,256,256)
         batch_mins = batch_mins.to(device) # (N,)
         batch_maxs = batch_maxs.to(device) # (N,)
-        batch_ris_lon = batch_ris_lon.to(device) # (N,)
-        batch_ris_lat = batch_ris_lat.to(device) # (N,)
+  #      batch_ris_lon = batch_ris_lon.to(device) # (N,)
+  #      batch_ris_lat = batch_ris_lat.to(device) # (N,)
 
         # NB QUESTO COMANDO E' IMPORTANTE!
         #batch_real = torch.cat([batch_real[:,0:1,:,:], slope_lat, slope_lon], axis=1)
@@ -185,9 +186,9 @@ def training_loop(generator,        # generator network
         losses['d_loss'] = d_loss
 
         # update D parameters
-#        d_optimizer.zero_grad()  test con parte adversarial spenta
-#        losses['d_loss'].backward()
-#        d_optimizer.step()
+        d_optimizer.zero_grad() 
+        losses['d_loss'].backward()
+        d_optimizer.step()
 #
         # G training steps:
         losses['ae_loss1'] = config.l1_loss_alpha * loss_l1(batch_real, x1, penalty=1.0)
@@ -233,6 +234,9 @@ def training_loop(generator,        # generator network
         for k in metrics_log.keys():
             metrics_log[k].append(metrics[k].item())
 
+
+        torch.cuda.empty_cache()
+
         # --------------------------------------------------------------------------------------- #
         #                                  Validation loop                                        #
         #       (Note that some of the objects of the training loop will be overwritten)          #
@@ -258,12 +262,12 @@ def training_loop(generator,        # generator network
                 val_iter = iter(val_dataloader)
 
         batch_real_val = batch_real_val.to(device)
-        slope_lat_val = slope_lat_val.to(device)
-        slope_lon_val = slope_lon_val.to(device)
+  #      slope_lat_val = slope_lat_val.to(device)
+  #      slope_lon_val = slope_lon_val.to(device)
         batch_mins_val = batch_mins_val.to(device)
         batch_maxs_val = batch_maxs_val.to(device)
-        batch_ris_lon_val = batch_ris_lon_val.to(device)
-        batch_ris_lat_val = batch_ris_lat_val.to(device)
+  #      batch_ris_lon_val = batch_ris_lon_val.to(device)
+  #      batch_ris_lat_val = batch_ris_lat_val.to(device)
 
         # NB QUESTO COMANDO E' IMPORTANTE!
         #batch_real_val = torch.cat([batch_real_val[:, 0:1, :, :], slope_lat_val, slope_lon_val], axis=1)
@@ -339,6 +343,8 @@ def training_loop(generator,        # generator network
 
         for k in metrics_log_val.keys():
             metrics_log_val[k].append(metrics_val[k].item())
+        
+        torch.cuda.empty_cache()
 
         # --------------------------------------------------------------------------------------- #
         #                  Write to console, tensorboard, saving model                            #
@@ -469,8 +475,8 @@ def main():
     #discriminator = Discriminator(cnum_in=4, cnum=64)
     # construct networks
     cnum_in = config.img_shapes[2]
-    generator = Generator(cnum_in=cnum_in+2, cnum_out=cnum_in, cnum=48, return_flow=False)
-    discriminator = Discriminator(cnum_in=cnum_in+1, cnum=64)
+    generator = Generator(cnum_in=cnum_in+1, cnum_out=cnum_in, cnum=24, return_flow=False)
+    discriminator = Discriminator(cnum_in=cnum_in+1, cnum=32)
 
     # push models to device
     generator = generator.to(device)
@@ -479,7 +485,7 @@ def main():
     # optimizers
     g_optimizer = torch.optim.Adam(generator.parameters(), lr=config.g_lr, betas=(config.g_beta1, config.g_beta2))
     d_optimizer = torch.optim.Adam(discriminator.parameters(), lr=config.d_lr, betas=(config.d_beta1, config.d_beta2))
- #   g_optimizer = torch.optim.SGD(generator.parameters(), lr=config.d_lr,momentum=0.9)
+   # g_optimizer = torch.optim.SGD(generator.parameters(), lr=config.d_lr,momentum=0.9)
     # losses
     if config.gan_loss == 'hinge':
         gan_loss_d, gan_loss_g = gan_losses.hinge_loss_d, gan_losses.hinge_loss_g
@@ -487,6 +493,7 @@ def main():
         gan_loss_d, gan_loss_g = gan_losses.ls_loss_d, gan_losses.ls_loss_g
     else:
         raise NotImplementedError(f"Unsupported loss: {config.gan_loss}")
+    
 
 
     # decide weather resume from existing checkpoint or train from skratch

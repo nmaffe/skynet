@@ -11,7 +11,7 @@ random_crop_hmin: 100 # Minimum height of cropped image
 random_crop_hmax: 200  # Maximum height of cropped image
 random_horizontal_flip: 0.5 # Probability of flipping horizontally
 random_vertical_flip: 0.5 # Probability of flipping vertically
-batch_size: 16
+batch_size: 32
 batch_size_val: 4
 num_workers: 8 # qua se metto > 0 attivo multi processori.
 
@@ -32,7 +32,7 @@ d_lr: 0.0001 # lr for Adam optimizer (discriminator)
 d_beta1: 0.5 # beta1 for Adam optimizer (discriminator)
 d_beta2: 0.999 # beta2 for Adam optimizer (discriminator)
 
-max_iters: 10000 # number of batches to train the models (e.g. 100000)
+max_iters: 20000 # number of batches to train the models (e.g. 100000)
 
 # logging
 tb_logging: True
@@ -56,7 +56,7 @@ horizontal_margin: 0
 
 # loss
 gan_loss: 'hinge' # options: 'hinge', 'ls'
-gan_loss_alpha: 1
+gan_loss_alpha: 0 #1 is default
 
 ae_loss: True
 l1_loss_alpha: 1.
