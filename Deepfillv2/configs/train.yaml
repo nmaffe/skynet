@@ -32,7 +32,7 @@ d_lr: 0.0001 # lr for Adam optimizer (discriminator)
 d_beta1: 0.5 # beta1 for Adam optimizer (discriminator)
 d_beta2: 0.999 # beta2 for Adam optimizer (discriminator)
 
-max_iters: 20000 # number of batches to train the models (e.g. 100000)
+max_iters: 100000 # number of batches to train the models (e.g. 100000)
 
 # logging
 tb_logging: True
@@ -56,10 +56,10 @@ horizontal_margin: 0
 
 # loss
 gan_loss: 'hinge' # options: 'hinge', 'ls'
-gan_loss_alpha: 0 #1 is default
+gan_loss_alpha: 1.0 #1 is default
 
 ae_loss: True
-l1_loss_alpha: 1.
+l1_loss_alpha: 1.0 #1.
 
 
   ## scaling loss parameters

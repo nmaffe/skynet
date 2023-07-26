@@ -243,11 +243,11 @@ class ImageDataset_box(Dataset):
         # Note: since the transformations include cropping, the original bounds do not correspond to the transformed image.
         img = self.transforms(image=img)['image'] # (1, 256, 256)
         # normalize to [0, 1] and scale to [-1, 1]
-        #img_max = torch.max(img)  # normalize to [0, 1]
-        #img_min = torch.min(img)
-        img_max = 4500.  # normalize to [0, 1]
-        img_min = 1000.
-        img = (img - img_min) / (img_max - img_min) # note that this can cause nans
+        img_max = torch.max(img)  # normalize to [0, 1]
+        img_min = torch.min(img)
+        #img_max = 4500.  # normalize to [0, 1]
+        #img_min = 1000.
+        img = (img - img_min) / (img_max - img_min + 1e-8) # note that this can cause nans
         img.mul_(2).sub_(1) # (1, 256, 256)
 
         # Slopes. Normalize to [0, 1] and scale to [-1, 1]

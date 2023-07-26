@@ -63,8 +63,8 @@ def training_loop(generator,        # generator network
 
 #    metrics_log = {'ssim': [], 'psnr': []}
 #    metrics_log_val = {'ssim': [], 'psnr': []}
-    metrics_log = {'d_real': [], 'd_fake': []}
-    metrics_log_val = {'d_real': [], 'd_fake': []}
+    metrics_log = {'d_real': [], 'd_fake': [],'d_real_var':[],'d_fake_var':[]}
+    metrics_log_val = {'d_real': [], 'd_fake': [],'d_real_var':[],'d_fake_var':[]}
 
     # training loop
     init_n_iter = last_n_iter + 1
@@ -181,6 +181,8 @@ def training_loop(generator,        # generator network
         d_real, d_gen = torch.split(d_real_gen, config.batch_size) # (N, 4096), # (N, 4096)
         metrics['d_real'] = torch.mean(d_real)
         metrics['d_fake'] = torch.mean(d_gen)
+        metrics['d_real_var'] = torch.var(d_real)
+        metrics['d_fake_var'] = torch.var(d_gen)
 
         d_loss = gan_loss_d(d_real, d_gen)
         losses['d_loss'] = d_loss
@@ -298,6 +300,8 @@ def training_loop(generator,        # generator network
         d_real, d_gen = torch.split(d_real_gen, config.batch_size_val)  # (16, 4096), # (16, 4096)
         metrics_val['d_real'] = torch.mean(d_real)
         metrics_val['d_fake'] = torch.mean(d_gen)
+        metrics_val['d_real_var'] = torch.var(d_real)
+        metrics_val['d_fake_var'] = torch.var(d_gen)
         
 
         d_loss = gan_loss_d(d_real, d_gen)
