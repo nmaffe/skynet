@@ -50,7 +50,7 @@ def training_loop(generator,        # generator network
                   'ae_loss': [],
                   'ae_loss1': [],
                   'ae_loss2': [],
-          #        'scaling_loss': [],
+                  'slope_loss': [],
                   }
     losses_log_val = {'d_loss': [],
                   'g_loss': [],
@@ -58,7 +58,7 @@ def training_loop(generator,        # generator network
                   'ae_loss': [],
                   'ae_loss1': [],
                   'ae_loss2': [],
-         #         'scaling_loss': [],
+                  'slope_loss': [],
                   }
 
 #    metrics_log = {'ssim': [], 'psnr': []}
@@ -121,12 +121,10 @@ def training_loop(generator,        # generator network
    #     print(torch.cuda.memory_summary(device=None, abbreviated=False))
 
         batch_real = batch_real.to(device)  # (N,3,256,256)
-  #      slope_lat = slope_lat.to(device)    # (N,1,256,256)
-  #      slope_lon = slope_lon.to(device)    # (N,1,256,256)
+        batch_slope_lat = slope_lat.to(device)    # (N,1,256,256)
+        batch_slope_lon = slope_lon.to(device)    # (N,1,256,256)
         batch_mins = batch_mins.to(device) # (N,)
         batch_maxs = batch_maxs.to(device) # (N,)
-  #      batch_ris_lon = batch_ris_lon.to(device) # (N,)
-  #      batch_ris_lat = batch_ris_lat.to(device) # (N,)
 
         # NB QUESTO COMANDO E' IMPORTANTE!
         #batch_real = torch.cat([batch_real[:,0:1,:,:], slope_lat, slope_lon], axis=1)
@@ -179,6 +177,7 @@ def training_loop(generator,        # generator network
         d_real_gen = discriminator(batch_real_filled) # (2*N, 4096)
         # we extract the separate outputs for the real/generated images
         d_real, d_gen = torch.split(d_real_gen, config.batch_size) # (N, 4096), # (N, 4096)
+        #register output of discriminator and its variance
         metrics['d_real'] = torch.mean(d_real)
         metrics['d_fake'] = torch.mean(d_gen)
         metrics['d_real_var'] = torch.var(d_real)
@@ -207,12 +206,19 @@ def training_loop(generator,        # generator network
         losses['g_loss'] = g_loss
         losses['g_loss'] = config.gan_loss_alpha * losses['g_loss']
         losses['g_loss_adv'] = g_loss
-#        losses['scaling_loss'] = config.power_law_alpha * loss_power_law(dem=batch_real[:, 0, :, :],
-                                                                   # bed=x2[:, 0, :, :],
-                                                                   # mask=mask[:, 0, :, :],
-                                                                   # c=config.power_law_c,
-                                                                   # gamma=config.power_law_gamma,
-                                                                   # mins=0.0, maxs=9000., ris_lon=batch_ris_lon, ris_lat=batch_ris_lat)
+
+        slope_lat, slope_lon = torch.gradient(batch_predicted, spacing=[1., 1.], dim=(2, 3))  # (1, 256, 256)
+        maxs_lat = torch.amax(slope_lat, dim=(2, 3)).unsqueeze(2).unsqueeze(3)  # (1,1,1)
+        mins_lat = torch.amin(slope_lat, dim=(2, 3)).unsqueeze(2).unsqueeze(3)  # (1,1,1)
+        maxs_lon = torch.amax(slope_lon, dim=(2, 3)).unsqueeze(2).unsqueeze(3)  # (1,1,1)
+        mins_lon = torch.amin(slope_lon, dim=(2, 3)).unsqueeze(2).unsqueeze(3)  # (1,1,1)
+        slope_lat = (slope_lat - mins_lat) / (maxs_lat - mins_lat)  # (1, 256, 256)
+        slope_lon = (slope_lon - mins_lon) / (maxs_lon - mins_lon)  # (1, 256, 256)
+        slope_lat.mul_(2).sub_(1)
+        slope_lon.mul_(2).sub_(1)
+
+        losses['slope_loss']= 0.5*loss_l1(batch_slope_lon,slope_lon,penalty=1.0)+0.5*loss_l1(batch_slope_lat,slope_lat,penalty=1.0)
+
         if config.ae_loss:
             losses['g_loss'] += losses['ae_loss']
  #       if config.power_law_loss:
@@ -264,12 +270,10 @@ def training_loop(generator,        # generator network
                 val_iter = iter(val_dataloader)
 
         batch_real_val = batch_real_val.to(device)
-  #      slope_lat_val = slope_lat_val.to(device)
-  #      slope_lon_val = slope_lon_val.to(device)
+        batch_slope_lat_val = slope_lat_val.to(device)
+        batch_slope_lon_val = slope_lon_val.to(device)
         batch_mins_val = batch_mins_val.to(device)
         batch_maxs_val = batch_maxs_val.to(device)
-  #      batch_ris_lon_val = batch_ris_lon_val.to(device)
-  #      batch_ris_lat_val = batch_ris_lat_val.to(device)
 
         # NB QUESTO COMANDO E' IMPORTANTE!
         #batch_real_val = torch.cat([batch_real_val[:, 0:1, :, :], slope_lat_val, slope_lon_val], axis=1)
@@ -323,17 +327,21 @@ def training_loop(generator,        # generator network
         losses_val['g_loss'] = g_loss
         losses_val['g_loss'] = config.gan_loss_alpha * losses_val['g_loss']
         losses_val['g_loss_adv'] = g_loss
-     #   losses_val['scaling_loss'] = config.power_law_alpha * loss_power_law(dem=batch_real_val[:, 0, :, :],
-     #                                                                       bed=x2_val[:, 0, :, :],
-     #                                                                       mask=mask[:, 0, :, :],
-     #                                                                       c=config.power_law_c,
-     #                                                                       gamma=config.power_law_gamma,
-     #                                                                       mins=batch_mins_val, maxs=batch_maxs_val, ris_lon=batch_ris_lon_val,
-     #                                                                       ris_lat=batch_ris_lat_val)
         if config.ae_loss:
             losses_val['g_loss'] += losses_val['ae_loss']
      #   if config.power_law_loss:
      #       losses_val['g_loss'] += losses_val['scaling_loss']
+        slope_lat, slope_lon = torch.gradient(batch_predicted, spacing=[1., 1.], dim=(2, 3))  # (1, 256, 256)
+        maxs_lat = torch.amax(slope_lat, dim=(2, 3)).unsqueeze(2).unsqueeze(3)  # (1,1,1)
+        mins_lat = torch.amin(slope_lat, dim=(2, 3)).unsqueeze(2).unsqueeze(3)  # (1,1,1)
+        maxs_lon = torch.amax(slope_lon, dim=(2, 3)).unsqueeze(2).unsqueeze(3)  # (1,1,1)
+        mins_lon = torch.amin(slope_lon, dim=(2, 3)).unsqueeze(2).unsqueeze(3)  # (1,1,1)
+        slope_lat = (slope_lat - mins_lat) / (maxs_lat - mins_lat)  # (1, 256, 256)
+        slope_lon = (slope_lon - mins_lon) / (maxs_lon - mins_lon)  # (1, 256, 256)
+        slope_lat.mul_(2).sub_(1)
+        slope_lon.mul_(2).sub_(1)
+
+        losses_val['slope_loss']= 0.5*loss_l1(batch_slope_lon_val,slope_lon,penalty=1.0)+0.5*loss_l1(batch_slope_lat_val,slope_lat,penalty=1.0)
 
         # calculate similarity metrics
 #        ssim = SSIM(batch_real_val, batch_predicted).detach()
