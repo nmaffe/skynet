@@ -33,6 +33,18 @@ def pt_to_image(img):
     """ from [-1,1] to [0,1] """
     return img.detach_().cpu().mul_(0.5).add_(0.5)
 
+def pt_to_image_denorm(img, min, max):#added from nico implementation
+    """ from [-1,1] to [min,max] """
+    img = img.detach().cpu()
+    if torch.is_tensor(min):
+        min = min.detach().cpu()
+        min = min[:, None, None, None]
+    if torch.is_tensor(max):
+        max = max.detach().cpu()
+        max = max[:, None, None, None]
+
+    return img.mul_(0.5).add_(0.5).mul_(max-min).add_(min)
+
 
 def show_grid(imgs):
     """# maffe add, from:
