@@ -9,6 +9,7 @@ import torchvision as tv
 import torchvision.transforms as T
 from torchmetrics.functional import peak_signal_noise_ratio as PSNR
 from torchmetrics.functional import structural_similarity_index_measure as SSIM
+from custom_metrics import *
 
 import Deepfillv2.libs.losses as gan_losses
 import Deepfillv2.libs.misc as misc
@@ -63,8 +64,8 @@ def training_loop(generator,        # generator network
 
 #    metrics_log = {'ssim': [], 'psnr': []}
 #    metrics_log_val = {'ssim': [], 'psnr': []}
-    metrics_log = {'d_real': [], 'd_fake': [],'d_real_var':[],'d_fake_var':[]}
-    metrics_log_val = {'d_real': [], 'd_fake': [],'d_real_var':[],'d_fake_var':[]}
+    metrics_log = {'d_real': [], 'd_fake': [],'d_real_var':[],'d_fake_var':[],'rmse':[]}
+    metrics_log_val = {'d_real': [], 'd_fake': [],'d_real_var':[],'d_fake_var':[],'rmse':[]}
 
     # training loop
     init_n_iter = last_n_iter + 1
@@ -125,6 +126,8 @@ def training_loop(generator,        # generator network
         batch_slope_lon = slope_lon.to(device)    # (N,1,256,256)
         batch_mins = batch_mins.to(device) # (N,)
         batch_maxs = batch_maxs.to(device) # (N,)
+        batch_ris_lon = batch_ris_lon.to(device)
+        batch_ris_lat = batch_ris_lat.to(device)
 
         # NB QUESTO COMANDO E' IMPORTANTE!
         #batch_real = torch.cat([batch_real[:,0:1,:,:], slope_lat, slope_lon], axis=1)
@@ -182,6 +185,9 @@ def training_loop(generator,        # generator network
         metrics['d_fake'] = torch.mean(d_gen)
         metrics['d_real_var'] = torch.var(d_real)
         metrics['d_fake_var'] = torch.var(d_gen)
+        metrics['rmse']=RMSE(batch_complete,batch_real,maxs=batch_maxs,mins=batch_mins).detach() 
+
+
 
         d_loss = gan_loss_d(d_real, d_gen)
         losses['d_loss'] = d_loss
@@ -306,6 +312,7 @@ def training_loop(generator,        # generator network
         metrics_val['d_fake'] = torch.mean(d_gen)
         metrics_val['d_real_var'] = torch.var(d_real)
         metrics_val['d_fake_var'] = torch.var(d_gen)
+        metrics_val['rmse']=RMSE(batch_complete_val,batch_real_val,maxs=batch_maxs_val,mins=batch_mins_val).detach() 
         
 
         d_loss = gan_loss_d(d_real, d_gen)
