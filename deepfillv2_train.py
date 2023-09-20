@@ -16,6 +16,9 @@ import Deepfillv2.libs.misc as misc
 from Deepfillv2.libs.networks import Generator, Discriminator
 from Deepfillv2.libs.data import ImageDataset_box, ImageDataset_segmented, get_transforms
 from Deepfillv2.libs.losses import *
+from skimage.filters import threshold_otsu #to create valley masks
+
+
 
 parser = argparse.ArgumentParser()
 mask_modes = ["box", "segmented"]
@@ -64,8 +67,8 @@ def training_loop(generator,        # generator network
 
 #    metrics_log = {'ssim': [], 'psnr': []}
 #    metrics_log_val = {'ssim': [], 'psnr': []}
-    metrics_log = {'d_real': [], 'd_fake': [],'d_real_var':[],'d_fake_var':[],'rmse':[]}
-    metrics_log_val = {'d_real': [], 'd_fake': [],'d_real_var':[],'d_fake_var':[],'rmse':[]}
+    metrics_log = {'d_real': [], 'd_fake': [],'d_real_var':[],'d_fake_var':[],'rmse':[],'mre':[]}
+    metrics_log_val = {'d_real': [], 'd_fake': [],'d_real_var':[],'d_fake_var':[],'rmse':[],'mre':[]}
 
     # training loop
     init_n_iter = last_n_iter + 1
@@ -88,16 +91,27 @@ def training_loop(generator,        # generator network
             try:
                 if args.mask == "box":
                     batch_real, slope_lat, slope_lon, batch_mins, batch_maxs, batch_ris_lon, batch_ris_lat, batch_bounds = next(train_iter) # fetch batch_real=(N, 3, 256, 256)
-                    bbox = misc.random_bbox(config)  # restituisce valori random (top, left, height, width) di un box quadrato.
-                    regular_mask = misc.bbox2mask(config, bbox).to(device)  # (1, 1, 256, 256)
-                    irregular_mask = misc.brush_stroke_mask(config).to(device)  # (1,1,256,256)
-                    mask = torch.logical_or(irregular_mask, regular_mask).to(torch.float32)  # (1,1,256,256)
+                  #  bbox = misc.random_bbox(config)  # restituisce valori random (top, left, height, width) di un box quadrato.
+                  #  regular_mask = misc.bbox2mask(config, bbox).to(device)  # (1, 1, 256, 256)
+                  #  irregular_mask = misc.brush_stroke_mask(config).to(device)  # (1,1,256,256)
+                  #  mask = torch.logical_or(irregular_mask, regular_mask).to(torch.float32)  # (1,1,256,256)
+                    masks=np.ones([config.batch_size,1,256,256])
+                    for j,dem in enumerate(batch_real.cpu().numpy()):
+                        thresh=threshold_otsu(dem.squeeze())
+                        binary_otsu = dem.squeeze() <= thresh
+                        masks[j] = np.expand_dims(binary_otsu,axis=0)
+                    mask = torch.from_numpy(masks)
+                    mask = mask.to(device).to(torch.float32)
+
+
                 elif args.mask == "segmented":
                     batch_real, mask = next(train_iter)
                     mask = mask.to(device).to(torch.float32)
                 break
             except StopIteration:
                 train_iter = iter(train_dataloader)
+        
+
 
         show_input_examples = False
         if show_input_examples:
@@ -171,8 +185,9 @@ def training_loop(generator,        # generator network
         batch_complete = batch_predicted*mask + batch_incomplete*(1.-mask) # (N,3,256,256)
 
         # D training steps:
-        batch_real_mask = torch.cat((batch_real, torch.tile(mask, [config.batch_size, 1, 1, 1])), dim=1) # (N,4,256,256)
-        batch_filled_mask = torch.cat((batch_complete.detach(), torch.tile(mask, [config.batch_size, 1, 1, 1])), dim=1) # (N,4,256,256)
+#        batch_real_mask = torch.cat((batch_real, torch.tile(mask, [config.batch_size, 1, 1, 1])), dim=1) # (N,4,256,256)
+        batch_real_mask = torch.cat((batch_real, mask), dim=1) # (N,4,256,256)
+        batch_filled_mask = torch.cat((batch_complete.detach(), mask), dim=1) # (N,4,256,256)
         # oss: batch_filled_mask e batch_real_filled avranno requires_grad=False, quindi saranno staccati dal graph. Perche ?
         batch_real_filled = torch.cat((batch_real_mask, batch_filled_mask)) # (2*N,4,256,256)
 
@@ -185,8 +200,8 @@ def training_loop(generator,        # generator network
         metrics['d_fake'] = torch.mean(d_gen)
         metrics['d_real_var'] = torch.var(d_real)
         metrics['d_fake_var'] = torch.var(d_gen)
-        metrics['rmse']=RMSE(batch_complete,batch_real,maxs=batch_maxs,mins=batch_mins).detach() 
-
+        metrics['rmse']=RMSE(batch_complete,batch_real,maxs=batch_maxs,mins=batch_mins,mask=mask).detach() 
+        metrics['mre']=MRE(batch_complete,batch_real,maxs=batch_maxs,mins=batch_mins,mask=mask).detach() 
 
 
         d_loss = gan_loss_d(d_real, d_gen)
@@ -203,7 +218,8 @@ def training_loop(generator,        # generator network
         losses['ae_loss'] = losses['ae_loss1'] + losses['ae_loss2']
 
         batch_gen = batch_predicted # perche usare un altra variabile quando avrei sia batch_predicted che x2 ?
-        batch_gen = torch.cat((batch_gen, torch.tile(mask, [config.batch_size, 1, 1, 1])), dim=1) # (N, 4, 256, 256)
+  #      batch_gen = torch.cat((batch_gen, torch.tile(mask, [config.batch_size, 1, 1, 1])), dim=1) # (N, 4, 256, 256)
+        batch_gen = torch.cat((batch_gen, mask ), dim=1) # (N, 4, 256, 256)
 
         # apply the discriminator to the generated (not completed) images
         d_gen = discriminator(batch_gen) # (N, 4096)
@@ -235,6 +251,8 @@ def training_loop(generator,        # generator network
         losses['g_loss'].backward()
         g_optimizer.step()
 
+
+
         # calculate similarity metrics
 #        ssim = SSIM(batch_real, batch_predicted).detach()
 #        psnr = PSNR(batch_real, batch_predicted).detach()
@@ -263,10 +281,17 @@ def training_loop(generator,        # generator network
             try:
                 if args.mask == "box":
                     batch_real_val, slope_lat_val, slope_lon_val, batch_mins_val, batch_maxs_val, batch_ris_lon_val, batch_ris_lat_val, batch_bounds_val = next(val_iter)  # fetch batch_real=(batch_size, 3, 256, 256)
-                    bbox = misc.random_bbox(config)  # restituisce valori random (top, left, height, width) di un box quadrato.
-                    regular_mask = misc.bbox2mask(config, bbox).to(device)  # (1, 1, 256, 256)
-                    irregular_mask = misc.brush_stroke_mask(config).to(device)  # (1,1,256,256)
-                    mask = torch.logical_or(irregular_mask, regular_mask).to(torch.float32)  # (1,1,256,256)
+                   # bbox = misc.random_bbox(config)  # restituisce valori random (top, left, height, width) di un box quadrato.
+                   # regular_mask = misc.bbox2mask(config, bbox).to(device)  # (1, 1, 256, 256)
+                   # irregular_mask = misc.brush_stroke_mask(config).to(device)  # (1,1,256,256)
+                   # mask = torch.logical_or(irregular_mask, regular_mask).to(torch.float32)  # (1,1,256,256)
+                    masks=np.ones([config.batch_size_val,1,256,256])
+                    for j,dem in enumerate(batch_real_val.cpu().numpy()):
+                        thresh=threshold_otsu(dem.squeeze())
+                        binary_otsu = dem.squeeze() <= thresh
+                        masks[j] = np.expand_dims(binary_otsu,axis=0)
+                    mask = torch.from_numpy(masks)
+                    mask = mask.to(device).to(torch.float32)
                 elif args.mask == "segmented":
                     batch_real_val, mask = next(val_iter)
                     mask = mask.to(device).to(torch.float32)
@@ -298,10 +323,12 @@ def training_loop(generator,        # generator network
         batch_complete_val = batch_predicted * mask + batch_incomplete * (1. - mask)  # (batch_size,3,256,256)
 
         # D training steps:
-        batch_real_mask = torch.cat((batch_real_val, torch.tile(mask, [config.batch_size_val, 1, 1, 1])),
-                                    dim=1)  # (batch_size,4,256,256)
-        batch_filled_mask = torch.cat((batch_complete_val.detach(), torch.tile(mask, [config.batch_size_val, 1, 1, 1])),
-                                      dim=1)  # (batch_size,4,256,256)
+        #batch_real_mask = torch.cat((batch_real_val, torch.tile(mask, [config.batch_size_val, 1, 1, 1])),
+        #                            dim=1)  # (batch_size,4,256,256)
+        batch_real_mask = torch.cat((batch_real_val, mask),dim=1)  # (batch_size,4,256,256)
+       # batch_filled_mask = torch.cat((batch_complete_val.detach(), torch.tile(mask, [config.batch_size_val, 1, 1, 1])),
+       #                               dim=1)  # (batch_size,4,256,256)
+        batch_filled_mask = torch.cat((batch_complete_val.detach(),mask),dim=1)  # (batch_size,4,256,256)
         batch_real_filled = torch.cat((batch_real_mask, batch_filled_mask))  # (2*batch_size,4,256,256)
 
         # we apply the discriminator to the whole batch containing both real and generated (and completed) images
@@ -312,8 +339,8 @@ def training_loop(generator,        # generator network
         metrics_val['d_fake'] = torch.mean(d_gen)
         metrics_val['d_real_var'] = torch.var(d_real)
         metrics_val['d_fake_var'] = torch.var(d_gen)
-        metrics_val['rmse']=RMSE(batch_complete_val,batch_real_val,maxs=batch_maxs_val,mins=batch_mins_val).detach() 
-        
+        metrics_val['rmse']=RMSE(batch_complete_val,batch_real_val,maxs=batch_maxs_val,mins=batch_mins_val,mask=mask).detach() 
+        metrics_val['mre']=MRE(batch_complete_val,batch_real_val,maxs=batch_maxs_val,mins=batch_mins_val,mask=mask).detach() 
 
         d_loss = gan_loss_d(d_real, d_gen)
         losses_val['d_loss'] = d_loss
@@ -324,8 +351,7 @@ def training_loop(generator,        # generator network
         losses_val['ae_loss'] = losses_val['ae_loss1'] + losses_val['ae_loss2']
 
         batch_gen = batch_predicted  # perche usare un altra variabile quando avrei sia batch_predicted che x2 ?
-        batch_gen = torch.cat((batch_gen, torch.tile(mask, [config.batch_size_val, 1, 1, 1])),
-                              dim=1)  # (batch_size, 4, 256, 256)
+        batch_gen = torch.cat((batch_gen,mask),dim=1)  # (batch_size, 4, 256, 256)
 
         # apply the discriminator to the generated (not completed) images
         d_gen = discriminator(batch_gen)  # (batch_size, 4096)
