@@ -1,6 +1,6 @@
 import time
 import copy
-
+import random
 import math
 import numpy as np
 import matplotlib.pyplot as plt
@@ -17,9 +17,6 @@ from torch.optim import Adam
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
-def my_loss(output, target):
-    loss = torch.mean((output - target)**4)
-    return loss
 
 class CFG:
 
@@ -30,10 +27,10 @@ class CFG:
     millan = 'ith_m'
     farinotti = 'ith_f'
     target = 'THICKNESS'
-    batch_size = 64
+    batch_size = 512
     num_workers = 16
     lr = 0.001
-    epochs = 100
+    epochs =100
     loss = nn.MSELoss()# my_loss #nn.L1Loss() #nn.MSELoss() # nn.L1Loss()
     L2_penalty=0.000
 
@@ -47,28 +44,41 @@ class NeuralNetwork(nn.Module):
         self.dropout = nn.Dropout(p=0.5)
 
         self.fc1 = nn.Linear(len(CFG.features), 100)
-        self.fc1_1 = nn.Linear(50, 100)
-        self.fc1_2 = nn.Linear(100, 20)
-        self.fc1_3 = nn.Linear(100, 1)
+        self.fc1_1 = nn.Linear(100, 50)
+        self.fc1_2 = nn.Linear(50, 20)
+        self.fc1_3 = nn.Linear(20, 1)
 
-        self.fc2 = nn.Linear(len(CFG.features), 50)
-        self.fc2_1 = nn.Linear(50, 100)
-        self.fc2_2 = nn.Linear(100, 20)
+        self.fcm = nn.Linear(2, 1)
+        self.fcf = nn.Linear(2, 1)
+
+        self.fc2 = nn.Linear(len(CFG.features), 100)
+        self.fc2_1 = nn.Linear(100, 50)
+        self.fc2_2 = nn.Linear(50, 20)
         self.fc2_3 = nn.Linear(20, 1)
 
         self.fc_A = nn.Linear(3, 10)
         self.fcA_1 = nn.Linear(10, 1)
+
+        self.fc_final = nn.Linear(2, 1)
 
         self.fc3 = nn.Linear(len(CFG.features), 100)
         self.fc3_1 = nn.Linear(100, 1)
     def forward(self, x, m, f):
         x1 = torch.relu(self.fc1(x))
         x1 = self.dropout(x1)
-        #x1 = torch.relu(self.fc1_1(x1))
-        #x1 = self.dropout(x1)
-        #x1 = torch.relu(self.fc1_2(x1))
-        #x1 = self.dropout(x1)
-        x1 = self.fc1_3(x1)
+        x1 = torch.relu(self.fc1_1(x1))
+        x1 = nn.Dropout(0.2)(x1)
+        x1 = torch.relu(self.fc1_2(x1))
+        x1 = nn.Dropout(0.2)(x1)
+        x1 = torch.relu(self.fc1_3(x1))
+
+        #x2 = torch.relu(self.fc2(x))
+        #x2 = self.dropout(x2)
+        #x2 = torch.relu(self.fc2_1(x2))
+        #x2 = nn.Dropout(0.2)(x2)
+        #x2 = torch.relu(self.fc2_2(x2))
+        #x2 = nn.Dropout(0.2)(x2)
+        #x2 = torch.relu(self.fc2_3(x2))
         #x1 = torch.sigmoid(self.fc1_3(x1))
         #print('x1:', x1.shape)
 
@@ -91,10 +101,20 @@ class NeuralNetwork(nn.Module):
         #print('xf:', xf.shape)
 
         #x_physics = torch.add(xm, xf)
-        x_physics = torch.concat((m, f, x1), 1)#((xm, xf), 1)
-        x_physics = torch.relu(self.fc_A(x_physics))
-        x_physics = self.fcA_1(x_physics)
 
+        #x_physics = torch.concat((m, f, x1), 1)#((xm, xf), 1)
+        #x_physics = torch.relu(self.fc_A(x_physics))
+        #x_physics = self.fcA_1(x_physics)
+
+        #x1m = torch.concat((m, x1), 1)
+        #x2f = torch.concat((f, x2), 1)
+
+        #x1m = self.fcm(x1m)
+        #x2f = self.fcf(x2f)
+
+        x = torch.concat((x1, m, f), 1)
+        x = torch.relu(self.fc_A(x))
+        x = self.fcA_1(x)
         #x3 = torch.relu(self.fc3(x))
         #x3 = self.fc3_1(x3)
 
@@ -103,7 +123,7 @@ class NeuralNetwork(nn.Module):
         #print('x:', x.shape)
         #input('wait')
 
-        return x_physics
+        return x#x_physics
 
 # ====================================================
 # Dataset
@@ -138,18 +158,57 @@ PATH_METADATA = '/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-
 file = 'TTT_final_grid_20.csv'
 
 glathida_rgis = pd.read_csv(PATH_METADATA+file, low_memory=False)
-print(f'Dataset: {len(glathida_rgis)} rows.')
+#glathida_rgis = glathida_rgis.loc[glathida_rgis['THICKNESS'] > 0]
+print(f'Dataset: {len(glathida_rgis)} rows and', glathida_rgis['RGIId'].nunique(), 'glaciers.')
 
 
 # -----------------------------------------------------------
-# Train and Test
+def create_test(df, minimum_test_size=1000, rgi=None, seed=None):
+    """
+    - rgi se voglio creare il test in una particolare regione
+    - minimum_test_size: quanto lo voglio grande
+    """
+    if rgi is not None:
+        df = df[df['RGI']==rgi]
+    if seed is not None:
+        random.seed(seed)
+
+    unique_glaciers = df['RGIId'].unique()
+    random.shuffle(unique_glaciers)
+    selected_glaciers = []
+    n_total_points = 0
+
+    for glacier_name in unique_glaciers:
+        if n_total_points < minimum_test_size:
+            selected_glaciers.append(glacier_name)
+            n_points = df[df['RGIId'] == glacier_name].shape[0]
+            n_total_points += n_points
+            print(glacier_name, n_points, n_total_points)
+        else:
+            #print('Finished with', n_total_points, 'points, and', len(selected_glaciers), 'glaciers.')
+            break
+
+    test = df[df['RGIId'].isin(selected_glaciers)]
+    print(test['RGI'].value_counts())
+    print('Total test size: ', len(test))
+    return test
+
+# Train, val, and test
+test = create_test(glathida_rgis,  minimum_test_size=1000, rgi=3, seed=4)
 #test = glathida_rgis.loc[(glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76)]
-test = glathida_rgis.loc[(glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76)].sample(n=1879)
+#test = glathida_rgis.loc[(glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76)].sample(n=1879)
 #val = glathida_rgis.loc[(glathida_rgis['RGI']==3)].drop(test.index).sample(n=2000)
-val = glathida_rgis.loc[(glathida_rgis['RGI']==3)].drop(test.index).sample(n=2000)
+val = glathida_rgis.drop(test.index).sample(n=1000)
 #train = glathida_rgis.sample(100000)#.drop(val.index)
 #train = glathida_rgis.drop(val.index).sample(500000)
-train = glathida_rgis.loc[(glathida_rgis['RGI']==3)].drop(test.index).drop(val.index)
+train = glathida_rgis.drop(test.index).drop(val.index)
+
+# plot train-val-test
+fig, ax = plt.subplots()
+im1 = ax.scatter(x=train['POINT_LON'], y=train['POINT_LAT'], c='g', s=1)
+im2 = ax.scatter(x=val['POINT_LON'], y=val['POINT_LAT'], c='b', s=1)
+im3 = ax.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], c='r', s=1)
+plt.show()
 
 print(f'Train: {len(train)}, Val: {len(val)}, Test: {len(test)}')
 
@@ -175,7 +234,7 @@ def train_loop(train, val, model, optimizer):
     # Datasets
     train_dataset = MaffeDataset(train, transform=None)
     val_dataset = MaffeDataset(val, transform=None)
-    print(f'Train: {len(train_dataset)}, Val: {len(val_dataset)}')
+    #print(f'Train: {len(train_dataset)}, Val: {len(val_dataset)}')
 
     # Dataloaders
     train_loader = DataLoader(train_dataset, batch_size=CFG.batch_size, shuffle=True,
@@ -188,7 +247,6 @@ def train_loop(train, val, model, optimizer):
     # ====================================================
     # loop
     # ====================================================
-
     print('Start training loop.')
     since = time.time()
 
@@ -325,9 +383,9 @@ m_farinotti, q_farinotti, _, _, _ = stats.linregress(y_test,y_test_f)
 
 # plot
 fig, (ax1, ax2) = plt.subplots(1,2, figsize=(8,4))
-s1 = ax1.scatter(x=y_test, y=y_preds, s=5, c=None, ec='b')
-#s1 = ax1.scatter(x=y_test, y=test['ith_m'], s=5, c='g', alpha=.1)
-#s1 = ax1.scatter(x=y_test, y=test['ith_f'], s=5, c='r', alpha=.1)
+s1 = ax1.scatter(x=y_test, y=test['ith_m'], s=5, c='g', alpha=.3)
+s1 = ax1.scatter(x=y_test, y=test['ith_f'], s=5, c='r', alpha=.3)
+s1 = ax1.scatter(x=y_test, y=y_preds, s=5, c='aliceblue', ec='b', alpha=.5)
 
 xmax = max(np.max(y_test), np.max(y_preds), np.max(y_test_m), np.max(y_test_f))
 
