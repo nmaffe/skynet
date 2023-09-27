@@ -99,6 +99,10 @@ def training_loop(generator,        # generator network
                     for j,dem in enumerate(batch_real.cpu().numpy()):
                         thresh=threshold_otsu(dem.squeeze())
                         binary_otsu = dem.squeeze() <= thresh
+                        while np.sum(binary_otsu)/256**2>0.5:
+                            thresh = 0.95*(thresh+1.) -1.
+                            binary_otsu = dem.squeeze() <= thresh
+
                         masks[j] = np.expand_dims(binary_otsu,axis=0)
                     mask = torch.from_numpy(masks)
                     mask = mask.to(device).to(torch.float32)
@@ -289,6 +293,9 @@ def training_loop(generator,        # generator network
                     for j,dem in enumerate(batch_real_val.cpu().numpy()):
                         thresh=threshold_otsu(dem.squeeze())
                         binary_otsu = dem.squeeze() <= thresh
+                        while np.sum(binary_otsu)/256**2>0.5:
+                            thresh = 0.95*(thresh+1.) - 1.
+                            binary_otsu = dem.squeeze() <= thresh
                         masks[j] = np.expand_dims(binary_otsu,axis=0)
                     mask = torch.from_numpy(masks)
                     mask = mask.to(device).to(torch.float32)

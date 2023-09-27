@@ -18,9 +18,9 @@ num_workers: 8 # qua se metto > 0 attivo multi processori.
 
 # training
 tb_logging: True # Enable Tensorboard logging?
-log_dir: '/home/user/Documents/icenet/skynet/Deepfillv2/callbacks/logs/' # Tensorboard logging folder
+log_dir: '/home/user/Documents/icenet/skynet/Deepfillv2/callbacks/logs/otsu_mask_model/' # Tensorboard logging folder
 #checkpoint_dir: 'Deepfillv2/callbacks/checkpoints/segmented_model/' # Checkpoint folder
-checkpoint_dir: '/home/user/Documents/icenet/skynet/Deepfillv2/callbacks/checkpoints/box_model/' # Checkpoint folder
+checkpoint_dir: '/home/user/Documents/icenet/skynet/Deepfillv2/callbacks/checkpoints/otsu_mask_model/' # Checkpoint folder
 
 use_cuda_if_available: True
 random_seed: False # options: False | <int>
