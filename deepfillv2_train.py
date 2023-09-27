@@ -137,6 +137,8 @@ def training_loop(generator,        # generator network
         #batch_incomplete = torch.cat([batch_real[:,0:1,:,:], slope_lat, slope_lon], axis=1) * (1. - mask) # (N,3,256,256)
         ones_x = torch.ones_like(batch_incomplete)[:, 0:1, :, :].to(device) # (N,1,256,256)
 
+        print(torch.sum(mask.squeeze()/256**2))
+
         #x = torch.cat([batch_incomplete, slope_lat, slope_lon, ones_x*mask], axis=1)      # (N,6,256,256)
         x = torch.cat([batch_incomplete, ones_x*mask], axis=1)      # (N,4,256,256)
 
