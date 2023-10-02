@@ -17,9 +17,14 @@ import torch.nn as nn
 from torch.optim import Adam
 from torch.nn import Linear
 import torch.nn.functional as F
+
+from torch_geometric.nn import GCNConv, GraphConv, GATConv
 from torch_geometric.data import Data, InMemoryDataset
 from torch_geometric.loader import DataLoader
-from torch_geometric.nn import GCNConv, GraphConv, GATConv
+from torch_geometric.transforms import RandomNodeSplit
+
+import networkx as nx
+from torch_geometric.utils import to_networkx
 
 
 class CFG:
@@ -89,22 +94,20 @@ print(f'Edge index vector: {edge_index.shape}')
 # graph
 data = Data(x=torch.tensor(glathida_rgis[CFG.features].to_numpy(), dtype=torch.float32),
             edge_index=torch.tensor(edge_index, dtype=torch.long),
-            y=torch.tensor(glathida_rgis[CFG.target].to_numpy()), dtype=torch.float32)
-print(data)
-print(f'Check if data is OK: {data.validate(raise_on_error=True)}')
-print(f'Keys: {data.keys}')
-print(f'Num nodes: {data.num_nodes}')
-print(f'Num edges: {data.num_edges}')
-print(f'Num features: {data.num_node_features}')
-print(f'Isolated nodes: {data.has_isolated_nodes()}')
-print(f'Self loops: {data.has_self_loops()}')
-print(f'Directed: {data.is_directed()}')
-#data = data.shuffle() # Shuffle (?)
-#loader = DataLoader([data], batch_size=32, shuffle=True)
+            y=torch.tensor(glathida_rgis[CFG.target].to_numpy().reshape(-1, 1), dtype=torch.float32))
 
-#for batch in loader:
-#    print(batch)
-    #print(batch.num_graphs)
+def print_graph_info(grafo):
+    print(grafo)
+    print(f'Check if data is OK: {grafo.validate(raise_on_error=True)}')
+    print(f'Keys: {grafo.keys}')
+    print(f'Num nodes: {grafo.num_nodes}')
+    print(f'Num edges: {grafo.num_edges}')
+    print(f'Num features: {grafo.num_node_features}')
+    print(f'Isolated nodes: {grafo.has_isolated_nodes()}')
+    print(f'Self loops: {grafo.has_self_loops()}')
+    print(f'Directed: {grafo.is_directed()}')
+
+print_graph_info(data)
 
 class GCN(torch.nn.Module):
     def __init__(self):
@@ -113,25 +116,54 @@ class GCN(torch.nn.Module):
         self.conv2 = GCNConv(100, 1)
 
     def forward(self, data):
-        x, edge_index = data.x, data.edge_index
+        h, edge_index = data.x, data.edge_index
 
-        x = self.conv1(x, edge_index)
-        x = F.relu(x)
+        h = self.conv1(h, edge_index)
+        h = F.relu(h)
         #x = F.dropout(x, training=self.training)
-        x = self.conv2(x, edge_index)
-        return x
+        h = self.conv2(h, edge_index)
+        return h
 
+
+# Plot some stuff
+ifplot = False
+if ifplot is True:
+    G = to_networkx(data, to_undirected=True)
+    nx.draw(G)
+    plt.show()
+
+
+# Random split
+transform = RandomNodeSplit(num_val=0.1, num_test=0.2)
+data = transform(data)
+
+print('-'*50)
+print_graph_info(data)
+print('-'*50)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = GCN().to(device)
 data = data.to(device)
+criterion = nn.MSELoss()
 optimizer = Adam(model.parameters(), lr=CFG.lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=0.0)
 
-model.train()
-for epoch in range(5):
+
+for epoch in range(CFG.epochs):
+    model.train()
     optimizer.zero_grad()
-    out = model(data)
-    print(out.shape)
-    #loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
-    #loss.backward()
-    #optimizer.step()
+    out = model(data) # NB out contiene TUTTI i nodi
+    loss = criterion(out[data.train_mask], data.y[data.train_mask])
+    loss.backward()
+    optimizer.step()
+
+    rmse = mean_squared_error(out[data.train_mask].detach().cpu().numpy(),
+                              data.y[data.train_mask].detach().cpu().numpy(), squared=False)
+
+    model.eval()
+    with torch.no_grad():
+        out = model(data)
+        loss_val = criterion(out[data.val_mask], data.y[data.val_mask])
+        rmse_val = mean_squared_error(out[data.val_mask].detach().cpu().numpy(),
+                                  data.y[data.val_mask].detach().cpu().numpy(), squared=False)
+
+    print(f'Epoch {epoch} | Train loss {loss:.2f} | Val loss {loss_val:.2f} | Train rmse {rmse:.3f} | Val rmse {rmse_val:.3f}')
