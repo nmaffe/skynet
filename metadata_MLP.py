@@ -30,7 +30,7 @@ class CFG:
     batch_size = 512
     num_workers = 16
     lr = 0.001
-    epochs =100
+    epochs = 100
     loss = nn.MSELoss()# my_loss #nn.L1Loss() #nn.MSELoss() # nn.L1Loss()
     L2_penalty=0.000
 
@@ -194,8 +194,8 @@ def create_test(df, minimum_test_size=1000, rgi=None, seed=None):
     return test
 
 # Train, val, and test
-test = create_test(glathida_rgis,  minimum_test_size=1000, rgi=3, seed=4)
-#test = glathida_rgis.loc[(glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76)]
+#test = create_test(glathida_rgis,  minimum_test_size=1000, rgi=3, seed=4)
+test = glathida_rgis.loc[(glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76)]
 #test = glathida_rgis.loc[(glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76)].sample(n=1879)
 #val = glathida_rgis.loc[(glathida_rgis['RGI']==3)].drop(test.index).sample(n=2000)
 val = glathida_rgis.drop(test.index).sample(n=1000)

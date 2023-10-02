@@ -38,7 +38,7 @@ class CFG:
     batch_size = 512
     num_workers = 16
     lr = 0.001
-    epochs =100
+    epochs = 10000
     loss = nn.MSELoss()
     L2_penalty=0.000
 
@@ -46,7 +46,7 @@ PATH_METADATA = '/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-
 file = 'TTT_final_grid_20.csv'
 
 glathida_rgis = pd.read_csv(PATH_METADATA+file, low_memory=False)
-glathida_rgis = glathida_rgis.loc[glathida_rgis['RGI']==11]
+glathida_rgis = glathida_rgis.loc[glathida_rgis['RGI']==3]
 print(f'Dataset: {len(glathida_rgis)} rows and', glathida_rgis['RGIId'].nunique(), 'glaciers.')
 print(list(glathida_rgis))
 
@@ -113,15 +113,20 @@ class GCN(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.conv1 = GCNConv(data.num_node_features, 100)
-        self.conv2 = GCNConv(100, 1)
+        self.conv2 = GCNConv(100, 50)
+        self.conv3 = GCNConv(50, 20)
+        self.conv4 = GCNConv(20, 1)
 
     def forward(self, data):
         h, edge_index = data.x, data.edge_index
 
-        h = self.conv1(h, edge_index)
-        h = F.relu(h)
-        #x = F.dropout(x, training=self.training)
-        h = self.conv2(h, edge_index)
+        h = torch.relu(self.conv1(h, edge_index))
+        h = nn.Dropout(0.5)(h)
+        h = torch.relu(self.conv2(h, edge_index))
+        h = nn.Dropout(0.2)(h)
+        h = torch.relu(self.conv3(h, edge_index))
+        h = nn.Dropout(0.2)(h)
+        h = self.conv4(h, edge_index)
         return h
 
 
@@ -133,19 +138,41 @@ if ifplot is True:
     plt.show()
 
 
-# Random split
-transform = RandomNodeSplit(num_val=0.1, num_test=0.2)
-data = transform(data)
+# Train / Val / Test
+train_mask_bool = pd.Series(True, index=glathida_rgis.index)
+val_mask_bool = pd.Series(False, index=glathida_rgis.index)
+
+test_mask_bool = (glathida_rgis['POINT_LAT']<76) #1879
+
+train_mask_bool[test_mask_bool] = False
+print(len(train_mask_bool), train_mask_bool.sum())
+
+some_val_indexes = train_mask_bool[test_mask_bool==False].sample(1000).index
+train_mask_bool[some_val_indexes] = False
+print(len(train_mask_bool), train_mask_bool.sum())
+
+val_mask_bool[some_val_indexes] = True
+print(len(val_mask_bool), val_mask_bool.sum())
+
+
+print(f'Train / Val / Test : {np.sum(train_mask_bool)} {np.sum(val_mask_bool)} {np.sum(test_mask_bool)}')
+data['test_mask'] = torch.tensor(test_mask_bool.to_numpy(), dtype=torch.bool)
+data['val_mask'] = torch.tensor(val_mask_bool.to_numpy(), dtype=torch.bool)
+data['train_mask'] = torch.tensor(train_mask_bool.to_numpy(), dtype=torch.bool)
+
+#transform = RandomNodeSplit(split='train_rest', num_val=0.1)
+#data = transform(data)
 
 print('-'*50)
 print_graph_info(data)
 print('-'*50)
 
+# Model
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = GCN().to(device)
 data = data.to(device)
 criterion = nn.MSELoss()
-optimizer = Adam(model.parameters(), lr=CFG.lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=0.0)
+optimizer = Adam(model.parameters(), lr=CFG.lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=CFG.L2_penalty)
 
 
 for epoch in range(CFG.epochs):
