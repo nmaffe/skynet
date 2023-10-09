@@ -159,6 +159,7 @@ file = 'TTT_final_grid_20.csv'
 
 glathida_rgis = pd.read_csv(PATH_METADATA+file, low_memory=False)
 #glathida_rgis = glathida_rgis.loc[glathida_rgis['THICKNESS'] > 0]
+#glathida_rgis = glathida_rgis.loc[glathida_rgis['RGI'] == 11]
 print(f'Dataset: {len(glathida_rgis)} rows and', glathida_rgis['RGIId'].nunique(), 'glaciers.')
 
 
@@ -195,7 +196,7 @@ def create_test(df, minimum_test_size=1000, rgi=None, seed=None):
 
 # Train, val, and test
 #test = create_test(glathida_rgis,  minimum_test_size=1000, rgi=3, seed=4)
-test = glathida_rgis.loc[(glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76)]
+test = glathida_rgis.loc[(glathida_rgis['RGI']==11) & (glathida_rgis['POINT_LON']<7.2)]
 #test = glathida_rgis.loc[(glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76)].sample(n=1879)
 #val = glathida_rgis.loc[(glathida_rgis['RGI']==3)].drop(test.index).sample(n=2000)
 val = glathida_rgis.drop(test.index).sample(n=1000)
@@ -228,7 +229,7 @@ optimizer = Adam(model.parameters(), lr=CFG.lr, betas=(0.9, 0.999), eps=1e-08, w
 # ====================================================
 def train_loop(train, val, model, optimizer):
 
-    best_mse = np.inf
+    best_rmse = np.inf
     best_weights = None
 
     # Datasets
@@ -306,8 +307,8 @@ def train_loop(train, val, model, optimizer):
             #if (step % 1000 == 0):
             #    print('Test', epoch, step, '\t', float(loss), '\t', r2)
 
-            if float(loss) < best_mse:
-                best_mse = float(loss)
+            if rmse < best_rmse:
+                best_rmse = rmse
                 best_weights = copy.deepcopy(model.state_dict())
 
         val_loss_history.append(np.mean(val_loss_epoch))

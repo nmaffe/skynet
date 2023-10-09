@@ -2,12 +2,15 @@ import time
 import copy
 import random
 import math
+from glob import glob
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.tri as tri
 
 from utils import haversine
 import pandas as pd
 import geopandas as gpd
+import scipy
 from scipy import stats
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 from sklearn.preprocessing import StandardScaler, QuantileTransformer
@@ -38,15 +41,18 @@ class CFG:
     batch_size = 512
     num_workers = 16
     lr = 0.001
-    epochs = 10000
+    epochs = 10000#10000
     loss = nn.MSELoss()
     L2_penalty = 0.0
+    threshold = 3 #.5
 
 PATH_METADATA = '/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/'
 file = 'TTT_final_grid_20.csv'
 
 glathida_rgis = pd.read_csv(PATH_METADATA+file, low_memory=False)
-glathida_rgis = glathida_rgis.loc[glathida_rgis['RGI']==3]
+#glathida_rgis = glathida_rgis.loc[glathida_rgis['RGI']==11]
+glathida_rgis = glathida_rgis.loc[glathida_rgis['THICKNESS']>=0]
+#glathida_rgis = glathida_rgis.loc[abs((0.5*(glathida_rgis['ith_m']+glathida_rgis['ith_f']))-(glathida_rgis['THICKNESS']))/glathida_rgis['THICKNESS']<0.1]
 print(f'Dataset: {len(glathida_rgis)} rows and', glathida_rgis['RGIId'].nunique(), 'glaciers.')
 print(list(glathida_rgis))
 
@@ -76,27 +82,30 @@ if run_non_vectorized:
 
 
 # Adjacency matrix
-# if distances < 3km, edge=1, otherwise edge=0
-threshold = 3.0
-adj_matrix = np.where(distances < threshold, 1, 0)
+adj_matrix = np.where(distances < CFG.threshold, 1, 0)
 #print(adj_matrix)
 # remove self-connections (set diagonal to zero)
 np.fill_diagonal(adj_matrix, 0)
 #print(adj_matrix)
 
-
 # Edges
 # find indexes corresponding to 1 in the adjacency matrix
 edge_index = np.argwhere(adj_matrix==1) # (node_indexes, 2)
-edge_index = edge_index.transpose() # (2, node_indexes, 2)
+edge_index = edge_index.transpose() # (2, node_indexes)
 print(f'Edge index vector: {edge_index.shape}')
+
+edge_weight = distances[adj_matrix==1]
+print(f'Check min and max should be > 0 and < threshold: {np.min(edge_weight)}, {np.max(edge_weight)}')
+edge_weight = 1./(edge_weight)
 
 # graph
 data = Data(x=torch.tensor(glathida_rgis[CFG.features].to_numpy(), dtype=torch.float32),
             edge_index=torch.tensor(edge_index, dtype=torch.long),
+            edge_weight=torch.tensor(edge_weight, dtype=torch.float32),
             y=torch.tensor(glathida_rgis[CFG.target].to_numpy().reshape(-1, 1), dtype=torch.float32),
             m=torch.tensor(glathida_rgis[CFG.millan].to_numpy().reshape(-1, 1), dtype=torch.float32),
-            f=torch.tensor(glathida_rgis[CFG.farinotti].to_numpy().reshape(-1, 1), dtype=torch.float32))
+            f=torch.tensor(glathida_rgis[CFG.farinotti].to_numpy().reshape(-1, 1), dtype=torch.float32)
+            )
 
 def print_graph_info(grafo):
     print(grafo)
@@ -111,59 +120,86 @@ def print_graph_info(grafo):
 
 print_graph_info(data)
 
-class GCN(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv1 = GCNConv(data.num_node_features, 100)
-        self.conv2 = GCNConv(100, 50)
-        self.conv3 = GCNConv(50, 20)
-        self.conv4 = GCNConv(20, 1)
-
-        self.fc_A = GCNConv(3, 10)
-        self.fcA_1 = GCNConv(10, 1)
-
-    def forward(self, data):
-        h, edge_index = data.x, data.edge_index
-        m, f = data.m, data.f
-
-        h = torch.relu(self.conv1(h, edge_index))
-        h = nn.Dropout(0.2)(h)
-        h = torch.relu(self.conv2(h, edge_index))
-        h = nn.Dropout(0.1)(h)
-        h = torch.relu(self.conv3(h, edge_index))
-        h = nn.Dropout(0.1)(h)
-        h = self.conv4(h, edge_index)
-
-        x = torch.concat((h, m, f), 1)
-        x = torch.relu(self.fc_A(x, edge_index))
-        x = self.fcA_1(x, edge_index)
-
-        return h
-
-
 # Plot some stuff
 ifplot = False
 if ifplot is True:
-    G = to_networkx(data, to_undirected=True)
-    nx.draw(G)
-    plt.show()
+    #G = to_networkx(data, to_undirected=True)
+    #nx.draw(G)
+    #plt.show()
+    def convert_to_networkx(graph, n_sample=None):
 
+        g = to_networkx(graph, node_attrs=["x"], to_undirected=True)
+        y = graph.y.numpy()
+
+        if n_sample is not None:
+            sampled_nodes = random.sample(g.nodes, n_sample)
+            g = g.subgraph(sampled_nodes)
+            y = y[sampled_nodes]
+
+        return g, y
+
+
+    def plot_graph(g, y):
+
+        plt.figure(figsize=(9, 7))
+        nx.draw_spring(g, node_size=30, arrows=False, node_color=y)
+        plt.show()
+
+
+    g, y = convert_to_networkx(data, n_sample=1000)
+    plot_graph(g, y)
+
+
+class GCN(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.conv1 = GCNConv(data.num_node_features, 100, improved=True)
+        self.conv2 = GCNConv(100, 50, improved=True)
+        self.conv3 = GCNConv(50, 30, improved=True)
+        self.conv3_1 = GCNConv(30, 30, improved=True)
+        self.conv4 = GCNConv(30, 5, improved=True)
+        #self.conv4_1 = GCNConv(10, 1, improved=True)
+
+        self.fc_A = GCNConv(7, 10, improved=True)
+        self.fcA_1 = GCNConv(10, 1, improved=True)
+
+    def forward(self, data):
+        h, edge_index, edge_weight = data.x, data.edge_index, data.edge_weight
+        m, f = data.m, data.f
+
+        h = torch.relu(self.conv1(h, edge_index, edge_weight=edge_weight))
+        h = nn.Dropout(0.5)(h)
+        h = torch.relu(self.conv2(h, edge_index, edge_weight=edge_weight))
+        h = nn.Dropout(0.2)(h)
+        h = torch.relu(self.conv3(h, edge_index, edge_weight=edge_weight))
+        h = nn.Dropout(0.1)(h)
+        h = torch.relu(self.conv3_1(h, edge_index, edge_weight=edge_weight))
+        h = nn.Dropout(0.1)(h)
+        h = self.conv4(h, edge_index, edge_weight=edge_weight)
+
+        h = torch.concat((h, m, f), 1)
+        h = torch.relu(self.fc_A(h, edge_index, edge_weight=edge_weight))
+        #x = nn.Dropout(0.1)(x)
+        h = self.fcA_1(h, edge_index, edge_weight=edge_weight)
+
+        return h
 
 # Train / Val / Test
 train_mask_bool = pd.Series(True, index=glathida_rgis.index)
 val_mask_bool = pd.Series(False, index=glathida_rgis.index)
 
-test_mask_bool = (glathida_rgis['POINT_LAT']<76)
+#test_mask_bool = ((glathida_rgis['RGI']==11) & (glathida_rgis['POINT_LON']<7.2))#<76)
+test_mask_bool = ((glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76))#<76)
 
 train_mask_bool[test_mask_bool] = False
-print(len(train_mask_bool), train_mask_bool.sum())
+#print(len(train_mask_bool), train_mask_bool.sum())
 
 some_val_indexes = train_mask_bool[test_mask_bool==False].sample(1000).index
 train_mask_bool[some_val_indexes] = False
-print(len(train_mask_bool), train_mask_bool.sum())
+#print(len(train_mask_bool), train_mask_bool.sum())
 
 val_mask_bool[some_val_indexes] = True
-print(len(val_mask_bool), val_mask_bool.sum())
+#print(len(val_mask_bool), val_mask_bool.sum())
 
 
 print(f'Train / Val / Test : {np.sum(train_mask_bool)} {np.sum(val_mask_bool)} {np.sum(test_mask_bool)}')
@@ -182,7 +218,7 @@ print('-'*50)
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = GCN().to(device)
 data = data.to(device)
-criterion = nn.MSELoss()
+criterion = CFG.loss
 optimizer = Adam(model.parameters(), lr=CFG.lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=CFG.L2_penalty)
 
 best_rmse = np.inf
@@ -283,7 +319,7 @@ ax2.hist(y_test-y_test_m, bins=np.arange(-1000, 1000, 10), label='Millan', color
 ax2.hist(y_test-y_test_f, bins=np.arange(-1000, 1000, 10), label='Farinotti', color='red', ec='red', alpha=.3, zorder=1)
 
 # text
-text_ml = f'NN\n$\mu$ = {mu_ML:.1f}\nmed = {med_ML:.1f}\n$\sigma$ = {std_ML:.1f}'
+text_ml = f'GNN\n$\mu$ = {mu_ML:.1f}\nmed = {med_ML:.1f}\n$\sigma$ = {std_ML:.1f}'
 text_millan = f'Millan\n$\mu$ = {mu_millan:.1f}\nmed = {med_millan:.1f}\n$\sigma$ = {std_millan:.1f}'
 text_farinotti = f'Farinotti\n$\mu$ = {mu_farinotti:.1f}\nmed = {med_farinotti:.1f}\n$\sigma$ = {std_farinotti:.1f}'
 # text boxes
@@ -301,3 +337,50 @@ ax2.legend(loc='best')
 
 plt.tight_layout()
 plt.show()
+
+
+# Visualize test predictions
+
+dataset_test = glathida_rgis[test_mask_bool]
+print('Test dataset:', len(dataset_test))
+test_glaciers_names = dataset_test['RGIId'].unique().tolist()
+print('Test glaciers:', test_glaciers_names)
+
+glacier_geometries = []
+for glacier_name in test_glaciers_names:
+    rgi = glacier_name[6:8]
+    oggm_rgi_shp = glob(f'/home/nico/OGGM/rgi/RGIV62/{rgi}*/{rgi}*.shp')[0]
+    print(glacier_name)
+    oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)
+    glacier_geometry = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name]['geometry'].item()
+    #print(glacier_geometry)
+    glacier_geometries.append(glacier_geometry)
+
+
+fig, axes = plt.subplots(2,2, figsize=(10,7))
+ax1, ax2, ax3, ax4 = axes.flatten()
+
+y_min = min(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
+y_max = max(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
+
+s1 = ax1.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_test, cmap='Blues', label='Glathida')
+s2 = ax2.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_preds, cmap='Blues', label='GNN')
+s3 = ax3.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_test_m, cmap='Blues', label='Millan')
+s4 = ax4.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_test_f, cmap='Blues', label='Farinotti')
+
+for ax in (ax1, ax2, ax3, ax4):
+    for geom in glacier_geometries:
+        ax.plot(*geom.exterior.xy, c='magenta')
+
+cbar1 = plt.colorbar(s1, ax=ax1)
+cbar2 = plt.colorbar(s2, ax=ax2)
+cbar3 = plt.colorbar(s3, ax=ax3)
+cbar4 = plt.colorbar(s4, ax=ax4)
+for cbar in (cbar1, cbar2, cbar3, cbar4):
+    cbar.mappable.set_clim(vmin=y_min,vmax=y_max)
+    cbar.set_label('THICKNESS (m)', labelpad=15, rotation=270)
+
+for ax in (ax1, ax2, ax3, ax4): ax.legend()
+
+plt.show()
+
