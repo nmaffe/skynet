@@ -1,5 +1,6 @@
 import time
 import copy
+from glob import glob
 import random
 import math
 import numpy as np
@@ -196,8 +197,8 @@ def create_test(df, minimum_test_size=1000, rgi=None, seed=None):
 
 # Train, val, and test
 #test = create_test(glathida_rgis,  minimum_test_size=1000, rgi=3, seed=4)
-test = glathida_rgis.loc[(glathida_rgis['RGI']==11) & (glathida_rgis['POINT_LON']<7.2)]
-#test = glathida_rgis.loc[(glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76)].sample(n=1879)
+#test = glathida_rgis.loc[(glathida_rgis['RGI']==11) & (glathida_rgis['POINT_LON']<7.2)]
+test = glathida_rgis.loc[(glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76)]#.sample(n=1879)
 #val = glathida_rgis.loc[(glathida_rgis['RGI']==3)].drop(test.index).sample(n=2000)
 val = glathida_rgis.drop(test.index).sample(n=1000)
 #train = glathida_rgis.sample(100000)#.drop(val.index)
@@ -418,4 +419,57 @@ ax2.set_xlabel('Glathida - Model (m)')
 ax2.legend(loc='best')
 
 plt.tight_layout()
+plt.show()
+
+# Visualize test predictions
+print('Test dataset:', len(test))
+test_glaciers_names = test['RGIId'].unique().tolist()
+print('Test glaciers:', test_glaciers_names)
+
+glacier_geometries = []
+for glacier_name in test_glaciers_names:
+    rgi = glacier_name[6:8]
+    oggm_rgi_shp = glob(f'/home/nico/OGGM/rgi/RGIV62/{rgi}*/{rgi}*.shp')[0]
+    print(glacier_name)
+    oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)
+    glacier_geometry = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name]['geometry'].item()
+    #print(glacier_geometry)
+    glacier_geometries.append(glacier_geometry)
+
+
+fig, axes = plt.subplots(2,3, figsize=(10,7))
+ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
+
+y_min = min(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
+y_max = max(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
+y_min_diff = min(np.concatenate((y_preds-y_test_f, y_preds-y_test_m)))
+y_max_diff = max(np.concatenate((y_preds-y_test_f, y_preds-y_test_m)))
+
+s1 = ax1.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test, cmap='Blues', label='Glathida')
+s2 = ax2.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_preds, cmap='Blues', label='MLP')
+s3 = ax3.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test_m, cmap='Blues', label='Millan')
+s4 = ax4.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test_f, cmap='Blues', label='Farinotti')
+s5 = ax5.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_preds-y_test_f, cmap='bwr', label='MLP-Farinotti')
+s6 = ax6.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_preds-y_test_m, cmap='bwr', label='MLP-Millan')
+
+for ax in (ax1, ax2, ax3, ax4, ax5, ax6):
+    for geom in glacier_geometries:
+        ax.plot(*geom.exterior.xy, c='magenta')
+
+cbar1 = plt.colorbar(s1, ax=ax1)
+cbar2 = plt.colorbar(s2, ax=ax2)
+cbar3 = plt.colorbar(s3, ax=ax3)
+cbar4 = plt.colorbar(s4, ax=ax4)
+cbar5 = plt.colorbar(s5, ax=ax5)
+cbar6 = plt.colorbar(s6, ax=ax6)
+
+for cbar in (cbar1, cbar2, cbar3, cbar4):
+    cbar.mappable.set_clim(vmin=y_min,vmax=y_max)
+    cbar.set_label('THICKNESS (m)', labelpad=15, rotation=270)
+for cbar in (cbar5, cbar6):
+    cbar.mappable.set_clim(vmin=y_min_diff, vmax=y_max_diff)
+
+
+for ax in (ax1, ax2, ax3, ax4, ax5, ax6): ax.legend()
+
 plt.show()

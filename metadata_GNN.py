@@ -42,7 +42,7 @@ class CFG:
     epochs = 10000#10000
     loss = nn.MSELoss()
     L2_penalty = 0.0
-    threshold = 0.1#3.0 #.5
+    threshold = 3#3.0 #.5
 
 PATH_METADATA = '/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/'
 file = 'TTT_final_grid_20.csv'
@@ -220,8 +220,8 @@ class GCN(torch.nn.Module):
 train_mask_bool = pd.Series(True, index=glathida_rgis.index)
 val_mask_bool = pd.Series(False, index=glathida_rgis.index)
 
-test_mask_bool = ((glathida_rgis['RGI']==11) & (glathida_rgis['POINT_LON']<7.2))#<76)
-#test_mask_bool = ((glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76))#<76)
+#test_mask_bool = ((glathida_rgis['RGI']==11) & (glathida_rgis['POINT_LON']<7.2))#<76)
+test_mask_bool = ((glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76))#<76)
 
 train_mask_bool[test_mask_bool] = False
 #print(len(train_mask_bool), train_mask_bool.sum())
