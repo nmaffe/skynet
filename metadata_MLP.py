@@ -31,7 +31,7 @@ class CFG:
     num_workers = 16
     lr = 0.001
     epochs = 100
-    loss = nn.MSELoss()# my_loss #nn.L1Loss() #nn.MSELoss() # nn.L1Loss()
+    loss = nn.MSELoss()
     L2_penalty=0.000
 
 # ====================================================

@@ -5,12 +5,10 @@ import math
 from glob import glob
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.tri as tri
 
 from utils import haversine
 import pandas as pd
 import geopandas as gpd
-import scipy
 from scipy import stats
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 from sklearn.preprocessing import StandardScaler, QuantileTransformer
@@ -44,7 +42,7 @@ class CFG:
     epochs = 10000#10000
     loss = nn.MSELoss()
     L2_penalty = 0.0
-    threshold = 3 #.5
+    threshold = 0.1#3.0 #.5
 
 PATH_METADATA = '/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/'
 file = 'TTT_final_grid_20.csv'
@@ -153,43 +151,77 @@ if ifplot is True:
 class GCN(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv1 = GCNConv(data.num_node_features, 100, improved=True)
-        self.conv2 = GCNConv(100, 50, improved=True)
-        self.conv3 = GCNConv(50, 30, improved=True)
-        self.conv3_1 = GCNConv(30, 30, improved=True)
-        self.conv4 = GCNConv(30, 5, improved=True)
-        #self.conv4_1 = GCNConv(10, 1, improved=True)
+        self.conv1 = GATConv(data.num_node_features, 100, improved=True)
+        self.conv1_2 = GATConv(data.num_node_features, 100, improved=True)
+        self.conv2 = GATConv(100, 1, improved=True)
+        self.conv2_2 = GATConv(100, 1, improved=True)
+        self.conv3 = GATConv(50, 30, improved=True)
+        self.conv3_1 = GATConv(30, 30, improved=True)
+        self.conv4 = GATConv(30, 5, improved=True)
+        self.conv4_1 = GATConv(5, 1, improved=True)
 
-        self.fc_A = GCNConv(7, 10, improved=True)
-        self.fcA_1 = GCNConv(10, 1, improved=True)
+        self.fc_A = GATConv(2, 10, improved=True)
+        self.fcA_1 = GATConv(10, 1, improved=True)
+
+        self.conv2m = GATConv(2, 10, improved=True)
+        self.conv2m_1 = GATConv(10, 1, improved=True)
+
+        self.conv2f = GATConv(2, 10, improved=True)
+        self.conv2f_1 = GATConv(10, 1, improved=True)
 
     def forward(self, data):
         h, edge_index, edge_weight = data.x, data.edge_index, data.edge_weight
         m, f = data.m, data.f
 
-        h = torch.relu(self.conv1(h, edge_index, edge_weight=edge_weight))
-        h = nn.Dropout(0.5)(h)
-        h = torch.relu(self.conv2(h, edge_index, edge_weight=edge_weight))
-        h = nn.Dropout(0.2)(h)
-        h = torch.relu(self.conv3(h, edge_index, edge_weight=edge_weight))
-        h = nn.Dropout(0.1)(h)
-        h = torch.relu(self.conv3_1(h, edge_index, edge_weight=edge_weight))
-        h = nn.Dropout(0.1)(h)
-        h = self.conv4(h, edge_index, edge_weight=edge_weight)
+        #h = torch.concat((h, m, f), 1)
+        #h = torch.relu(self.conv1(h, edge_index, edge_weight=edge_weight))
+        #h = nn.Dropout(0.5)(h)
+        #h = torch.relu(self.conv2(h, edge_index, edge_weight=edge_weight))
+        #h = nn.Dropout(0.2)(h)
+        #h = torch.relu(self.conv3(h, edge_index, edge_weight=edge_weight))
+        #h = nn.Dropout(0.1)(h)
+        #h = torch.relu(self.conv3_1(h, edge_index, edge_weight=edge_weight))
+        #h = nn.Dropout(0.1)(h)
+        #h = torch.relu(self.conv4(h, edge_index, edge_weight=edge_weight))
+        #h = nn.Dropout(0.1)(h)
+        #h = self.conv4_1(h, edge_index, edge_weight=edge_weight)
 
-        h = torch.concat((h, m, f), 1)
-        h = torch.relu(self.fc_A(h, edge_index, edge_weight=edge_weight))
+        #h = torch.concat((h, m, f), 1)
+        #h = torch.relu(self.fc_A(h, edge_index, edge_weight=edge_weight))
         #x = nn.Dropout(0.1)(x)
-        h = self.fcA_1(h, edge_index, edge_weight=edge_weight)
+        #h = self.fcA_1(h, edge_index, edge_weight=edge_weight)
+        h1 = torch.relu(self.conv1(h, edge_index))#, edge_weight=edge_weight))
+        h1 = nn.Dropout(0.5)(h1)
+        h1 = self.conv2(h1, edge_index)#, edge_weight=edge_weight)
 
-        return h
+        hm = torch.concat((h1, m), 1)
+        hm = torch.relu(self.conv2m(hm, edge_index))#, edge_weight=edge_weight))
+        hm = nn.Dropout(0.2)(hm)
+        hm_br = self.conv2m_1(hm, edge_index)#, edge_weight=edge_weight)
+        hm = torch.relu(hm_br) #(N,1)
+
+        h2 = torch.relu(self.conv1_2(h, edge_index))#, edge_weight=edge_weight))
+        h2 = nn.Dropout(0.5)(h2)
+        h2 = self.conv2_2(h2, edge_index)#, edge_weight=edge_weight)
+
+        hf = torch.concat((h2, f), 1)
+        hf = torch.relu(self.conv2f(hf, edge_index))#, edge_weight=edge_weight))
+        hf = nn.Dropout(0.2)(hf)
+        hf_br = self.conv2f_1(hf, edge_index)#, edge_weight=edge_weight)  # (N,1)
+        hf = torch.relu(hf_br)
+
+        h = torch.concat((hm, hf), 1) #(N,2)
+        h = torch.relu(self.fc_A(h, edge_index))#, edge_weight=edge_weight))
+        h = self.fcA_1(h, edge_index)#, edge_weight=edge_weight)
+
+        return h, hm_br, hf_br
 
 # Train / Val / Test
 train_mask_bool = pd.Series(True, index=glathida_rgis.index)
 val_mask_bool = pd.Series(False, index=glathida_rgis.index)
 
-#test_mask_bool = ((glathida_rgis['RGI']==11) & (glathida_rgis['POINT_LON']<7.2))#<76)
-test_mask_bool = ((glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76))#<76)
+test_mask_bool = ((glathida_rgis['RGI']==11) & (glathida_rgis['POINT_LON']<7.2))#<76)
+#test_mask_bool = ((glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76))#<76)
 
 train_mask_bool[test_mask_bool] = False
 #print(len(train_mask_bool), train_mask_bool.sum())
@@ -227,9 +259,11 @@ best_weights = None
 for epoch in range(CFG.epochs):
     model.train()
     optimizer.zero_grad(data)
-
-    out = model(data) # NB out contiene TUTTI i nodi
-    loss = criterion(out[data.train_mask], data.y[data.train_mask])
+    out, out_m, out_f = model(data) # NB out contiene TUTTI i nodi
+    loss3 = criterion(out[data.train_mask], data.y[data.train_mask])
+    loss1 = criterion(out_m[data.train_mask], data.y[data.train_mask])
+    loss2 = criterion(out_f[data.train_mask], data.y[data.train_mask])
+    loss = loss1 + loss2 + 2 * loss3
     loss.backward()
     optimizer.step()
 
@@ -238,8 +272,11 @@ for epoch in range(CFG.epochs):
 
     model.eval()
     with torch.no_grad():
-        out = model(data)
-        loss_val = criterion(out[data.val_mask], data.y[data.val_mask])
+        out, out_m, out_f = model(data)
+        loss_val3 = criterion(out[data.val_mask], data.y[data.val_mask])
+        loss_val1 = criterion(out_m[data.val_mask], data.y[data.val_mask])
+        loss_val2 = criterion(out_f[data.val_mask], data.y[data.val_mask])
+        loss_val = loss_val1 + loss_val2 + 2 * loss_val3
         rmse_val = mean_squared_error(out[data.val_mask].detach().cpu().numpy(),
                                   data.y[data.val_mask].detach().cpu().numpy(), squared=False)
 
@@ -258,7 +295,7 @@ best_model.load_state_dict(best_weights)
 best_model.eval()
 
 y_test = data.y[data.test_mask].detach().cpu().numpy().squeeze()
-out = best_model(data)
+out, out_m, out_f = best_model(data)
 y_preds = out[data.test_mask].detach().cpu().numpy().squeeze()
 
 y_test_m = glathida_rgis[CFG.millan][test_mask_bool==True].to_numpy()
@@ -357,18 +394,22 @@ for glacier_name in test_glaciers_names:
     glacier_geometries.append(glacier_geometry)
 
 
-fig, axes = plt.subplots(2,2, figsize=(10,7))
-ax1, ax2, ax3, ax4 = axes.flatten()
+fig, axes = plt.subplots(2,3, figsize=(10,7))
+ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
 
 y_min = min(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
 y_max = max(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
+y_min_diff = min(np.concatenate((y_preds-y_test_f, y_preds-y_test_m)))
+y_max_diff = max(np.concatenate((y_preds-y_test_f, y_preds-y_test_m)))
 
 s1 = ax1.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_test, cmap='Blues', label='Glathida')
 s2 = ax2.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_preds, cmap='Blues', label='GNN')
 s3 = ax3.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_test_m, cmap='Blues', label='Millan')
 s4 = ax4.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_test_f, cmap='Blues', label='Farinotti')
+s5 = ax5.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_preds-y_test_f, cmap='bwr', label='GNN-Farinotti')
+s6 = ax6.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_preds-y_test_m, cmap='bwr', label='GNN-Millan')
 
-for ax in (ax1, ax2, ax3, ax4):
+for ax in (ax1, ax2, ax3, ax4, ax5, ax6):
     for geom in glacier_geometries:
         ax.plot(*geom.exterior.xy, c='magenta')
 
@@ -376,11 +417,17 @@ cbar1 = plt.colorbar(s1, ax=ax1)
 cbar2 = plt.colorbar(s2, ax=ax2)
 cbar3 = plt.colorbar(s3, ax=ax3)
 cbar4 = plt.colorbar(s4, ax=ax4)
+cbar5 = plt.colorbar(s5, ax=ax5)
+cbar6 = plt.colorbar(s6, ax=ax6)
+
 for cbar in (cbar1, cbar2, cbar3, cbar4):
     cbar.mappable.set_clim(vmin=y_min,vmax=y_max)
     cbar.set_label('THICKNESS (m)', labelpad=15, rotation=270)
+for cbar in (cbar5, cbar6):
+    cbar.mappable.set_clim(vmin=y_min_diff, vmax=y_max_diff)
 
-for ax in (ax1, ax2, ax3, ax4): ax.legend()
+
+for ax in (ax1, ax2, ax3, ax4, ax5, ax6): ax.legend()
 
 plt.show()
 
