@@ -197,8 +197,7 @@ class GCN(torch.nn.Module):
         hm = torch.concat((h1, m), 1)
         hm = torch.relu(self.conv2m(hm, edge_index))#, edge_weight=edge_weight))
         hm = nn.Dropout(0.2)(hm)
-        hm_br = self.conv2m_1(hm, edge_index)#, edge_weight=edge_weight)
-        hm = torch.relu(hm_br) #(N,1)
+        hm = torch.relu(self.conv2m_1(hm, edge_index))#, edge_weight=edge_weight) #(N,1)
 
         h2 = torch.relu(self.conv1_2(h, edge_index))#, edge_weight=edge_weight))
         h2 = nn.Dropout(0.5)(h2)
@@ -207,14 +206,13 @@ class GCN(torch.nn.Module):
         hf = torch.concat((h2, f), 1)
         hf = torch.relu(self.conv2f(hf, edge_index))#, edge_weight=edge_weight))
         hf = nn.Dropout(0.2)(hf)
-        hf_br = self.conv2f_1(hf, edge_index)#, edge_weight=edge_weight)  # (N,1)
-        hf = torch.relu(hf_br)
+        hf = torch.relu(self.conv2f_1(hf, edge_index))#, edge_weight=edge_weight)  # (N,1)
 
         h = torch.concat((hm, hf), 1) #(N,2)
         h = torch.relu(self.fc_A(h, edge_index))#, edge_weight=edge_weight))
         h = self.fcA_1(h, edge_index)#, edge_weight=edge_weight)
 
-        return h, hm_br, hf_br
+        return h, hm, hf
 
 # Train / Val / Test
 train_mask_bool = pd.Series(True, index=glathida_rgis.index)
@@ -399,15 +397,15 @@ ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
 
 y_min = min(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
 y_max = max(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
-y_min_diff = min(np.concatenate((y_preds-y_test_f, y_preds-y_test_m)))
-y_max_diff = max(np.concatenate((y_preds-y_test_f, y_preds-y_test_m)))
+y_min_diff = min(np.concatenate((y_preds-y_test_f, y_test-y_preds)))
+y_max_diff = max(np.concatenate((y_preds-y_test_f, y_test-y_preds)))
 
 s1 = ax1.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_test, cmap='Blues', label='Glathida')
 s2 = ax2.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_preds, cmap='Blues', label='GNN')
 s3 = ax3.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_test_m, cmap='Blues', label='Millan')
 s4 = ax4.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_test_f, cmap='Blues', label='Farinotti')
-s5 = ax5.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_preds-y_test_f, cmap='bwr', label='GNN-Farinotti')
-s6 = ax6.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_preds-y_test_m, cmap='bwr', label='GNN-Millan')
+s5 = ax5.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_test-y_preds, cmap='bwr', label='Glathida - GNN')
+s6 = ax6.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_preds-y_test_f, cmap='bwr', label='GNN - Farinotti')
 
 for ax in (ax1, ax2, ax3, ax4, ax5, ax6):
     for geom in glacier_geometries:
