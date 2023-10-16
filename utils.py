@@ -301,7 +301,10 @@ def haversine(lon1, lat1, lon2, lat2):
     E.g. haversine(-1./3600, 0, 0, 0) returns 0.030 km.
     """
     # convert decimal degrees to radians
-    lon1, lat1, lon2, lat2 = np.radians([lon1, lat1, lon2, lat2])
+    lon1 = np.radians(lon1)
+    lat1 = np.radians(lat1)
+    lon2 = np.radians(lon2)
+    lat2 = np.radians(lat2)
 
     # haversine formula
     dlon = lon2 - lon1
