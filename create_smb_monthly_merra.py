@@ -32,18 +32,13 @@ ds_glc['RUNOFF'].attrs['_FillValue'] = np.nan
 # todo: should EVAP be added or subtracted ?
 SMB = ds_int['PRECCU'] + ds_int['PRECLS'] + ds_int['PRECSN'] - ds_int['EVAP'] - ds_glc['RUNOFF']
 
-# Create SMB Dataset with the SMB DataArray
+# Create Dataset with the SMB DataArray
 ds_smb = xr.Dataset(coords=ds_int.coords)
 ds_smb['SMB'] = SMB
 
-print(ds_int['PRECCU'].isnull().sum())
-print(ds_int['PRECLS'].isnull().sum())
-print(ds_int['PRECSN'].isnull().sum())
-print(ds_int['EVAP'].isnull().sum())
-print(ds_glc['RUNOFF'].isnull().sum())
-print(float(ds_smb['SMB'].isnull().sum()))
-
-
 # Plot
-ds_glc['RUNOFF'].plot(cmap='bwr')
-plt.show()
+#ds_glc['RUNOFF'].plot(cmap='bwr')
+#plt.show()
+#fig, ax = plt.subplots()
+#ax.imshow(ds_glc['RUNOFF'].values.squeeze(), cmap='bwr')
+#plt.show()
