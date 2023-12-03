@@ -32,25 +32,31 @@ class CFG:
 
     features = ['Area', 'slope_lat', 'slope_lon', 'elevation_astergdem', 'vx', 'vy',
      'dist_from_border_km', 'v', 'slope', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
-     'elevation_from_zmin', 'RGI']
+     'elevation_from_zmin', 'RGI'] #'sia'
     millan = 'ith_m'
     farinotti = 'ith_f'
     target = 'THICKNESS'
     batch_size = 512
     num_workers = 16
-    lr = 0.001
-    epochs = 10000#10000
+    lr = 0.002
+    epochs = 30000#10000
     loss = nn.MSELoss()
     L2_penalty = 0.0
-    threshold = 3#3.0 #.5
+    threshold = 3.0#3.0 #.5
 
 PATH_METADATA = '/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/'
 file = 'TTT_final_grid_20.csv'
 
 glathida_rgis = pd.read_csv(PATH_METADATA+file, low_memory=False)
+
+#glathida_rgis['sia'] = ((4*glathida_rgis['v'])/((917*9.81*glathida_rgis['slope'])**3))**1./4
+#glathida_rgis.fillna(glathida_rgis.mean(), inplace=T#rue)
+#glathida_rgis['sia'][glathida_rgis['sia'] > 1000] = 1000
+#print(glathida_rgis['sia'].mean())
+#print(glathida_rgis.isnull().values.any())
+
 #glathida_rgis = glathida_rgis.loc[glathida_rgis['RGI']==11]
 glathida_rgis = glathida_rgis.loc[glathida_rgis['THICKNESS']>=0]
-#glathida_rgis = glathida_rgis.loc[abs((0.5*(glathida_rgis['ith_m']+glathida_rgis['ith_f']))-(glathida_rgis['THICKNESS']))/glathida_rgis['THICKNESS']<0.1]
 print(f'Dataset: {len(glathida_rgis)} rows and', glathida_rgis['RGIId'].nunique(), 'glaciers.')
 print(list(glathida_rgis))
 
@@ -82,7 +88,7 @@ if run_non_vectorized:
 # Adjacency matrix
 adj_matrix = np.where(distances < CFG.threshold, 1, 0)
 #print(adj_matrix)
-# remove self-connections (set diagonal to zero)
+# remove self loops (set diagonal to zero)
 np.fill_diagonal(adj_matrix, 0)
 #print(adj_matrix)
 
@@ -94,7 +100,7 @@ print(f'Edge index vector: {edge_index.shape}')
 
 edge_weight = distances[adj_matrix==1]
 print(f'Check min and max should be > 0 and < threshold: {np.min(edge_weight)}, {np.max(edge_weight)}')
-edge_weight = 1./(edge_weight)
+edge_weight = 1./(edge_weight ** 1) #np.zeros_like(edge_weight) #
 
 # graph
 data = Data(x=torch.tensor(glathida_rgis[CFG.features].to_numpy(), dtype=torch.float32),
@@ -151,68 +157,71 @@ if ifplot is True:
 class GCN(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv1 = GATConv(data.num_node_features, 100, improved=True)
-        self.conv1_2 = GATConv(data.num_node_features, 100, improved=True)
-        self.conv2 = GATConv(100, 1, improved=True)
-        self.conv2_2 = GATConv(100, 1, improved=True)
-        self.conv3 = GATConv(50, 30, improved=True)
-        self.conv3_1 = GATConv(30, 30, improved=True)
-        self.conv4 = GATConv(30, 5, improved=True)
-        self.conv4_1 = GATConv(5, 1, improved=True)
+        self.conv1 = GCNConv(data.num_node_features, 100, improved=True)
+        self.conv1_2 = GCNConv(data.num_node_features, 100, improved=True)
+        self.conv2 = GCNConv(100, 50, improved=True)
+        self.conv2_2 = GCNConv(100, 1, improved=True)
+        self.conv3 = GCNConv(50, 30, improved=True)
+        self.conv3_1 = GCNConv(30, 30, improved=True)
+        self.conv4 = GCNConv(30, 10, improved=True)
+        self.conv4_1 = GCNConv(10, 1, improved=True)
 
-        self.fc_A = GATConv(2, 10, improved=True)
-        self.fcA_1 = GATConv(10, 1, improved=True)
+        self.fc_A = GCNConv(2, 10, improved=True)
+        self.fcA_1 = GCNConv(10, 1, improved=True)
 
-        self.conv2m = GATConv(2, 10, improved=True)
-        self.conv2m_1 = GATConv(10, 1, improved=True)
+        self.conv2m = GCNConv(2, 10, improved=True)
+        self.conv2m_1 = GCNConv(10, 1, improved=True)
 
-        self.conv2f = GATConv(2, 10, improved=True)
-        self.conv2f_1 = GATConv(10, 1, improved=True)
+        self.conv2f = GCNConv(2, 10, improved=True)
+        self.conv2f_1 = GCNConv(10, 1, improved=True)
 
     def forward(self, data):
         h, edge_index, edge_weight = data.x, data.edge_index, data.edge_weight
         m, f = data.m, data.f
 
         #h = torch.concat((h, m, f), 1)
-        #h = torch.relu(self.conv1(h, edge_index, edge_weight=edge_weight))
-        #h = nn.Dropout(0.5)(h)
-        #h = torch.relu(self.conv2(h, edge_index, edge_weight=edge_weight))
-        #h = nn.Dropout(0.2)(h)
-        #h = torch.relu(self.conv3(h, edge_index, edge_weight=edge_weight))
-        #h = nn.Dropout(0.1)(h)
+        h = torch.relu(self.conv1(h, edge_index, edge_weight=edge_weight))
+        h = nn.Dropout(0.5)(h)
+        h = torch.relu(self.conv2(h, edge_index, edge_weight=edge_weight))
+        h = nn.Dropout(0.2)(h)
+        h = torch.relu(self.conv3(h, edge_index, edge_weight=edge_weight))
+        h = nn.Dropout(0.1)(h)
         #h = torch.relu(self.conv3_1(h, edge_index, edge_weight=edge_weight))
         #h = nn.Dropout(0.1)(h)
-        #h = torch.relu(self.conv4(h, edge_index, edge_weight=edge_weight))
-        #h = nn.Dropout(0.1)(h)
-        #h = self.conv4_1(h, edge_index, edge_weight=edge_weight)
+        h = torch.relu(self.conv4(h, edge_index, edge_weight=edge_weight))
+        h = nn.Dropout(0.1)(h)
+        h = self.conv4_1(h, edge_index, edge_weight=edge_weight)
 
         #h = torch.concat((h, m, f), 1)
         #h = torch.relu(self.fc_A(h, edge_index, edge_weight=edge_weight))
         #x = nn.Dropout(0.1)(x)
         #h = self.fcA_1(h, edge_index, edge_weight=edge_weight)
-        h1 = torch.relu(self.conv1(h, edge_index))#, edge_weight=edge_weight))
+
+        '''with Millan and Farinotti'''
+        '''
+        h1 = torch.relu(self.conv1(h, edge_index))#, edge_attr=edge_weight))
         h1 = nn.Dropout(0.5)(h1)
-        h1 = self.conv2(h1, edge_index)#, edge_weight=edge_weight)
+        h1 = self.conv2(h1, edge_index)#, edge_attr=edge_weight)
 
         hm = torch.concat((h1, m), 1)
-        hm = torch.relu(self.conv2m(hm, edge_index))#, edge_weight=edge_weight))
+        hm = torch.relu(self.conv2m(hm, edge_index))#, edge_attr=edge_weight))
         hm = nn.Dropout(0.2)(hm)
-        hm = torch.relu(self.conv2m_1(hm, edge_index))#, edge_weight=edge_weight) #(N,1)
+        hm = torch.relu(self.conv2m_1(hm, edge_index))#, edge_attr=edge_weight)) #(N,1)
 
-        h2 = torch.relu(self.conv1_2(h, edge_index))#, edge_weight=edge_weight))
+        h2 = torch.relu(self.conv1_2(h, edge_index))#, edge_attr=edge_weight))
         h2 = nn.Dropout(0.5)(h2)
-        h2 = self.conv2_2(h2, edge_index)#, edge_weight=edge_weight)
+        h2 = self.conv2_2(h2, edge_index)#, edge_attr=edge_weight)
 
         hf = torch.concat((h2, f), 1)
-        hf = torch.relu(self.conv2f(hf, edge_index))#, edge_weight=edge_weight))
+        hf = torch.relu(self.conv2f(hf, edge_index))#, edge_attr=edge_weight))
         hf = nn.Dropout(0.2)(hf)
-        hf = torch.relu(self.conv2f_1(hf, edge_index))#, edge_weight=edge_weight)  # (N,1)
+        hf = torch.relu(self.conv2f_1(hf, edge_index))#, edge_attr=edge_weight))  # (N,1)
 
         h = torch.concat((hm, hf), 1) #(N,2)
-        h = torch.relu(self.fc_A(h, edge_index))#, edge_weight=edge_weight))
-        h = self.fcA_1(h, edge_index)#, edge_weight=edge_weight)
+        h = torch.relu(self.fc_A(h, edge_index))#, edge_attr=edge_weight))
+        h = self.fcA_1(h, edge_index)#, edge_attr=edge_weight)'''
 
-        return h, hm, hf
+        return h#, hm, hf
 
 # Train / Val / Test
 train_mask_bool = pd.Series(True, index=glathida_rgis.index)
@@ -257,11 +266,11 @@ best_weights = None
 for epoch in range(CFG.epochs):
     model.train()
     optimizer.zero_grad(data)
-    out, out_m, out_f = model(data) # NB out contiene TUTTI i nodi
+    out = model(data) # NB out contiene TUTTI i nodi #, out_m, out_f
     loss3 = criterion(out[data.train_mask], data.y[data.train_mask])
-    loss1 = criterion(out_m[data.train_mask], data.y[data.train_mask])
-    loss2 = criterion(out_f[data.train_mask], data.y[data.train_mask])
-    loss = loss1 + loss2 + 2 * loss3
+    #loss1 = criterion(out_m[data.train_mask], data.y[data.train_mask])
+    #loss2 = criterion(out_f[data.train_mask], data.y[data.train_mask])
+    loss = loss3#loss1 + loss2 + 2 * loss3
     loss.backward()
     optimizer.step()
 
@@ -270,11 +279,11 @@ for epoch in range(CFG.epochs):
 
     model.eval()
     with torch.no_grad():
-        out, out_m, out_f = model(data)
+        out = model(data) #, out_m, out_f
         loss_val3 = criterion(out[data.val_mask], data.y[data.val_mask])
-        loss_val1 = criterion(out_m[data.val_mask], data.y[data.val_mask])
-        loss_val2 = criterion(out_f[data.val_mask], data.y[data.val_mask])
-        loss_val = loss_val1 + loss_val2 + 2 * loss_val3
+        #loss_val1 = criterion(out_m[data.val_mask], data.y[data.val_mask])
+        #loss_val2 = criterion(out_f[data.val_mask], data.y[data.val_mask])
+        loss_val = loss_val3 #loss_val1 + loss_val2 + 2 * loss_val3
         rmse_val = mean_squared_error(out[data.val_mask].detach().cpu().numpy(),
                                   data.y[data.val_mask].detach().cpu().numpy(), squared=False)
 
@@ -293,7 +302,7 @@ best_model.load_state_dict(best_weights)
 best_model.eval()
 
 y_test = data.y[data.test_mask].detach().cpu().numpy().squeeze()
-out, out_m, out_f = best_model(data)
+out = best_model(data) #, out_m, out_f
 y_preds = out[data.test_mask].detach().cpu().numpy().squeeze()
 
 y_test_m = glathida_rgis[CFG.millan][test_mask_bool==True].to_numpy()
@@ -405,7 +414,7 @@ s2 = ax2.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10,
 s3 = ax3.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_test_m, cmap='Blues', label='Millan')
 s4 = ax4.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_test_f, cmap='Blues', label='Farinotti')
 s5 = ax5.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_test-y_preds, cmap='bwr', label='Glathida-GNN')
-s6 = ax6.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_preds-y_test_f, cmap='bwr', label='GNN-Farinotti')
+s6 = ax6.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_test-y_test_f, cmap='bwr', label='Glathida-Farinotti')
 
 for ax in (ax1, ax2, ax3, ax4, ax5, ax6):
     for geom in glacier_geometries:
@@ -425,7 +434,7 @@ for cbar in (cbar5, cbar6):
     cbar.mappable.set_clim(vmin=y_min_diff, vmax=y_max_diff)
 
 
-for ax in (ax1, ax2, ax3, ax4, ax5, ax6): ax.legend()
+for ax in (ax1, ax2, ax3, ax4, ax5, ax6): ax.legend(loc='upper left')
 
 plt.show()
 

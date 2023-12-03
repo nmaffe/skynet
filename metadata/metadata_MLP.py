@@ -18,7 +18,6 @@ from torch.optim import Adam
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
-print('test')
 
 class CFG:
 
