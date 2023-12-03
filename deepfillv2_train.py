@@ -99,7 +99,7 @@ def training_loop(generator,        # generator network
                     for j,dem in enumerate(batch_real.cpu().numpy()):
                         thresh=threshold_otsu(dem.squeeze())
                         binary_otsu = dem.squeeze() <= thresh
-                        while np.sum(binary_otsu)/256**2>0.5:
+                        while np.sum(binary_otsu)/256**2>0.5: #reduce threshold if mask is too big
                             thresh = 0.95*(thresh+1.) -1.
                             binary_otsu = dem.squeeze() <= thresh
 

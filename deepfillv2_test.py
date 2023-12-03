@@ -25,19 +25,19 @@ def str2bool(s):
 
 parser = argparse.ArgumentParser(description='Test inpainting')
 parser.add_argument("--image", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/RGI_11_size_256/images/",
+                    default="/home/user/Documents/dataset_testRGI_11_size_256/images/",
                     help="input folder with image files")
 parser.add_argument("--mask", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/RGI_11_size_256/masks/",
+                    default="/home/user/Documents/dataset_testRGI_11_size_256/masks/",
                     help="input folder with mask files")
 parser.add_argument("--fullmask", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/dataset/test/RGI_11_size_256/masks_full/",
+                    default="/home/user/Documents/dataset_testRGI_11_size_256/masks_full/",
                     help="input folder with full mask files")
 parser.add_argument("--out", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/dataset/output/RGI_11_size_256_slopemasked/",
+                    default="/home/user/Documents/dataset_testRGI_11_size_256/otsu_model_output/",
                     help="path to saved results")
 parser.add_argument("--checkpoint", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/Deepfillv2/callbacks/checkpoints/box_model/states_slope_masked.pth",
+                    default="/home/user/Documents/icenet/skynet/Deepfillv2/callbacks/checkpoints/otsu_mask_model/states_90000.pth",
                     help="path to the checkpoint file")
 parser.add_argument("--tfmodel", action='store_true',
                     default=False, help="use model from models_tf.py?")
@@ -76,7 +76,8 @@ def main():
                           and use_cuda_if_available else 'cpu')
 
     # set up network
-    generator = Generator(cnum_in=4, cnum=48, return_flow=False).to(device)
+    cnum_in = 1
+    generator = Generator(cnum_in=cnum_in+1,cnum_out = cnum_in, cnum=24, return_flow=False).to(device)
     generator_state_dict = torch.load(args.checkpoint)['G']
     generator.load_state_dict(generator_state_dict)
     generator.eval() # maffe added this: eval mode
@@ -151,11 +152,12 @@ def main():
         img = img * 2. -1.
 
         # ndarray --> torch
-        img = np.stack((img,)*3, axis=0)
-        img = torch.from_numpy(img).to(dtype=torch.float32) # (3, 256, 256)
+    #    img = np.stack((img,)*3, axis=0)
+        img = torch.from_numpy(img).to(dtype=torch.float32) # (1, 256, 256)
+        img=img.unsqueeze(0)
 
         # calculate slopes
-        slope_lat, slope_lon = torch.gradient(img[0, :, :], spacing=[1., 1.], dim=(0, 1)) # (256, 256)
+        slope_lat, slope_lon = torch.gradient(img.squeeze(), spacing=[1., 1.]) # (256, 256)
         slope_lat = (slope_lat-torch.amin(slope_lat))/(torch.amax(slope_lat)-torch.amin(slope_lat))
         slope_lon = (slope_lon-torch.amin(slope_lon))/(torch.amax(slope_lon)-torch.amin(slope_lon))
         slope_lat.mul_(2).sub_(1).unsqueeze_(0).unsqueeze_(1) # (1, 1, 256, 256)
@@ -183,8 +185,10 @@ def main():
             input('wait')
 
         # NB the mask should be the full mask to account for all other neighbouring glaciers
-        mask = np.stack((mask_full_values,)*3, axis=0) # 1.: masked 0.: unmasked
+     #   mask = np.stack((mask_full_values,)*3, axis=0) # 1.: masked 0.: unmasked
+        mask = mask_full_values
         mask = torch.from_numpy(mask).to(dtype=torch.float32)
+        mask=mask.unsqueeze(0)
 
         _, h, w = img.shape
         grid = 8
@@ -192,7 +196,7 @@ def main():
         # in case the shape is not multiple of 8, we take the closest (//) 8* multiple
         # e.g. if the image is (513, 513), this results in an (512, 512) image
         # we also add one extra dimension at the beginning
-        img = img[:3, :h//grid*grid, :w//grid*grid].unsqueeze(0) # (1, 3, 256, 256)
+        img = img[:, :h//grid*grid, :w//grid*grid].unsqueeze(0) # (1, 3, 256, 256)
         mask = mask[0:1, :h//grid*grid, :w//grid*grid].unsqueeze(0) # (1, 1, 256, 256)
 
         img = img.to(device)
@@ -200,7 +204,7 @@ def main():
         slope_lon = slope_lon.to(device)
         mask = mask.to(device)
 
-        img = torch.cat([img[:, 0:1, :, :], slope_lat, slope_lon], axis=1)
+        #img = torch.cat([img[:, 0:1, :, :], slope_lat, slope_lon], axis=1)
         img_masked = img * (1.-mask)  # mask image
 
         ones_x = torch.ones_like(img_masked)[:, 0:1, :, :] # (1, 1, 256, 256)
@@ -215,7 +219,7 @@ def main():
         # 1. complete image
         image_inpainted = img * (1.-mask) + x_stage2 * mask # (1, 3, 256, 256)
         # 2. rescale
-        image_rescaled = image_inpainted.squeeze()[0,:,:] * 0.5 + 0.5 # rescale to [0,1]
+        image_rescaled = image_inpainted.squeeze() * 0.5 + 0.5 # rescale to [0,1]
         image_rescaled = image_rescaled.cpu().numpy()
         # 3. denormalize
         image_denorm = image_rescaled * (img_max - img_min) + img_min # denormalize to orig values
@@ -243,51 +247,51 @@ def main():
         tqdm.write(f"Glacier area: {mask_values.sum() * ris_metre_lon * ris_metre_lat * 1e-6} km2")
         tqdm.write(f"Glacier volume: {np.nansum(icethick) * ris_metre_lon * ris_metre_lat * 1e-9} km3")
 
-        show2d = True
-        if show2d:
-            mask_to_show = np.where((mask_full_values > 0.), mask_full_values, np.nan)
-            fig, axes = plt.subplots(2,3, figsize=(11,6))
-            ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
+     #   show2d = True
+     #   if show2d:
+     #       mask_to_show = np.where((mask_full_values > 0.), mask_full_values, np.nan)
+     #       fig, axes = plt.subplots(2,3, figsize=(11,6))
+     #       ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
 
-            N = dem_values.shape[0]
-            y_lon_dem = dem_values[int(N / 2), :]
-            y_lat_dem = dem_values[:, int(N / 2)]
-            y_lon_bed = image_denorm[int(N / 2), :]
-            y_lat_bed = image_denorm[:, int(N / 2)]
-            y_lon_mask = mask_full_values[int(N / 2), :]  # 1 mask, 0 non mask
-            y_lat_mask = mask_full_values[:, int(N / 2)]
-            y_lon_mask = np.where(y_lon_mask == 0, np.nan, y_lon_mask)
-            y_lat_mask = np.where(y_lat_mask == 0, np.nan, y_lat_mask)
+     #       N = dem_values.shape[0]
+     #       y_lon_dem = dem_values[int(N / 2), :]
+     #       y_lat_dem = dem_values[:, int(N / 2)]
+     #       y_lon_bed = image_denorm[int(N / 2), :]
+     #       y_lat_bed = image_denorm[:, int(N / 2)]
+     #       y_lon_mask = mask_full_values[int(N / 2), :]  # 1 mask, 0 non mask
+     #       y_lat_mask = mask_full_values[:, int(N / 2)]
+     #       y_lon_mask = np.where(y_lon_mask == 0, np.nan, y_lon_mask)
+     #       y_lat_mask = np.where(y_lat_mask == 0, np.nan, y_lat_mask)
 
-            im1 = ax1.imshow(dem_values, cmap='terrain')
-            im1_1 = ax1.imshow(mask_to_show, alpha=.3, cmap='gray')
-            im2 = ax2.imshow(image_denorm, cmap='terrain')
-            vmin, vmax = abs(np.nanmin(icethick)), abs(np.nanmax(icethick))
-            v = max(vmin, vmax)
-            im3 = ax3.imshow(icethick, vmin=-v, vmax=v, cmap='bwr_r')
-            im4 = ax4.scatter(range(N), y_lon_dem, s=5, c='k', label='dem along lon')
-            im4_1 = ax4.plot(range(N), y_lon_bed*y_lon_mask, c='r', label='bed along lon')
-            im5 = ax5.scatter(range(N), y_lat_dem, s=5, c='k', label='dem along lat')
-            im5_1 = ax5.plot(range(N), y_lat_bed*y_lat_mask, c='r', label='bed along lat')
+     #       im1 = ax1.imshow(dem_values, cmap='terrain')
+     #       im1_1 = ax1.imshow(mask_to_show, alpha=.3, cmap='gray')
+     #       im2 = ax2.imshow(image_denorm, cmap='terrain')
+     #       vmin, vmax = abs(np.nanmin(icethick)), abs(np.nanmax(icethick))
+     #       v = max(vmin, vmax)
+     #       im3 = ax3.imshow(icethick, vmin=-v, vmax=v, cmap='bwr_r')
+     #       im4 = ax4.scatter(range(N), y_lon_dem, s=5, c='k', label='dem along lon')
+     #       im4_1 = ax4.plot(range(N), y_lon_bed*y_lon_mask, c='r', label='bed along lon')
+     #       im5 = ax5.scatter(range(N), y_lat_dem, s=5, c='k', label='dem along lat')
+     #       im5_1 = ax5.plot(range(N), y_lat_bed*y_lat_mask, c='r', label='bed along lat')
 
-            ice_farinotti = rioxarray.open_rasterio('/home/nico/PycharmProjects/skynet/Extra_Data/Farinotti/composite_thickness_RGI60-11/RGI60-11/'
-                                                    +imgfile.replace('.tif', '_thickness.tif'))
-            ice_farinotti = ice_farinotti.values.squeeze()
-            im6 = ax6.imshow(ice_farinotti, vmin=-v, vmax=v, cmap='bwr_r')
+     #       ice_farinotti = rioxarray.open_rasterio('/home/nico/PycharmProjects/skynet/Extra_Data/Farinotti/composite_thickness_RGI60-11/RGI60-11/'
+     #                                               +imgfile.replace('.tif', '_thickness.tif'))
+     #       ice_farinotti = ice_farinotti.values.squeeze()
+     #       im6 = ax6.imshow(ice_farinotti, vmin=-v, vmax=v, cmap='bwr_r')
 
-            plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04, label='H (m)')
-            plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04, label='H (m)')
-            plt.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04, label='th (m)')
-            plt.colorbar(im6, ax=ax6, fraction=0.046, pad=0.04, label='th (m)')
+     #       plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04, label='H (m)')
+     #       plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04, label='H (m)')
+     #       plt.colorbar(im3, ax=ax3, fraction=0.046, pad=0.04, label='th (m)')
+     #       plt.colorbar(im6, ax=ax6, fraction=0.046, pad=0.04, label='th (m)')
 
-            ax4.legend()
-            ax5.legend()
-            ax1.title.set_text(f'{imgfile[:-4]} - DEM')
-            ax2.title.set_text('Inpainted')
-            ax3.title.set_text('Ice thickness')
+     #       ax4.legend()
+     #       ax5.legend()
+     #       ax1.title.set_text(f'{imgfile[:-4]} - DEM')
+     #       ax2.title.set_text('Inpainted')
+     #       ax3.title.set_text('Ice thickness')
 
-            plt.tight_layout()
-            plt.show()
+     #       plt.tight_layout()
+     #       plt.show()
 
 
 
@@ -300,7 +304,7 @@ def main():
 
         # save
         # cv2.imwrite(args.out + imgfile.replace('.tif', '_inp.png') , image_denorm.astype(np.uint16))
-        save = False
+        save = True
         if save: ds_tosave.rio.to_raster(args.out + imgfile.replace('.tif', '_res.tif'))
 
     results = pd.DataFrame({'glacier': names, 'd1': d1, 'd2': d2, 'mean (m)': means, 'area (km2)':areas, 'vol (km3)': volumes, 'NP': negatives})
