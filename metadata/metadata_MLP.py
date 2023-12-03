@@ -18,6 +18,7 @@ from torch.optim import Adam
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
+print('test')
 
 class CFG:
 
@@ -508,6 +509,6 @@ for cbar in (cbar5, cbar6):
     cbar.mappable.set_clim(vmin=y_min_diff, vmax=y_max_diff)
 
 
-for ax in (ax1, ax2, ax3, ax4, ax5, ax6): ax.legend()
+for ax in (ax1, ax2, ax3, ax4, ax5, ax6): ax.legend(loc='upper left')
 
 plt.show()
