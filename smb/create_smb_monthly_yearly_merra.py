@@ -6,7 +6,6 @@ import rioxarray
 from itertools import product
 import matplotlib.pyplot as plt
 
-print('prova2')
 
 PATH_MERRA2_INPUT_FOLDER = '/media/nico/samsung_nvme/MERRA-2/'
 
