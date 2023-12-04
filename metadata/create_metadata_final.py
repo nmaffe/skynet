@@ -25,7 +25,7 @@ from pyproj import Transformer, CRS, Geod
 import scipy
 from scipy.stats import gaussian_kde
 
-print('prova2')
+print('prova3')
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--path_ttt_csv', type=str,default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT.csv",
