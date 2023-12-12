@@ -282,7 +282,7 @@ class ImageDataset_box(Dataset):
         slope_lat.mul_(2).sub_(1)
         slope_lon.mul_(2).sub_(1)
 
-        img = img.repeat(3, 1, 1)  # convert to (3, 256, 256)
+        #img = img.repeat(3, 1, 1)  # convert to (3, 256, 256) old 3-ch
 
         # To avoid singularities in the normalizations we replace nans with 0s
         img = torch.nan_to_num(img)             # (3, 256, 256)
