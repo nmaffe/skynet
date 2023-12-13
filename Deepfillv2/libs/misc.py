@@ -35,15 +35,17 @@ def pt_to_image(img):
 
 def pt_to_image_denorm(img, min, max):
     """ from [-1,1] to [min,max] """
-    img = img.detach().cpu()
+    img = img.detach()#.cpu()
     if torch.is_tensor(min):
-        min = min.detach().cpu()
+        min = min.detach()#.cpu()
         min = min[:, None, None, None]
     if torch.is_tensor(max):
-        max = max.detach().cpu()
+        max = max.detach()#.cpu()
         max = max[:, None, None, None]
 
-    return img.mul_(0.5).add_(0.5).mul_(max-min).add_(min)
+    img_denorm = 0.5 * (img + 1.0) * (max-min) + min
+
+    return img_denorm
 
 def show_grid(imgs):
     """# maffe add, from:
@@ -73,7 +75,7 @@ def save_states(fname, gen, dis, g_optimizer, d_optimizer, n_iter, config):
     print("Saved state dicts!")
 
 
-def random_bbox(config):
+def random_bbox(config): # restituisce valori random (top, left, height, width) di un box quadrato.
     """Generate a random tlhw.
 
     Returns:
@@ -172,6 +174,13 @@ def brush_stroke_mask(config):
     mask = np.reshape(mask, (1, 1, H, W))
     return torch.Tensor(mask)
 
+def create_box_brush_mask(config):
+
+    bbox = random_bbox(config)
+    regular_mask = bbox2mask(config, bbox)
+    irregular_mask = brush_stroke_mask(config)
+    mask_torch = torch.logical_or(irregular_mask, regular_mask)
+    return mask_torch
 
 def test_contextual_attention(imageA, imageB, contextual_attention):
     """Test contextual attention layer with 3-channel image input
