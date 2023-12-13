@@ -93,7 +93,8 @@ def training_loop(generator,        # generator network
             try:
                 if args.mask == "box":
                     batch_real, slope_lat, slope_lon, batch_mins, batch_maxs, batch_ris_lon, batch_ris_lat, batch_bounds = next(train_iter) # fetch batch_real=(N, 3, 256, 256)
-                    mask = misc.create_box_brush_mask(config).to(torch.float32)  # (1,1,256,256)
+                    mask = misc.create_box_brush_mask(config)  # (1,1,256,256)
+                    mask = mask.repeat(config.batch_size, 1, 1, 1).to(device).to(torch.float32) # (N,1,256,256)
                 elif args.mask == "segmented":
                     batch_real, mask = next(train_iter)
                     mask = mask.to(device).to(torch.float32)
@@ -153,9 +154,9 @@ def training_loop(generator,        # generator network
 
         show_input_examples = False
         if show_input_examples:
-            img = batch_real[0,0].numpy()
-            img_slope_lat = slope_lat[0,0].numpy()
-            img_slope_lon = slope_lon[0,0].numpy()
+            img = batch_real[0,0].cpu().numpy()
+            img_slope_lat = slope_lat[0,0].cpu().numpy()
+            img_slope_lon = slope_lon[0,0].cpu().numpy()
 
             fig, axes = plt.subplots(nrows=1, ncols=3)
             im0 = axes[0].imshow(img, cmap='terrain')
@@ -178,7 +179,6 @@ def training_loop(generator,        # generator network
         batch_maxs = batch_maxs.to(device) # (N,)
         batch_ris_lon = batch_ris_lon.to(device) # (N,)
         batch_ris_lat = batch_ris_lat.to(device) # (N,)
-        #print('mask:', mask.shape)
 
         # NB QUESTO COMANDO E' IMPORTANTE!
         # batch_real = torch.cat([batch_real[:,0:1,:,:], slope_lat, slope_lon], axis=1)
@@ -194,11 +194,8 @@ def training_loop(generator,        # generator network
         #print('x: ', x.shape)
 
         # generate inpainted images
-        x1, x2 = generator(x, mask)     # sia x1 che x2 sono (N,3,256,256)
+        x1, x2 = generator(x, mask)     # sia x1 che x2 sono (N,1,256,256)
         batch_predicted = x2            # this is the output of the fine generator
-        #print('x1', x1.shape)
-        #print('x2', x2.shape)
-        #input('wait after generator created x1, x2')
 
         check_x2 = False
         if (check_x2 and n_iter%500 == 0):
@@ -222,15 +219,13 @@ def training_loop(generator,        # generator network
             plt.show()
 
         # use the fine generator prediction inside the mask while keeping the original image elsewhere
-        batch_complete = batch_predicted*mask + batch_incomplete*(1.-mask) # (N,3,256,256)
+        batch_complete = batch_predicted*mask + batch_incomplete*(1.-mask) # (N,1,256,256)
 
         # D training steps:
-        #batch_real_mask = torch.cat((batch_real, torch.tile(mask, [config.batch_size, 1, 1, 1])), dim=1) # (N,4,256,256)
-        #batch_filled_mask = torch.cat((batch_complete.detach(), torch.tile(mask, [config.batch_size, 1, 1, 1])), dim=1) # (N,4,256,256)
-        batch_real_mask = torch.cat((batch_real, mask), dim=1) # (N,4,256,256)
-        batch_filled_mask = torch.cat((batch_complete.detach(), mask), dim=1) # (N,4,256,256)
+        batch_real_mask = torch.cat((batch_real, mask), dim=1)                      # (N,2,256,256)
+        batch_filled_mask = torch.cat((batch_complete.detach(), mask), dim=1)       # (N,2,256,256)
         # oss: batch_filled_mask e batch_real_filled avranno requires_grad=False, quindi saranno staccati dal graph. Perche ?
-        batch_real_filled = torch.cat((batch_real_mask, batch_filled_mask), dim=0) # (2*N,4,256,256)
+        batch_real_filled = torch.cat((batch_real_mask, batch_filled_mask), dim=0)  # (2N,4,256,256)
         # we apply the discriminator to the whole batch containing both real and generated (and completed) images
         d_real_gen = discriminator(batch_real_filled) # (2*N, 4096)
         # we extract the separate outputs for the real/generated images
@@ -304,8 +299,8 @@ def training_loop(generator,        # generator network
             try:
                 if args.mask == "box":
                     batch_real_val, slope_lat_val, slope_lon_val, batch_mins_val, batch_maxs_val, batch_ris_lon_val, batch_ris_lat_val, batch_bounds_val = next(val_iter)  # fetch batch_real=(batch_size, 3, 256, 256)
-                    mask_val = misc.create_box_brush_mask(config).to(torch.float32)  # (1,1,256,256)
-
+                    mask_val = misc.create_box_brush_mask(config)  # (1,1,256,256)
+                    mask_val = mask_val.repeat(config.batch_size_val, 1, 1, 1).to(device).to(torch.float32) # (N,1,256,256)
                 elif args.mask == "segmented":
                     batch_real_val, mask_val = next(val_iter)
                     mask_val = mask_val.to(device).to(torch.float32)
@@ -367,27 +362,23 @@ def training_loop(generator,        # generator network
 
         batch_incomplete_val = batch_real_val * (1. - mask_val)  # (batch_size,3,256,256)
         #batch_incomplete = torch.cat([batch_real_val[:,0:1,:,:], slope_lat_val, slope_lon_val], axis=1) * (1. - mask_val) # (N,3,256,256)
-        ones_x = torch.ones_like(batch_incomplete_val)[:, 0:1, :, :].to(device)  # (batch_size,1,256,256)
-        #x = torch.cat([batch_incomplete, ones_x, ones_x * mask_val], axis=1)  # (batch_size,5,256,256)
-        x = torch.cat([batch_incomplete_val, slope_lat_val, slope_lon_val, ones_x * mask_val], axis=1)  # (batch_size,6,256,256)
-        #x = torch.cat([batch_incomplete_val, ones_x * mask_val], axis=1)  # (batch_size,6,256,256)
-        #x = torch.cat([batch_incomplete_val], axis=1)  # (batch_size,6,256,256)
+        ones_x = torch.ones_like(batch_incomplete_val)[:, 0:1, :, :].to(device)  # (N,1,256,256)
+        #x_val = torch.cat([batch_incomplete, ones_x, ones_x * mask_val], axis=1)  # (N,5,256,256)
+        x_val = torch.cat([batch_incomplete_val, slope_lat_val, slope_lon_val, ones_x * mask_val], axis=1)  # (N,6,256,256)
+        #x_val = torch.cat([batch_incomplete_val, ones_x * mask_val], axis=1)  # (N,6,256,256)
+        #x_val = torch.cat([batch_incomplete_val], axis=1)  # (N,6,256,256)
 
         # generate inpainted images
-        x1_val, x2_val = generator(x, mask_val)  # sia x1 che x2 sono (batch_size,3,256,256)
+        x1_val, x2_val = generator(x_val, mask_val)  # sia x1 che x2 sono (N,1,256,256)
         batch_predicted = x2_val  # this is the output of the fine generator
 
         # use the fine generator prediction inside the mask while keeping the original image elsewhere
-        batch_complete_val = batch_predicted * mask_val + batch_incomplete_val * (1. - mask_val)  # (batch_size,3,256,256)
+        batch_complete_val = batch_predicted * mask_val + batch_incomplete_val * (1. - mask_val)  # (N,1,256,256)
 
         # D training steps:
-        #batch_real_mask = torch.cat((batch_real_val, torch.tile(mask_val, [config.batch_size_val, 1, 1, 1])),
-        #                            dim=1)  # (batch_size,4,256,256)
-        #batch_filled_mask = torch.cat((batch_complete_val.detach(), torch.tile(mask_val, [config.batch_size_val, 1, 1, 1])),
-        #                              dim=1)  # (batch_size,4,256,256)
-        batch_real_mask = torch.cat((batch_real_val, mask_val), dim=1)
-        batch_filled_mask = torch.cat((batch_complete_val.detach(), mask_val), dim=1)
-        batch_real_filled = torch.cat((batch_real_mask, batch_filled_mask))  # (2*batch_size,4,256,256)
+        batch_real_mask = torch.cat((batch_real_val, mask_val), dim=1)                  # (N,2,256,256)
+        batch_filled_mask = torch.cat((batch_complete_val.detach(), mask_val), dim=1)   # (N,2,256,256)
+        batch_real_filled = torch.cat((batch_real_mask, batch_filled_mask))             # (2N,2,256,256)
 
         # we apply the discriminator to the whole batch containing both real and generated (and completed) images
         d_real_gen = discriminator(batch_real_filled)  # (32, 4096)
@@ -525,13 +516,17 @@ def training_loop(generator,        # generator network
             plt.close(fig)
             #plt.show()
 
-        # save model at the (almost) last training iteration
-        if (config.save_checkpoint_iter and n_iter%config.save_checkpoint_iter==0 and n_iter>init_n_iter):
-            misc.save_states("states.pth", generator, discriminator, g_optimizer, d_optimizer, n_iter, config)
+        # save model at multiple iteration
+        if (config.save_model_multiple_iter and n_iter%config.save_model_multiple_iter==0 and n_iter>init_n_iter):
+            misc.save_states(f"states_it{n_iter}.pth", generator, discriminator, g_optimizer, d_optimizer, n_iter, config)
 
-        # save model versions during training
-        if (config.save_cp_backup_iter and n_iter%config.save_cp_backup_iter==0 and n_iter>init_n_iter):
-            misc.save_states(f"states_{n_iter}.pth", generator, discriminator, g_optimizer, d_optimizer, n_iter, config)
+        # save model at specific iteration
+        if (config.save_model_specific_iter and n_iter==config.save_model_specific_iter and n_iter>init_n_iter):
+            misc.save_states(f"states_it{n_iter}.pth", generator, discriminator, g_optimizer, d_optimizer, n_iter, config)
+
+        # save model at last iteration
+        if (config.save_model_final and n_iter==config.max_iters-1 and n_iter > init_n_iter):
+            misc.save_states(f"states_it{config.max_iters}.pth", generator, discriminator, g_optimizer, d_optimizer, config.max_iters, config)
 
 
 def main():
