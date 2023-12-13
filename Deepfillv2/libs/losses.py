@@ -59,7 +59,9 @@ def loss_l1(x_in, x_out, penalty=1.0):
 def loss_l1_l2(x_in, x_out):
     """
     x_in: input tensor
-    x_out: output tensor. Both are torch tensors (N, 3, 256, 256) """
+    x_out: output tensor. Both are torch tensors (N, 3, 256, 256)
+    Note: since the output of the NN is in [-1, 1], a quadratic penalization in this range is less that a linear one.
+    """
     diff = x_out - x_in # (N, 3, 256, 256)
     loss = torch.where(diff > 0, torch.pow(diff, 2), torch.abs(diff)) # (N, 3, 256, 256)
     return torch.mean(loss)
@@ -71,16 +73,22 @@ def loss_power_law(dem, bed, mask, c, gamma, mins, maxs, ris_lon, ris_lat):
     gamma: exponent [ca. 1.4]
     dem (N, 256, 256)
     bed (N, 256, 256)
-    mask (1, 256, 256)
+    mask (N, 256, 256)
+    mins (N,)
+    maxs (N,)
+    ris_lon (N,)
+    ris_lat (N,)
     V_th = c * A^gamma
     note: for each item ris_lon and ris_lat are different.
     """
-    areas = torch.sum(mask) # scalar
-    vol_th = c * torch.pow(areas*ris_lon*ris_lat, gamma)  # (N,)
+    areas = torch.sum(mask, dim=(1, 2)) # (N,)
+    vol_th = c * torch.pow(areas*ris_lon*ris_lat, gamma)  # (N,) # unit m3
 
     # thickness = dem - bed # (N, 256, 256)
-    thickness = torch.sum(dem - bed, dim=(1, 2))   # (N,)
-    vol_exp = 0.5 * (maxs - mins) * thickness * ris_lon * ris_lat # (N,)
+    ith_nn = torch.sum(dem - bed, dim=(1, 2))   # (N,)
+    ith = 0.5 * (maxs - mins) * ith_nn # (N,) denormalized ice thickness unit m
+
+    vol_exp = ith * ris_lon * ris_lat # (N,)
 
     loss = torch.abs(vol_th - vol_exp) # (N,)
     #print('scaling loss', loss*100/vol_th)
