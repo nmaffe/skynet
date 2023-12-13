@@ -72,7 +72,7 @@ def save_states(fname, gen, dis, g_optimizer, d_optimizer, n_iter, config):
                    'D_optim': d_optimizer.state_dict(),           
                    'n_iter': n_iter}
     torch.save(state_dicts, f"{config.checkpoint_dir}/{fname}")
-    print("Saved state dicts!")
+    print(f"Saved state dicts at iter {n_iter}!")
 
 
 def random_bbox(config): # restituisce valori random (top, left, height, width) di un box quadrato.
