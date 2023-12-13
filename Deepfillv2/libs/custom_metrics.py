@@ -1,25 +1,40 @@
 import torch
 import Deepfillv2.libs.misc as misc
 
-def RMSE(y1,y2,mins,maxs,mask):
+def RMSE_MAE(y1,y2,mins,maxs,mask):
     '''
+    Code by Niccolo
     Compute the RMSE between two denormalized images in the reconstructed region
+    y1 (N, 1, 256, 256)
+    y2 (N, 1, 256, 256)
+    mins (N, )
+    maxs (N, )
+    mask (N, 1, 256, 256)
     '''
+    y1 = y1.detach()
+    y2 = y2.detach()
+    mins = mins.detach()
+    maxs = maxs.detach()
+    mask = mask.detach()
 
-    mask_size=torch.sum(mask).detach()
-#    x1=misc.pt_to_image(y1)
+    y1 = misc.pt_to_image_denorm(y1, min=mins, max=maxs).detach()  # (N, 1, 256, 256)
+    y2 = misc.pt_to_image_denorm(y2, min=mins, max=maxs).detach()  # (N, 1, 256, 256)
 
-#    x2=misc.pt_to_image(y2)
-    x1=misc.pt_to_image_denorm(y1,mins,maxs) # ha senso cosi com'è implementato?
-    x2=misc.pt_to_image_denorm(y2,mins,maxs)
-    
-#    x1=(maxs-mins)*x1+mins
-#    x2=(maxs-mins)*x2+mins
+    #mask_size = torch.sum(mask).detach() # GL scalare
+    #rmse_GL = torch.sqrt(256 * 256 * torch.mean((y1 - y2) ** 2) / mask_size) # GL scalare
 
-    return torch.sqrt(256*256*torch.mean((x1-x2)**2)/mask_size)
+    mask_sizes = torch.sum(mask, dim=(1,2,3)).detach()      # (N,)
+    sum_squared_diff = torch.sum((y1-y2)**2, dim=(1,2,3))   # (N,)
+    sum_absolute_diff = torch.sum(torch.abs(y1-y2), dim=(1,2,3)) # (N,)
+
+    rmse = torch.sqrt(sum_squared_diff/mask_sizes)          # (N,)
+    mae = torch.sqrt(sum_absolute_diff/mask_sizes)          # (N,)
+
+    return torch.mean(rmse), torch.mean(mae)
 
 def MRE(y1,y2,mins,maxs,mask):
     '''
+    code by Gianluca Lagnese
     Compute the Mean Reconstruction Error (MRE) between two denormalized images
     in the reconstructed region
     '''
