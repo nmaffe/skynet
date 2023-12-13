@@ -172,7 +172,7 @@ def training_loop(generator,        # generator network
             fig.tight_layout()
             plt.show()
 
-        batch_real = batch_real.to(device)  # (N,3,256,256)
+        batch_real = batch_real.to(device)  # (N,1,256,256)
         slope_lat = slope_lat.to(device)    # (N,1,256,256)
         slope_lon = slope_lon.to(device)    # (N,1,256,256)
         batch_mins = batch_mins.to(device) # (N,)
@@ -184,14 +184,12 @@ def training_loop(generator,        # generator network
         # batch_real = torch.cat([batch_real[:,0:1,:,:], slope_lat, slope_lon], axis=1)
 
         # prepare input for generator
-        batch_incomplete = batch_real * (1. - mask) # (N,3,256,256)
+        batch_incomplete = batch_real * (1. - mask) # (N,1,256,256)
         #batch_incomplete = torch.cat([batch_real[:,0:1,:,:], slope_lat, slope_lon], axis=1) * (1. - mask) # (N,3,256,256)
         ones_x = torch.ones_like(batch_incomplete)[:, 0:1, :, :].to(device) # (N,1,256,256)
 
-        x = torch.cat([batch_incomplete, slope_lat, slope_lon, ones_x*mask], axis=1)      # (N,6,256,256)
+        x = torch.cat([batch_incomplete, slope_lat, slope_lon, ones_x*mask], axis=1)      # (N,4,256,256)
         #x = torch.cat([batch_incomplete, ones_x*mask], axis=1)      # (N,4,256,256)
-        #x = torch.cat([batch_incomplete], axis=1)      # (N,4,256,256)
-        #print('x: ', x.shape)
 
         # generate inpainted images
         x1, x2 = generator(x, mask)     # sia x1 che x2 sono (N,1,256,256)
@@ -481,7 +479,7 @@ def training_loop(generator,        # generator network
             writer.add_image("Stage 2", img_grids[2], global_step=n_iter, dataformats="CHW")
 
         # save example (train) image grids to disk
-        if (config.save_imgs_to_dics_iter and n_iter%config.save_imgs_to_dics_iter==0):
+        if (config.save_imgs_to_disk_iter and n_iter%config.save_imgs_to_disk_iter==0):
             #viz_images = [misc.pt_to_image(batch_real), misc.pt_to_image(batch_complete)]
             viz_images = [misc.pt_to_image_denorm(batch_real, min=batch_mins, max=batch_maxs).cpu(),
                           misc.pt_to_image_denorm(batch_complete, min=batch_mins, max=batch_maxs).cpu()]
