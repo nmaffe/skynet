@@ -6,11 +6,12 @@ import xarray as xr
 import pandas as pd
 import torch
 import torchvision.transforms as T
-import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 from utils import haversine
+import Deepfillv2.libs.misc as misc
+from Deepfillv2.libs.data import ImageDataset_box, ImageDataset_segmented, get_transforms
 
 def str2bool(s):
     if isinstance(s, bool):
@@ -34,10 +35,10 @@ parser.add_argument("--fullmask", type=str,
                     default="/home/nico/PycharmProjects/skynet/code/dataset/test/RGI_11_size_256/masks_full/",
                     help="input folder with full mask files")
 parser.add_argument("--out", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/dataset/output/RGI_11_size_256_slopemasked/",
+                    default="/home/nico/PycharmProjects/skynet/code/dataset/output/RGI_11_size_256_test/",
                     help="path to saved results")
 parser.add_argument("--checkpoint", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/Deepfillv2/callbacks/checkpoints/box_model/states_slope_masked.pth",
+                    default="/home/nico/PycharmProjects/skynet/code/Deepfillv2/callbacks/checkpoints/box_model/states_it500.pth",
                     help="path to the checkpoint file")
 parser.add_argument("--tfmodel", action='store_true',
                     default=False, help="use model from models_tf.py?")
@@ -45,6 +46,7 @@ parser.add_argument('--burned', default=True, type=str2bool, const=True,
                     nargs='?', help='Run all burned glaciers')
 parser.add_argument('--all',  default=False, type=str2bool, const=True, 
                     nargs='?', help='Run all glaciers in input folder')
+parser.add_argument('--config', type=str, default="Deepfillv2/configs/train.yaml", help="Path to yaml config file")
 
 
 def main():
@@ -52,15 +54,7 @@ def main():
     #                                         Config                                          #
     # --------------------------------------------------------------------------------------- #
     args = parser.parse_args()
-
-    if args.image[-1] != '/':
-        args.image = ''.join((args.image, '/'))
-    if args.mask[-1] != '/':
-        args.mask = ''.join((args.mask, '/'))
-        print(args.mask)
-    if args.out[-1] != '/':
-        args.out = ''.join((args.out, '/'))
-
+    config = misc.get_config(args.config)  # some stuff in train.yaml may be useful
     # --------------------------------------------------------------------------------------- #
     #                                         Model                                           #
     # --------------------------------------------------------------------------------------- #
@@ -69,14 +63,16 @@ def main():
     if args.tfmodel:
         from Deepfillv2.libs.networks_tf import Generator
     else:
-        from Deepfillv2.libs.networks import Generator
+        from Deepfillv2.libs.networks_radio3 import Generator
 
     use_cuda_if_available = True
     device = torch.device('cuda' if torch.cuda.is_available()
                           and use_cuda_if_available else 'cpu')
 
     # set up network
-    generator = Generator(cnum_in=4, cnum=48, return_flow=False).to(device)
+    # generator = Generator(cnum_in=4, cnum=48, return_flow=False).to(device) # OLD
+    cnum_in = config.img_shapes[2]
+    generator = Generator(cnum_in=cnum_in + 3, cnum_out=1, cnum=48, return_flow=False).to(device)
     generator_state_dict = torch.load(args.checkpoint)['G']
     generator.load_state_dict(generator_state_dict)
     generator.eval() # maffe added this: eval mode
@@ -134,41 +130,52 @@ def main():
 
         # import dem
         dem = rioxarray.open_rasterio(args.image+imgfile)
-        dem_values = dem.values.squeeze()
+        dem_values = dem.values.squeeze().astype(np.float32)
+
+        # calculate things I need
+        ris_ang = dem.rio.resolution()[0]
+        lon_c = (0.5 * (dem.coords['x'][-1] + dem.coords['x'][0])).to_numpy()
+        lat_c = (0.5 * (dem.coords['y'][-1] + dem.coords['y'][0])).to_numpy()
+        ris_metre_lon = haversine(lon_c, lat_c, lon_c+ris_ang, lat_c) * 1000  # m
+        ris_metre_lat = haversine(lon_c, lat_c, lon_c, lat_c+ ris_ang) * 1000  # m
 
         # import mask
         mask_rs = rioxarray.open_rasterio(args.mask + imgfile.replace('.tif', '_mask.tif'))
         mask_values = mask_rs.values.squeeze()
-
-        # import full mask
         mask_full_rs = rioxarray.open_rasterio(args.fullmask + imgfile.replace('.tif', '_mask_full.tif'))
         mask_full_values = mask_full_rs.values.squeeze()
-
-        # normalize to [-1, 1]
-        img_max = np.amax(dem_values)
-        img_min = np.amin(dem_values)
-        img = (dem_values - img_min) / (img_max - img_min)
-        img = img * 2. -1.
-
-        # ndarray --> torch
-        img = np.stack((img,)*3, axis=0)
-        img = torch.from_numpy(img).to(dtype=torch.float32) # (3, 256, 256)
+        # NB the mask should be the full mask to account for all other neighbouring glaciers
+        mask = torch.from_numpy(mask_full_values).unsqueeze_(dim=0).to(dtype=torch.float32)
 
         # calculate slopes
-        slope_lat, slope_lon = torch.gradient(img[0, :, :], spacing=[1., 1.], dim=(0, 1)) # (256, 256)
-        slope_lat = (slope_lat-torch.amin(slope_lat))/(torch.amax(slope_lat)-torch.amin(slope_lat))
-        slope_lon = (slope_lon-torch.amin(slope_lon))/(torch.amax(slope_lon)-torch.amin(slope_lon))
+        slope_lat, slope_lon = torch.gradient(torch.from_numpy(dem_values), spacing=[ris_metre_lat, ris_metre_lon], dim=(0, 1))  # (256, 256)
+
+        # normalize to [-1, 1]
+        img_max = 9000. # np.amax(dem_values)
+        img_min = 0.0 #np.amin(dem_values)
+        img = (dem_values - img_min) / (img_max - img_min)
+        img = img * 2. - 1.
+
+        img = torch.from_numpy(img).unsqueeze_(dim=0).to(dtype=torch.float32) # (1, 256, 256)
+
+        # normalize slopes
+        slope_lat = torch.clip(slope_lat, min=-10., max=10.)
+        slope_lon = torch.clip(slope_lon, min=-10., max=10.)
+        # slope_lat = (slope_lat-torch.amin(slope_lat))/(torch.amax(slope_lat)-torch.amin(slope_lat))
+        # slope_lon = (slope_lon-torch.amin(slope_lon))/(torch.amax(slope_lon)-torch.amin(slope_lon))
+        min_slope_lat, max_slope_lat = -10., 10.
+        min_slope_lon, max_slope_lon = -10., 10.
+        slope_lat = (slope_lat - min_slope_lat) / (max_slope_lat - min_slope_lat)
+        slope_lon = (slope_lon - min_slope_lon) / (max_slope_lon - min_slope_lon)
         slope_lat.mul_(2).sub_(1).unsqueeze_(0).unsqueeze_(1) # (1, 1, 256, 256)
         slope_lon.mul_(2).sub_(1).unsqueeze_(0).unsqueeze_(1) # (1, 1, 256, 256)
 
-        show_input_examples = False
+        show_input_examples = True
         if show_input_examples:
-            img = img[0,:,:].numpy()
             img_slope_lat = slope_lat[0,0,:,:].numpy()
             img_slope_lon = slope_lon[0,0,:,:].numpy()
-
             fig, axes = plt.subplots(nrows=1, ncols=3)
-            im0 = axes[0].imshow(img, cmap='terrain')
+            im0 = axes[0].imshow(img[0,:,:].numpy(), cmap='terrain')
             colorbar0 = fig.colorbar(im0, ax=axes[0], shrink=.3)
             axes[0].set_title('DEM')
             im1 = axes[1].imshow(img_slope_lat, cmap='Greys')
@@ -180,11 +187,7 @@ def main():
 
             fig.tight_layout()
             plt.show()
-            input('wait')
 
-        # NB the mask should be the full mask to account for all other neighbouring glaciers
-        mask = np.stack((mask_full_values,)*3, axis=0) # 1.: masked 0.: unmasked
-        mask = torch.from_numpy(mask).to(dtype=torch.float32)
 
         _, h, w = img.shape
         grid = 8
@@ -192,44 +195,34 @@ def main():
         # in case the shape is not multiple of 8, we take the closest (//) 8* multiple
         # e.g. if the image is (513, 513), this results in an (512, 512) image
         # we also add one extra dimension at the beginning
-        img = img[:3, :h//grid*grid, :w//grid*grid].unsqueeze(0) # (1, 3, 256, 256)
+        img = img[0:1, :h//grid*grid, :w//grid*grid].unsqueeze(0) # (1, 1, 256, 256)
         mask = mask[0:1, :h//grid*grid, :w//grid*grid].unsqueeze(0) # (1, 1, 256, 256)
 
-        img = img.to(device)
-        slope_lat = slope_lat.to(device)
-        slope_lon = slope_lon.to(device)
-        mask = mask.to(device)
+        img = img.to(device)                # (1, 1, 256, 256)
+        slope_lat = slope_lat.to(device)    # (1, 1, 256, 256)
+        slope_lon = slope_lon.to(device)    # (1, 1, 256, 256)
+        mask = mask.to(device)              # (1, 1, 256, 256)
 
-        img = torch.cat([img[:, 0:1, :, :], slope_lat, slope_lon], axis=1)
-        img_masked = img * (1.-mask)  # mask image
+        # NB QUESTO COMANDO E' IMPORTANTE!
+        #img = torch.cat([img[:, 0:1, :, :], slope_lat, slope_lon], axis=1)
 
-        ones_x = torch.ones_like(img_masked)[:, 0:1, :, :] # (1, 1, 256, 256)
-        #x = torch.cat([img_masked, ones_x, ones_x*mask], dim=1)  # (1, 5, 256, 256)
-        #x = torch.cat([img_masked, slope_lat, slope_lon, ones_x*mask], dim=1)  # (1, 6, 256, 256)
-        x = torch.cat([img_masked, ones_x * mask], dim=1)  # (1, 4, 256, 256)
+        img_masked = img * (1.-mask)  # masked image
+        ones_x = torch.ones_like(mask) # (1, 1, 256, 256) this is useless so far
+        x = torch.cat([img_masked, slope_lat, slope_lon, ones_x*mask], dim=1)  # (1, 4, 256, 256)
+        #x = torch.cat([img_masked, ones_x * mask], dim=1)  # (1, 4, 256, 256)
 
         with torch.no_grad():
-            _, x_stage2 = generator(x, mask) # x_stage2 will have values in [-1, 1]
+            _, x_stage2 = generator(x, mask) # x_stage2 (1, 1, 256, 256) will have values in [-1, 1]
 
-
-        # 1. complete image
-        image_inpainted = img * (1.-mask) + x_stage2 * mask # (1, 3, 256, 256)
-        # 2. rescale
-        image_rescaled = image_inpainted.squeeze()[0,:,:] * 0.5 + 0.5 # rescale to [0,1]
-        image_rescaled = image_rescaled.cpu().numpy()
-        # 3. denormalize
-        image_denorm = image_rescaled * (img_max - img_min) + img_min # denormalize to orig values
+        # complete image
+        image_inpainted = img * (1.-mask) + x_stage2 * mask # (1, 1, 256, 256)
+        # denormalize image
+        image_denorm = misc.pt_to_image_denorm(image_inpainted, min=0.0, max=9000.).squeeze().cpu().numpy() # (256, 256)
 
         # ground truth - prediction
         icethick = dem_values - image_denorm # ndarray (256, 256)
         icethick = np.where((mask_values > 0.), icethick, np.nan) # Glacier (central!) ice thickness calculation
         tqdm.write(f"Glacier total thickness: {np.nansum(icethick):.1f} m")
-
-        ris_ang = dem.rio.resolution()[0]
-        lon_c = (0.5 * (dem.coords['x'][-1] + dem.coords['x'][0])).to_numpy()
-        lat_c = (0.5 * (dem.coords['y'][-1] + dem.coords['y'][0])).to_numpy()
-        ris_metre_lon = haversine(lon_c, lat_c, lon_c+ris_ang, lat_c) * 1000  # m
-        ris_metre_lat = haversine(lon_c, lat_c, lon_c, lat_c+ ris_ang) * 1000  # m
 
         # stats for csv
         names.append(imgfile)
@@ -285,9 +278,12 @@ def main():
             ax1.title.set_text(f'{imgfile[:-4]} - DEM')
             ax2.title.set_text('Inpainted')
             ax3.title.set_text('Ice thickness')
+            ax6.title.set_text('Ice thickness Farinotti')
 
             plt.tight_layout()
+            #plt.savefig(args.out + imgfile.replace('.tif', '_res.png'))
             plt.show()
+            plt.close()
 
 
 
@@ -298,10 +294,10 @@ def main():
                                'icethick': (('y', 'x'), icethick)
                                })
 
-        # save
-        # cv2.imwrite(args.out + imgfile.replace('.tif', '_inp.png') , image_denorm.astype(np.uint16))
         save = False
-        if save: ds_tosave.rio.to_raster(args.out + imgfile.replace('.tif', '_res.tif'))
+        if save:
+            ds_tosave.rio.to_raster(args.out + imgfile.replace('.tif', '_res.tif'))
+
 
     results = pd.DataFrame({'glacier': names, 'd1': d1, 'd2': d2, 'mean (m)': means, 'area (km2)':areas, 'vol (km3)': volumes, 'NP': negatives})
     results.to_csv(args.out+'results.csv', index=False)
