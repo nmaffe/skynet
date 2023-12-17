@@ -1,25 +1,33 @@
 import os
+import sys
+sys.path.append("/home/nico/PycharmProjects/skynet/code") # to import haversine from utils.py
+from utils import haversine
 from glob import glob
 import argparse
 import numpy as np
+import xarray
+import pandas as pd
 import matplotlib.pyplot as plt
+import rioxarray
 import geopandas as gpd
 import oggm
 from oggm import utils
 from shapely.geometry import Point, Polygon
+from math import radians, cos, sin, asin, sqrt
 
 """
-The purpose of this program is to fetch the glacier metadata 
-at random locations and produce ice thickness predictions at these locations 
-using the the GNN.
-Input: glacier geometry, GNN trained model
-Output: some kind of array of ice thickness predictions that can be used by the inpainting model.  
+The purpose of this program is to produce the glacier metadata 
+at for some random locations inside the glacier geometry. 
+
+Input: glacier name (RGIId), how many points you want to generate. 
+Output: pandas dataframe with features calculated for each generated point. 
 """
 # todo: check that the masks I am using to do the inpainting already account for the nunataks. That's important.
 # todo also check the same is done for create_metadata in calculating the distance from border
 # todo (=nunatak if that is the case)
 parser = argparse.ArgumentParser()
-parser.add_argument('--OGGM_folder', type=str,default="/home/nico/OGGM", help="Path to OGGM main folder")
+parser.add_argument('--mosaic', type=str,default="/media/nico/samsung_nvme/ASTERDEM_v3_mosaics/",
+                    help="Path to DEM mosaics")
 
 args = parser.parse_args()
 
@@ -30,6 +38,7 @@ class CFG:
     features = ['Area', 'slope_lat', 'slope_lon', 'elevation_astergdem', 'vx', 'vy',
      'dist_from_border_km', 'v', 'slope', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
      'elevation_from_zmin', 'RGI']
+
 RGI_burned = ['RGI60-11.00562', 'RGI60-11.00590', 'RGI60-11.00603', 'RGI60-11.00638', 'RGI60-11.00647',
                   'RGI60-11.00689', 'RGI60-11.00695', 'RGI60-11.00846', 'RGI60-11.00950', 'RGI60-11.01024',
                   'RGI60-11.01041', 'RGI60-11.01067', 'RGI60-11.01144', 'RGI60-11.01199', 'RGI60-11.01296',
@@ -45,18 +54,19 @@ RGI_burned = ['RGI60-11.00562', 'RGI60-11.00590', 'RGI60-11.00603', 'RGI60-11.00
                   'RGI60-11.02775', 'RGI60-11.02787', 'RGI60-11.02796', 'RGI60-11.02864', 'RGI60-11.02884',
                   'RGI60-11.02890', 'RGI60-11.02909', 'RGI60-11.03249']
 
-gl_id = 'RGI60-11.00590' # 'RGI60-11.01450' Aletsch
-gl_id = np.random.choice(RGI_burned)
-print(f"Glacier {gl_id}")
 
-def create_random_lon_lat_points_inside_glacier(glname, n=50):
+def create_random_lon_lat_points_inside_glacier(glacier_name, n=50):
+    print(f"Investigating glacier {glacier_name}")
 
-    rgi = int(glname[6:8]) # get rgi from the glacier code
+    rgi = int(glacier_name[6:8]) # get rgi from the glacier code
     oggm_rgi_shp = utils.get_rgi_region_file(rgi, version='62') # get rgi region shp
     oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)             # get rgi dataset of glaciers
 
     # Get glacier dataset and necessary stuff
-    try: gl_df = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glname]
+    try:
+        gl_df = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name]
+        print(gl_df.T)
+        print(f"Glacier {glacier_name} found.")
     except Exception as e: print("Error {e}")
     assert len(gl_df) == 1, "Check this please."
     # print(gl_df)
@@ -67,6 +77,7 @@ def create_random_lon_lat_points_inside_glacier(glname, n=50):
 
     # Dictionary of points to be generated
     points = {'lons':[], 'lats':[], 'nunataks':[]}
+    points_df = pd.DataFrame(columns=CFG.features+['lons', 'lats', 'nunataks'])
 
     while (len(points['lons']) < n):
         r_lon = np.random.uniform(llx, urx)
@@ -81,23 +92,111 @@ def create_random_lon_lat_points_inside_glacier(glname, n=50):
             # Flag as 1 if point inside any nunatak.
             # If glacier does not contain nunataks, the list will be empty and 0 will populate automatically.
             is_nunatak = any(nunatak.contains(point) for nunatak in gl_geom_nunataks_list)
-            if is_nunatak: points['nunataks'].append(1)
-            else: points['nunataks'].append(0)
+            if is_nunatak:
+                points['nunataks'].append(1)
+            else:
+                points['nunataks'].append(0)
+
+
+    # Fill lats, lons and nunataks
+    points_df['lats']=points['lats']
+    points_df['lons']=points['lons']
+    points_df['nunataks']=points['nunataks']
+
+    # Let's start filling the other features
+    points_df['RGI'] = rgi
+    points_df['Area'] = gl_df['Area'].item()
+    points_df['Zmin'] = gl_df['Zmin'].item()
+    points_df['Zmax'] = gl_df['Zmax'].item()
+    points_df['Zmed'] = gl_df['Zmed'].item()
+    points_df['Slope'] = gl_df['Slope'].item()
+    points_df['Lmax'] = gl_df['Lmax'].item()
+
+    """ Add Slopes and Elevation """
+    dem_rgi = rioxarray.open_rasterio(args.mosaic + f'mosaic_RGI_{rgi:02d}.tif')
+    ris_ang = dem_rgi.rio.resolution()[0]
+
+    swlat = points_df['lats'].min()
+    swlon = points_df['lons'].min()
+    nelat = points_df['lats'].max()
+    nelon = points_df['lons'].max()
+    deltalat = np.abs(swlat - nelat)
+    deltalon = np.abs(swlon - nelon)
+    lats_xar = xarray.DataArray(points_df['lats'])
+    lons_xar = xarray.DataArray(points_df['lons'])
+
+    eps = 5 * ris_ang
+
+    # clip
+    try:
+        focus = dem_rgi.rio.clip_box(
+            minx=swlon - (deltalon + eps),
+            miny=swlat - (deltalat + eps),
+            maxx=nelon + (deltalon + eps),
+            maxy=nelat + (deltalat + eps)
+        )
+    except:
+        input(f"Problemi")
+
+    focus = focus.squeeze()
+
+    lon_c = (0.5 * (focus.coords['x'][-1] + focus.coords['x'][0])).to_numpy()
+    lat_c = (0.5 * (focus.coords['y'][-1] + focus.coords['y'][0])).to_numpy()
+    ris_metre_lon = haversine(lon_c, lat_c, lon_c + ris_ang, lat_c) * 1000
+    ris_metre_lat = haversine(lon_c, lat_c, lon_c, lat_c + ris_ang) * 1000
+
+    # calculate slope for restricted dem
+    dz_dlat, dz_dlon = np.gradient(focus.values, ris_metre_lat, ris_metre_lon)  # [m/m]
+
+    dz_dlat_xarray = focus.copy(data=dz_dlat)
+    dz_dlon_xarray = focus.copy(data=dz_dlon)
+
+    # interpolate slope
+    slope_lat_data = dz_dlat_xarray.interp(y=lats_xar, x=lons_xar, method='linear').data # (N,)
+    slope_lon_data = dz_dlon_xarray.interp(y=lats_xar, x=lons_xar, method='linear').data # (N,)
+
+    # interpolate dem
+    elevation_data = focus.interp(y=lats_xar, x=lons_xar, method='linear').data # (N,)
+
+    assert slope_lat_data.shape == slope_lon_data.shape == elevation_data.shape, "Different shapes, something wrong!"
+
+    # Fill dataframe with slope_lat, slope_lon, slope, elevation_astergdem and elevation_from_zmin
+    points_df['slope_lat'] = slope_lat_data
+    points_df['slope_lon'] = slope_lon_data
+    points_df['elevation_astergdem'] = elevation_data
+    points_df['elevation_from_zmin'] = points_df['elevation_astergdem'] - points_df['Zmin']
+    points_df['slope'] = np.sqrt(points_df['slope_lat'] ** 2 + points_df['slope_lon'] ** 2)
+
+    print(points_df.T)
 
     # Show the result
     show_glacier_with_produced_points = True
     if show_glacier_with_produced_points:
-        plt.plot(*gl_geom_ext.exterior.xy, c='red')
-        for interior in gl_geom.interiors:
-            plt.plot(*interior.xy, c='blue')
-        for (lon, lat, nunatak) in zip(points['lons'], points['lats'], points['nunataks']):
-            if nunatak: plt.scatter(lon, lat, s=20, c='b')
-            else: plt.scatter(lon, lat, s=20, c='r')
+        fig, axes = plt.subplots(1,2, figsize=(8,4))
+        ax1, ax2 = axes.flatten()
+
+        for ax in axes:
+            ax.plot(*gl_geom_ext.exterior.xy, lw=1, c='red')
+            for interior in gl_geom.interiors:
+                ax.plot(*interior.xy, lw=1, c='blue')
+            for (lon, lat, nunatak) in zip(points['lons'], points['lats'], points['nunataks']):
+                if nunatak: ax.scatter(lon, lat, s=50, lw=2, c='b', zorder=1)
+                else: ax.scatter(lon, lat, s=50, lw=2, c='r', ec='r', zorder=1)
+
+        im1 = dz_dlat_xarray.plot(ax=ax1, cmap='gist_gray', vmin=np.nanmin(slope_lat_data),
+                                  vmax=np.nanmax(slope_lat_data), zorder=0)
+        s1 = ax1.scatter(x=lons_xar, y=lats_xar, s=50, c=slope_lat_data, ec=None, cmap='gist_gray',
+                         vmin=np.nanmin(slope_lat_data), vmax=np.nanmax(slope_lat_data), zorder=1)
+
+        im2 = focus.plot(ax=ax2, cmap='gist_gray', vmin=np.nanmin(elevation_data),
+                                  vmax=np.nanmax(elevation_data), zorder=0)
+        s2 = ax2.scatter(x=lons_xar, y=lats_xar, s=50, c=elevation_data, ec=None, cmap='gist_gray',
+                         vmin=np.nanmin(elevation_data), vmax=np.nanmax(elevation_data), zorder=1)
+
+
         plt.show()
+    return points_df
 
-    return points
-
-dict_points = create_random_lon_lat_points_inside_glacier(gl_id, n=10)
-
-#todo: now I have to populate the dictionary with metadata. Effectively I have to calculate the metadata features
-# for each (lon, lat) point the I generated. Follow create_metadata.py for guidance.
+df_points = create_random_lon_lat_points_inside_glacier(glacier_name='RGI60-11.01450', n=25)
+#glacier_name =  'RGI60-11.01450' Aletsch
+#glacier_name = np.random.choice(RGI_burned)
