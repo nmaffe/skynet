@@ -435,6 +435,8 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
 
 """Add distance from border using Millan's velocity"""
 def add_dist_from_border_in_out(glathida, path_millan_velocity):
+    # todo: if there is no millan data for some glacier what is the result ?? i think it may be incorrect
+    # todo: i think i should change this to an approach that uses glacier geometries, like in fetch_glacier_metadata
     print("Adding distance to border...")
 
     if ('dist_from_border_km' in list(glathida) or 'outsider' in list(glathida)):
