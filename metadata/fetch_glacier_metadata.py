@@ -18,6 +18,7 @@ from pyproj import Proj, transform, Transformer, CRS
 from math import radians, cos, sin, asin, sqrt, floor
 import utm
 import shapely.wkt
+import time
 
 
 """
@@ -134,6 +135,7 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     points_df['Lmax'] = gl_df['Lmax'].item()
 
     """ Add Slopes and Elevation """
+    print(f"Calculating slopes and elevations...")
     dem_rgi = rioxarray.open_rasterio(args.mosaic + f'mosaic_RGI_{rgi:02d}.tif')
     ris_ang = dem_rgi.rio.resolution()[0]
 
@@ -189,6 +191,12 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     points_df['slope'] = np.sqrt(points_df['slope_lat'] ** 2 + points_df['slope_lon'] ** 2)
 
     """ Calculate Millan vx, vy, v """
+    print(f"Calculating vx, vy, v, ith_m...")
+    #todo There are multiple cases I need to consider to produce vx, vy, v, ith_m
+    # 1) There is no Millan data for such glacier. I need some kind of data imputation (for vx, vy, v).
+    # 2) The point is generated close to the margin and the interpolatin of millan maps yields nan. What to do ?
+    # 3) The point is generated inside a nunatak. Millan interpolation yields nan.
+
     # get Millan vx files and create mosaic
     files_vx = glob(args.millan_velocity_folder + 'RGI-{}/VX_RGI-{}*'.format(rgi, rgi))
     xds_4326 = []
@@ -250,99 +258,94 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         focus_ith = mosaic_ith.rio.clip_box(minx=np.min(lons_crs) - eps_millan, miny=np.min(lats_crs) - eps_millan,
                                           maxx=np.max(lons_crs) + eps_millan, maxy=np.max(lats_crs) + eps_millan)
 
+        # Interpolate
+        # Note that points generated very very close
+        # to the glaciers boundaries may result in nan interpolation. This should be removed at the end.
+        vx_data = focus_vx.interp(y=xarray.DataArray(lats_crs), x=xarray.DataArray(lons_crs),
+                                  method="linear").data.squeeze()
+        vy_data = focus_vy.interp(y=xarray.DataArray(lats_crs), x=xarray.DataArray(lons_crs),
+                                  method="linear").data.squeeze()
+        ith_data = focus_ith.interp(y=xarray.DataArray(lats_crs), x=xarray.DataArray(lons_crs),
+                                    method="linear").data.squeeze()
+        print(
+            f"From Millan vx, vy, ith we have generated {np.isnan(vx_data).sum()}/{np.isnan(vy_data).sum()}/{np.isnan(ith_data).sum()} nans.")
+
+        # Fill dataframe with vx, vy, ith_m
+        points_df['vx'] = vx_data  # note this may contain nans
+        points_df['vy'] = vy_data  # note this may contain nans
+        points_df['ith_m'] = ith_data  # note this may contain nans
+        points_df['v'] = np.sqrt(points_df['vx'] ** 2 + points_df['vy'] ** 2)  # note this may contain nans
+
     except:
-        print(f"No Millan data for rgi {rgi} glacier {glacier_name}")
+        print(f"No Millan data can be found for rgi {rgi} glacier {glacier_name}")
         # todo: what to do if vx, vy, ith are not defined for this glacier ? How do I fill the dataframe ?
-        # In principle I can still define all other variables except for v and maybe distance_from_border
+        # Is this triggered only if no millan data or also if point close to margin ?
 
-    # Interpolate
-    # Note that since Millan products although are defined to rgi6, points generated very very close
-    # to the glaciers boundaries may result in nan interpolation. This should be removed at the end.
-    vx_data = focus_vx.interp(y=xarray.DataArray(lats_crs), x=xarray.DataArray(lons_crs), method="linear").data.squeeze()
-    vy_data = focus_vy.interp(y=xarray.DataArray(lats_crs), x=xarray.DataArray(lons_crs), method="linear").data.squeeze()
-    ith_data = focus_ith.interp(y=xarray.DataArray(lats_crs), x=xarray.DataArray(lons_crs), method="linear").data.squeeze()
-    print(f"From Millan vx, vy, ith we have generated {np.isnan(vx_data).sum()}/{np.isnan(vy_data).sum()}/{np.isnan(ith_data).sum()} nans.")
-
-    # Fill dataframe with vx, vy, ith_m
-    points_df['vx'] = vx_data # note this may contain nans
-    points_df['vy'] = vy_data # note this may contain nans
-    points_df['ith_m'] = ith_data # note this may contain nans
-    points_df['v'] = np.sqrt(points_df['vx']**2 + points_df['vy']**2) # note this may contain nans
 
     """ Calculate distance_from_border """
-    # Now we know all points are generated inside the geometry. Do we still to compute the distance from the
-    # edge using Millan maps ? Can we use a different approach ?
-    for (lon, lat, nunatak) in zip(points_df['lons'], points_df['lats'], points_df['nunataks']):
-        point = Point(lon, lat)
-        print(point)
+    print(f"Calculating the distances using geometry approach... ")
+    t0 = time.time()
 
+    # Get the UTM EPSG code from glacier center coordinates
+    cenLon, cenLat = gl_df['CenLon'].item(), gl_df['CenLat'].item()
+    _, _, _, _, glacier_epsg = from_lat_lon_to_utm_and_epsg(cenLat, cenLon)
+
+    # Create Geopandas geoseries objects of all glacier geometries (boundary and nunataks) and convert to UTM
+    exterior_ring = gl_geom.exterior  # shapely.geometry.polygon.LinearRing
+    interior_rings = gl_geom.interiors  # shapely.geometry.polygon.InteriorRingSequence of polygon.LinearRing
+    geoseries_geometries_4326 = gpd.GeoSeries([exterior_ring] + list(interior_rings), crs="EPSG:4326")
+    geoseries_geometries_epsg = geoseries_geometries_4326.to_crs(epsg=glacier_epsg)
+
+    # Get all generated points and create Geopandas geoseries and convert to UTM
+    list_points = [Point(lon, lat) for (lon, lat) in zip(points_df['lons'], points_df['lats'])]
+    geoseries_points_4326 = gpd.GeoSeries(list_points, crs="EPSG:4326")
+    geoseries_points_epsg = geoseries_points_4326.to_crs(epsg=glacier_epsg)
+
+    # Loop over generated points
+    for (i, lon, lat, nunatak) in zip(points_df.index, points_df['lons'], points_df['lats'], points_df['nunataks']):
+
+        # Make a check.
         easting, nothing, zonenum, zonelett, epsg = from_lat_lon_to_utm_and_epsg(lat, lon)
-        print(easting, nothing, zonenum, zonelett, epsg)
+        assert epsg==glacier_epsg, f"Inconsistency found between point espg {epsg} and glacier center epsg {glacier_epsg}."
 
-        """Using pyproj
-        original_projection = CRS("EPSG:4326")  # WGS 84 (latitude, longitude)
-        target_projection = CRS(f"EPSG:{epsg}")  # World Mercator (meters)
-        transformer = Transformer.from_crs(original_projection, target_projection, always_xy=False)
+        # Get shapely Point
+        point_epsg = geoseries_points_epsg.iloc[i]
 
-        # Transform the coordinates of the geometry
-        coordinates_transformed = transformer.transform(*zip(*gl_geom_ext.exterior.coords))
-        # Create a new Shapely Polygon with the transformed coordinates
-        geom_transformed = Polygon(zip(*coordinates_transformed))
-        # distance
-        distance = point.distance(geom_transformed)
-        print('Distance:', distance)"""
+        # Calculate the distances between such point and all glacier geometries
+        min_distances_point_geometries = geoseries_geometries_epsg.distance(point_epsg)
+        min_dist = np.min(min_distances_point_geometries) # unit UTM: m
 
-        """Using geopandas"""
-        #print(len(gl_df['geometry'].item()))
-        #sth = gpd.GeoDataFrame(geometry=[shapely.wkt.loads(f"{gl_df['geometry'].item()}")], crs="EPSG:4326")
+        # To debug we want to check what point corresponds to the minimum distance.
+        debug_distance = False
+        if debug_distance:
+            min_distance_index = min_distances_point_geometries.idxmin()
+            nearest_line = geoseries_geometries_epsg.loc[min_distance_index]
+            nearest_point_on_line = nearest_line.interpolate(nearest_line.project(point_epsg))
+            print(f"{i} Minimum distance: {min_dist:.2f} meters.")
 
+        # Fill dataset if generated point not is not inside (any) nunatak
+        if nunatak == 0: points_df.loc[i, 'dist_from_border_km'] = min_dist/1000.
 
-        point_single = gpd.GeoDataFrame(geometry=[shapely.wkt.loads(f"POINT ({lon} {lat})")], crs="EPSG:4326")
-        line = gpd.GeoDataFrame(geometry=[shapely.wkt.loads(f"{gl_geom}")], crs="EPSG:4326")
-        lines_nunataks = gpd.GeoDataFrame(geometry=[shapely.wkt.loads(f"{Polygon(nunatak)}") for nunatak in gl_geom.interiors], crs="EPSG:4326")
+        # Plot
+        plot_calculate_distance = False
+        if plot_calculate_distance:
+            fig, (ax1, ax2) = plt.subplots(1,2)
+            ax1.plot(*gl_geom_ext.exterior.xy, lw=1, c='red')
+            for interior in gl_geom.interiors:
+                ax1.plot(*interior.xy, lw=1, c='blue')
+            if nunatak: ax1.scatter(lon, lat, s=50, lw=2, c='b')
+            else: ax1.scatter(lon, lat, s=50, lw=2, c='r', ec='r')
 
-        line_to_epsg = line.to_crs(epsg=epsg)
-        lines_nunataks_to_epsg = lines_nunataks.to_crs(epsg=epsg)
-        point_to_epsg = point_single.to_crs(epsg=epsg)
-        print(point_to_epsg)
+            ax2.plot(*geoseries_geometries_epsg.loc[0].xy, lw=1, c='red') # first entry is outside border
+            for inter in geoseries_geometries_epsg.loc[1:]: # all interiors if present
+                ax2.plot(*inter.xy, lw=1, c='blue')
+            ax2.scatter(*point_epsg.xy, s=50, lw=2, c='r', ec='r')
+            if debug_distance: ax2.scatter(*nearest_point_on_line.xy, s=50, lw=2, c='g')
 
-        distance_from_periphery = line_to_epsg.exterior.distance(point_to_epsg)
-        distance_from_nunataks = 0#lines_nunataks_to_epsg.exterior.distance(point_to_epsg)
-
-        print('Distance from periphery:', distance_from_periphery)
-        print('Distance from nunataks:', distance_from_nunataks)
-
-
-        """ Here's the winner. """
-        exterior_ring = gl_geom.exterior # shapely.geometry.polygon.LinearRing
-        interior_rings = gl_geom.interiors # shapely.geometry.polygon.InteriorRingSequence
-        #for interior in interior_rings: print(type(interior)) # shapely.geometry.polygon.LinearRing
-        all_rings_list = gpd.GeoSeries([exterior_ring] + list(interior_rings), crs="EPSG:4326") # this list will contain all geometries
-        all_points_list = gpd.GeoSeries([point] * len(all_rings_list), crs="EPSG:4326")
-        all_rings_list_epsg = all_rings_list.to_crs(epsg=epsg)
-        all_point_list_epsg = all_points_list.to_crs(epsg=epsg)
-        distance_between_geoseries = all_point_list_epsg.distance(all_rings_list_epsg)
-        print(distance_between_geoseries)
-        input('wait02')
-
-
-
-        fig, (ax1, ax2) = plt.subplots(1,2)
-        ax1.plot(*gl_geom_ext.exterior.xy, lw=1, c='red')
-        for interior in gl_geom.interiors:
-            ax1.plot(*interior.xy, lw=1, c='blue')
-        if nunatak: ax1.scatter(lon, lat, s=50, lw=2, c='b')
-        else: ax1.scatter(lon, lat, s=50, lw=2, c='r', ec='r')
-
-        ax2.plot(*line_to_epsg.loc[0, 'geometry'].exterior.xy, lw=1, c='red')
-        ax2.scatter(*point_to_epsg.loc[0, 'geometry'].xy, s=50, lw=2, c='r', ec='r')
-        plt.show()
-        input('wait')
-
-        #distance = point.distance(gl_geom_ext)
-        #print(f"The distance between the point and the polygon is: {distance}")
-
-
+            ax1.set_title('EPSG 4326')
+            ax2.set_title(f'EPSG {glacier_epsg}')
+            plt.show()
+    print(f"Finished distance from border calculations in {time.time()-t0} sec.")
 
 
     # Show the result
@@ -381,10 +384,11 @@ def populate_glacier_with_metadata(glacier_name, n=50):
 
         plt.show()
 
-    # todo: remove any nan line (can be in vx, vy, v, ith_m)
-    #print(points_df.T)
+    # todo: remove any nan line (can be in vx, vy, v, ith_m) ?
+    # print(points_df.T)
     return points_df
 
-df_points = populate_glacier_with_metadata(glacier_name='RGI60-11.01450', n=1) #RGI60-08.00001
+df_points = populate_glacier_with_metadata(glacier_name='RGI60-11.01450', n=10)
+#RGI60-08.00001
 #glacier_name =  'RGI60-11.01450' Aletsch # RGI60-11.02774
 #glacier_name = np.random.choice(RGI_burned)
