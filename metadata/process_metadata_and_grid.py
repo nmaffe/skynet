@@ -41,6 +41,8 @@ glathida_rgis = glathida_rgis.dropna(subset=cols)
 #print(glathida_rgis['RGI'].value_counts())
 
 """ B. Grid the dataset """
-# In the previous cell we first include RGIId as feature, discarding those measurements that do not have such id.
-# We then loop over all unique glacier ids.
-# For each glacier we grid each feature.
+# We loop over all unique glacier ids; for each unique glacier we grid every feature.
+ids_rgiid = glathida_rgis['RGIId'].unique().tolist()
+print(f'We have {len(ids_rgiid)} unique glaciers')
+
+#todo: CONTINUE TO IMPLEMENT FROM .IPYNB
