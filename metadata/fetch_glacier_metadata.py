@@ -42,6 +42,7 @@ parser.add_argument('--millan_icethickness_folder', type=str,default="/home/nico
 
 args = parser.parse_args()
 
+utils.get_rgi_intersects_dir(version='62')
 utils.get_rgi_dir(version='62')  # setup oggm version
 
 class CFG:
@@ -81,16 +82,63 @@ def populate_glacier_with_metadata(glacier_name, n=50):
 
     rgi = int(glacier_name[6:8]) # get rgi from the glacier code
     oggm_rgi_shp = utils.get_rgi_region_file(f"{rgi:02d}", version='62') # get rgi region shp
+    oggm_rgi_intersects_shp = utils.get_rgi_intersects_region_file(f"{rgi:02d}", version='62') # get rgi intersect shp file
+
     oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)             # get rgi dataset of glaciers
+    oggm_rgi_intersects =  gpd.read_file(oggm_rgi_intersects_shp) # get rgi dataset of glaciers intersects
+
+    def find_cluster_RGIIds(id, df):
+        neighbors = np.array([])
+        analyzed = np.array([])
+        df_intersects = df[df['RGIId_1']==id]
+        #print(df_intersects)
+        uniques = df_intersects['RGIId_2'].unique()
+        #print(f"Glacier {id} neighbors: {uniques}")
+        neighbors = np.append(neighbors, uniques)
+        neighbors = np.unique(neighbors) # remove duplicates (and sort)
+        analyzed = np.append(analyzed, id)
+        #print(f"Neighbors: {neighbors}")
+        #print("Analyzed:", analyzed)
+
+        if len(neighbors)==0: return None
+
+        while len(neighbors)>0 and not np.array_equal(np.unique(analyzed), np.unique(neighbors)):
+            #print(f"Still not scanned all possible neighbors")
+            for n_id in neighbors:
+                if n_id not in analyzed:
+                    df_intersects = df[df['RGIId_1'] == n_id]
+                    uniques = df_intersects['RGIId_2'].unique()
+                    #print(f"Glacier {n_id} neighbors: {uniques}")
+                    neighbors = np.append(neighbors, uniques)
+                    neighbors = np.unique(neighbors)  # remove duplicates (and sort)
+                    analyzed = np.append(analyzed, n_id)
+                    #print(f"Neighbors: {neighbors}")
+                else:
+                    #print(f"Glacier {n_id} already analyzed.")
+                    continue
+        #print("Finished:", neighbors)
+        #print("Analyzed:", analyzed)
+        return neighbors
 
     # Get glacier dataset and necessary stuff
     try:
         gl_df = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name]
-        print(gl_df.T)
         print(f"Glacier {glacier_name} found.")
-    except Exception as e: print("Error {e}")
+        print(gl_df.T)
+    except Exception as e: print(f"Error {e}")
     assert len(gl_df) == 1, "Check this please."
-    # print(gl_df)
+
+    # intersects of glacier
+    gl_intersects = oggm.utils.get_rgi_intersects_entities([glacier_name], version='62')
+
+    # intersects of all glaciers in the cluster
+    list_cluster_RGIIds = find_cluster_RGIIds(glacier_name, oggm_rgi_intersects)
+    print(f"List of glacier cluster: {list_cluster_RGIIds}")
+    if list_cluster_RGIIds is not None:
+        cluster_intersects = oggm.utils.get_rgi_intersects_entities(list_cluster_RGIIds, version='62')
+    else: cluster_intersects = None
+
+
     gl_geom = gl_df['geometry'].item() # glacier geometry Polygon
     gl_geom_ext = Polygon(gl_geom.exterior)  # glacier geometry Polygon
     gl_geom_nunataks_list = [Polygon(nunatak) for nunatak in gl_geom.interiors] # list of nunataks Polygons
@@ -296,6 +344,19 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     geoseries_geometries_4326 = gpd.GeoSeries([exterior_ring] + list(interior_rings), crs="EPSG:4326")
     geoseries_geometries_epsg = geoseries_geometries_4326.to_crs(epsg=glacier_epsg)
 
+    geoseries_geometries_cluster_intersects_4326 = cluster_intersects['geometry'] # ok but do i need this ?
+    if list_cluster_RGIIds is not None:
+        cluster_geometry_list = []
+        for gl_neighbor_id in list_cluster_RGIIds:
+            gl_neighbor_df = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId'] == gl_neighbor_id]
+            gl_neighbor_geom = gl_neighbor_df['geometry'].item()
+            cluster_geometry_list.append(gl_neighbor_geom)
+
+        cluster_geometry_4326 = gpd.GeoSeries(cluster_geometry_list, crs="EPSG:4326")
+        # Now remove all ice divides
+        cluster_geometry_no_divides_4326 = gpd.GeoSeries(cluster_geometry_4326.unary_union, crs="EPSG:4326")
+        cluster_geometry_no_divides_epsg = cluster_geometry_no_divides_4326.to_crs(epsg=glacier_epsg)
+
     # Get all generated points and create Geopandas geoseries and convert to UTM
     list_points = [Point(lon, lat) for (lon, lat) in zip(points_df['lons'], points_df['lats'])]
     geoseries_points_4326 = gpd.GeoSeries(list_points, crs="EPSG:4326")
@@ -316,7 +377,7 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         min_dist = np.min(min_distances_point_geometries) # unit UTM: m
 
         # To debug we want to check what point corresponds to the minimum distance.
-        debug_distance = False
+        debug_distance = True
         if debug_distance:
             min_distance_index = min_distances_point_geometries.idxmin()
             nearest_line = geoseries_geometries_epsg.loc[min_distance_index]
@@ -327,12 +388,37 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         if nunatak == 0: points_df.loc[i, 'dist_from_border_km'] = min_dist/1000.
 
         # Plot
-        plot_calculate_distance = False
+        plot_calculate_distance = True
         if plot_calculate_distance:
             fig, (ax1, ax2) = plt.subplots(1,2)
-            ax1.plot(*gl_geom_ext.exterior.xy, lw=1, c='red')
+            #ax1.plot(*gl_geom_ext.exterior.xy, lw=1, c='red')
             for interior in gl_geom.interiors:
                 ax1.plot(*interior.xy, lw=1, c='blue')
+
+            # Plot boundaries (only external periphery) of all glaciers in the cluster
+            if list_cluster_RGIIds is not None:
+                for gl_neighbor_id in list_cluster_RGIIds:
+                    gl_neighbor_df = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId'] == gl_neighbor_id]
+                    gl_neighbor_geom = gl_neighbor_df['geometry'].item()  # glacier geometry Polygon
+                    #gl_neighbor_geom_ext = Polygon(gl_neighbor_geom.exterior)  # glacier geometry Polygon
+                    #ax1.plot(*gl_neighbor_geom.exterior.xy, lw=1, c='orange', zorder=0)
+
+            # Plot intersections of central glacier
+            for k, intersect in enumerate(gl_intersects['geometry']):  # Linestring gl_intersects
+                continue
+                ax1.plot(*intersect.xy, lw=1, color='k', zorder=0)
+
+            # Plot intersections of all glaciers in the cluster
+            if cluster_intersects is not None:
+                for k, intersect in enumerate(cluster_intersects['geometry']):
+                    continue
+                    ax1.plot(*intersect.xy, lw=1, color=np.random.rand(3), zorder=2)
+
+            # Plot cluster (with no ice divides)
+            ax1.plot(*cluster_geometry_no_divides_4326.item().exterior.xy, lw=1, c='red', zorder=3)
+            for interior in cluster_geometry_no_divides_4326.item().interiors:
+                ax1.plot(*interior.xy, lw=1, c='blue', zorder=3)
+
             if nunatak: ax1.scatter(lon, lat, s=50, lw=2, c='b')
             else: ax1.scatter(lon, lat, s=50, lw=2, c='r', ec='r')
 
@@ -388,7 +474,10 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     # print(points_df.T)
     return points_df
 
-df_points = populate_glacier_with_metadata(glacier_name='RGI60-11.01450', n=10)
+df_points = populate_glacier_with_metadata(glacier_name='RGI60-11.00846', n=10)
 #RGI60-08.00001
+# RGI60-11.00846 has multiple intersects with neighbors
+# RGI60-11.02774 has 1 intersect with neighbor (?)
+#RGI60-11.02884 has no neighbors
 #glacier_name =  'RGI60-11.01450' Aletsch # RGI60-11.02774
 #glacier_name = np.random.choice(RGI_burned)
