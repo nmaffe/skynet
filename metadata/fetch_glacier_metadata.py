@@ -14,11 +14,9 @@ import geopandas as gpd
 import oggm
 from oggm import utils
 from shapely.geometry import Point, Polygon
-from pyproj import Proj, transform, Transformer, CRS
+from pyproj import Proj, Transformer
 from math import radians, cos, sin, asin, sqrt, floor
 import utm
-import shapely.wkt
-import time
 
 """
 The purpose of this program is to generate glacier metadata 
@@ -321,9 +319,10 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         points_df['vy'] = vy_data  # note this may contain nans from interpolation at the margin/inside nunatak
         points_df['ith_m'] = ith_data  # note this may contain nans from interpolation at the margin/inside nunatak
         points_df['v'] = np.sqrt(points_df['vx'] ** 2 + points_df['vy'] ** 2)  # note this may contain nans
-
+        no_millan_data = False
     except:
         print(f"No Millan data can be found for rgi {rgi} glacier {glacier_name}")
+        no_millan_data = True
         for col in ['vx','vy', 'v']: # Fill Millan velocities with zero (keep ith_m as nan)
             points_df[col] = 0.0
 
@@ -391,7 +390,7 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         if nunatak == 0: points_df.loc[i, 'dist_from_border_km'] = min_dist/1000.
 
         # Plot
-        plot_calculate_distance = True
+        plot_calculate_distance = False
         if plot_calculate_distance:
             fig, (ax1, ax2) = plt.subplots(1,2)
             ax1.plot(*gl_geom_ext.exterior.xy, lw=1, c='red')
@@ -460,11 +459,12 @@ def populate_glacier_with_metadata(glacier_name, n=50):
                          vmin=np.nanmin(elevation_data), vmax=np.nanmax(elevation_data), zorder=1)
 
         # vx
-        im3 = focus_vx.plot(ax=ax3, cmap='viridis', vmin=np.nanmin(vx_data), vmax=np.nanmax(vx_data))
-        s3 = ax3.scatter(x=lons_crs, y=lats_crs, s=50, c=vx_data, ec=(1, 0, 0, 1), cmap='viridis',
-                         vmin=np.nanmin(vx_data), vmax=np.nanmax(vx_data), zorder=1)
-        s3_1 = ax3.scatter(x=lons_crs[np.argwhere(np.isnan(vx_data))], y=lats_crs[np.argwhere(np.isnan(vx_data))], s=50,
-                           c='magenta', zorder=1)
+        if no_millan_data is False:
+            im3 = focus_vx.plot(ax=ax3, cmap='viridis', vmin=np.nanmin(vx_data), vmax=np.nanmax(vx_data))
+            s3 = ax3.scatter(x=lons_crs, y=lats_crs, s=50, c=vx_data, ec=(1, 0, 0, 1), cmap='viridis',
+                             vmin=np.nanmin(vx_data), vmax=np.nanmax(vx_data), zorder=1)
+            s3_1 = ax3.scatter(x=lons_crs[np.argwhere(np.isnan(vx_data))], y=lats_crs[np.argwhere(np.isnan(vx_data))], s=50,
+                               c='magenta', zorder=1)
 
         plt.show()
 
@@ -479,10 +479,10 @@ def populate_glacier_with_metadata(glacier_name, n=50):
 
 generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-11.01450', n=10)
 
-#RGI60-08.00001
+# RGI60-08.00001 has no Millan data
 # RGI60-11.00846 has multiple intersects with neighbors
 # RGI60-11.02774 has no neighbors
 #RGI60-11.02884 has no neighbors
-#glacier_name =  'RGI60-11.01450' Aletsch # RGI60-11.02774
-#glacier_name = np.random.choice(RGI_burned)
+#'RGI60-11.01450' Aletsch # RGI60-11.02774
 #RGI60-11.00590, RGI60-11.01894 no Millan data ?
+#glacier_name = np.random.choice(RGI_burned)
