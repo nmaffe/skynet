@@ -19,8 +19,7 @@ from math import radians, cos, sin, asin, sqrt, floor
 import utm
 
 """
-The purpose of this program is to generate glacier metadata 
-at some random locations inside the glacier geometry. 
+This program generates glacier metadata at some random locations inside the glacier geometry. 
 
 Input: glacier name (RGIId), how many points you want to generate. 
 Output: pandas dataframe with features calculated for each generated point. 
@@ -40,8 +39,9 @@ parser.add_argument('--millan_icethickness_folder', type=str,default="/home/nico
 
 args = parser.parse_args()
 
-utils.get_rgi_intersects_dir(version='62')
 utils.get_rgi_dir(version='62')  # setup oggm version
+utils.get_rgi_intersects_dir(version='62')
+
 
 class CFG:
     # I need to reconstruct these features for each point created inside the glacier polygon
