@@ -501,20 +501,20 @@ def populate_glacier_with_metadata(glacier_name, n=50):
             s4 = ax4.scatter(x=lons_crs_f, y=lats_crs_f, s=50, c=ith_f_data, ec=(1, 0, 0, 1), cmap='inferno',
                              vmin=np.nanmin(file_glacier_farinotti), vmax=np.nanmax(file_glacier_farinotti), zorder=1)
             s4_1 = ax4.scatter(x=lons_crs_f[np.argwhere(np.isnan(ith_f_data))],
-                               y=lats_crs_f[np.argwhere(np.isnan(ith_f_data))], s=50, c='magenta', zorder=1)
+                               y=lats_crs_f[np.argwhere(np.isnan(ith_f_data))], s=50, c='magenta', zorder=2)
 
         plt.show()
 
 
     """ Cleaning the produced dataset """
-    # At this stage any nan may be present in vx, vy, v, ith_m (even if nunatak=0)
-    # Remove all lines having any nan in vx, vy, v. This will also automatically delete points inside nunataks.
-    points_df = points_df.dropna(subset=['vx', 'vy', 'v'])
+    # At this stage any nan may be present in vx, vy, v, ith_m, ith_f. Remove those points.
+    points_df = points_df.dropna(subset=['vx', 'vy', 'v', 'ith_m', 'ith_f'])
     print(points_df.T)
+    print(f"Are there nans ? {points_df.isnull().any().any()}")
     return points_df
 
 
-generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-11.01450', n=1000)
+generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-11.01450', n=20)
 
 # RGI60-08.00001 has no Millan data
 # RGI60-11.00846 has multiple intersects with neighbors
