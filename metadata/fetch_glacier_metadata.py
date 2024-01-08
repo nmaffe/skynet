@@ -24,10 +24,15 @@ This program generates glacier metadata at some random locations inside the glac
 Input: glacier name (RGIId), how many points you want to generate. 
 Output: pandas dataframe with features calculated for each generated point. 
 
+Note: the interpolation method="nearest" yields much less nans close to borders if compared to linear
+interpolation and therefore is chosen. 
+
+Note that Farinotti interpolation ith_f may result in nan when generated point too close to the border.
+
 Note the following policy for Millan special cases to produce vx, vy, v, ith_m:
     1) There is no Millan data for such glacier. I force fake vy=vy=v=0.0 and keep ith_m=nan. 
-    2) In case the interpolation of Millan's fields yields nan because points are either too close to the margins 
-    or inside a nunatak, I keep the nans that will be however removed before returning the dataset.   
+    2) In case the interpolation of Millan's fields yields nan because points are either too close to the margins. 
+    I keep the nans that will be however removed before returning the dataset.   
 """
 parser = argparse.ArgumentParser()
 parser.add_argument('--mosaic', type=str,default="/media/nico/samsung_nvme/ASTERDEM_v3_mosaics/",
@@ -36,6 +41,8 @@ parser.add_argument('--millan_velocity_folder', type=str,default="/home/nico/Pyc
                     help="Path to Millan velocity data")
 parser.add_argument('--millan_icethickness_folder', type=str,default="/home/nico/PycharmProjects/skynet/Extra_Data/Millan/thickness/",
                     help="Path to Millan ice thickness data")
+parser.add_argument('--farinotti_icethickness_folder', type=str,default="/home/nico/PycharmProjects/skynet/Extra_Data/Farinotti/",
+                    help="Path to Farinotti ice thickness data")
 
 args = parser.parse_args()
 
@@ -47,7 +54,7 @@ class CFG:
     # I need to reconstruct these features for each point created inside the glacier polygon
     features = ['Area', 'slope_lat', 'slope_lon', 'elevation_astergdem', 'vx', 'vy',
      'dist_from_border_km', 'v', 'slope', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
-     'elevation_from_zmin', 'RGI', 'ith_m']
+     'elevation_from_zmin', 'RGI', 'ith_m', 'ith_f']
 
 RGI_burned = ['RGI60-11.00562', 'RGI60-11.00590', 'RGI60-11.00603', 'RGI60-11.00638', 'RGI60-11.00647',
                   'RGI60-11.00689', 'RGI60-11.00695', 'RGI60-11.00846', 'RGI60-11.00950', 'RGI60-11.01024',
@@ -148,30 +155,27 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     points = {'lons':[], 'lats':[], 'nunataks':[]}
     points_df = pd.DataFrame(columns=CFG.features+['lons', 'lats', 'nunataks'])
 
-    # Generate points
+    # Generate points (no points can be generated inside nunataks)
     while (len(points['lons']) < n):
         r_lon = np.random.uniform(llx, urx)
         r_lat = np.random.uniform(lly, ury)
         point = Point(r_lon, r_lat)
 
         is_inside = gl_geom_ext.contains(point)
-        if is_inside:
-            points['lons'].append(r_lon)
-            points['lats'].append(r_lat)
+        is_nunatak = any(nunatak.contains(point) for nunatak in gl_geom_nunataks_list)
 
-            # Flag as 1 if point inside any nunatak.
-            # If glacier does not contain nunataks, the list will be empty and 0 will populate automatically.
-            is_nunatak = any(nunatak.contains(point) for nunatak in gl_geom_nunataks_list)
-            if is_nunatak:
-                points['nunataks'].append(1)
-            else:
-                points['nunataks'].append(0)
+        if (is_inside is False or is_nunatak is True): # either outside geometry or inside any nunatak
+            continue
 
+        points['lons'].append(r_lon)
+        points['lats'].append(r_lat)
+        points['nunataks'].append(int(is_nunatak))
 
     # Fill lats, lons and nunataks
     points_df['lats']=points['lats']
     points_df['lons']=points['lons']
     points_df['nunataks']=points['nunataks']
+    print(f"The generation pipeline has produced {points_df['nunataks'].sum()} points inside nunataks")
 
     # Let's start filling the other features
     points_df['RGI'] = rgi
@@ -237,6 +241,32 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     points_df['elevation_astergdem'] = elevation_data
     points_df['elevation_from_zmin'] = points_df['elevation_astergdem'] - points_df['Zmin']
     points_df['slope'] = np.sqrt(points_df['slope_lat'] ** 2 + points_df['slope_lon'] ** 2)
+
+    """ Calculate Farinotti ith_f """
+    print(f"Calculating ith_f...")
+    # Import farinotti ice thickness folder
+    folder_rgi_farinotti = args.farinotti_icethickness_folder + f'composite_thickness_RGI60-{rgi:02d}/RGI60-{rgi:02d}/'
+    try:
+        file_glacier_farinotti =rioxarray.open_rasterio(f'{folder_rgi_farinotti}{glacier_name}_thickness.tif', masked=False)
+        file_glacier_farinotti = file_glacier_farinotti.where(file_glacier_farinotti != 0.0) # replace zeros with nans.
+        file_glacier_farinotti.rio.write_nodata(np.nan, inplace=True)
+    except:
+        print(f"No Farinotti data can be found for rgi {rgi} glacier {glacier_name}")
+        input('check.')
+
+    transformer = Transformer.from_crs("EPSG:4326", file_glacier_farinotti.rio.crs)
+    lons_crs_f, lats_crs_f = transformer.transform(points_df['lats'].to_numpy(), points_df['lons'].to_numpy())
+
+    try:
+        ith_f_data = file_glacier_farinotti.interp(y=xarray.DataArray(lats_crs_f), x=xarray.DataArray(lons_crs_f),
+                                    method="nearest").data.squeeze()
+        points_df['ith_f'] = ith_f_data
+        print(f"From Farinotti ith we have generated {np.isnan(ith_f_data).sum()} nans.")
+        no_farinotti_data = False
+    except:
+        print(f"Farinotti interpolation rgi {rgi} glacier {glacier_name} is problematic. Check")
+        no_farinotti_data = True
+
 
     """ Calculate Millan vx, vy, v """
     print(f"Calculating vx, vy, v, ith_m...")
@@ -306,11 +336,11 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         # Note that points generated very very close
         # to the glaciers boundaries may result in nan interpolation. This should be removed at the end.
         vx_data = focus_vx.interp(y=xarray.DataArray(lats_crs), x=xarray.DataArray(lons_crs),
-                                  method="linear").data.squeeze()
+                                  method="nearest").data.squeeze()
         vy_data = focus_vy.interp(y=xarray.DataArray(lats_crs), x=xarray.DataArray(lons_crs),
-                                  method="linear").data.squeeze()
+                                  method="nearest").data.squeeze()
         ith_data = focus_ith.interp(y=xarray.DataArray(lats_crs), x=xarray.DataArray(lons_crs),
-                                    method="linear").data.squeeze()
+                                    method="nearest").data.squeeze()
         print(
             f"From Millan vx, vy, ith we have generated {np.isnan(vx_data).sum()}/{np.isnan(vy_data).sum()}/{np.isnan(ith_data).sum()} nans.")
 
@@ -436,14 +466,14 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     # Show the result
     show_glacier_with_produced_points = True
     if show_glacier_with_produced_points:
-        fig, axes = plt.subplots(1,3, figsize=(8,4))
-        ax1, ax2, ax3 = axes.flatten()
+        fig, axes = plt.subplots(1,4, figsize=(12,4))
+        ax1, ax2, ax3, ax4 = axes.flatten()
         for ax in (ax1, ax2):
             ax.plot(*gl_geom_ext.exterior.xy, lw=1, c='red')
             for interior in gl_geom.interiors:
                 ax.plot(*interior.xy, lw=1, c='blue')
             for (lon, lat, nunatak) in zip(points['lons'], points['lats'], points['nunataks']):
-                if nunatak: ax.scatter(lon, lat, s=50, lw=2, c='b', zorder=1)
+                if nunatak: ax.scatter(lon, lat, s=50, lw=2, c='magenta', zorder=2)
                 else: ax.scatter(lon, lat, s=50, lw=2, c='r', ec='r', zorder=1)
 
         # slope_lat
@@ -465,6 +495,13 @@ def populate_glacier_with_metadata(glacier_name, n=50):
                              vmin=np.nanmin(vx_data), vmax=np.nanmax(vx_data), zorder=1)
             s3_1 = ax3.scatter(x=lons_crs[np.argwhere(np.isnan(vx_data))], y=lats_crs[np.argwhere(np.isnan(vx_data))], s=50,
                                c='magenta', zorder=1)
+        if no_farinotti_data is False:
+            im4 = file_glacier_farinotti.plot(ax=ax4, cmap='inferno', vmin=np.nanmin(file_glacier_farinotti),
+                                              vmax=np.nanmax(file_glacier_farinotti))
+            s4 = ax4.scatter(x=lons_crs_f, y=lats_crs_f, s=50, c=ith_f_data, ec=(1, 0, 0, 1), cmap='inferno',
+                             vmin=np.nanmin(file_glacier_farinotti), vmax=np.nanmax(file_glacier_farinotti), zorder=1)
+            s4_1 = ax4.scatter(x=lons_crs_f[np.argwhere(np.isnan(ith_f_data))],
+                               y=lats_crs_f[np.argwhere(np.isnan(ith_f_data))], s=50, c='magenta', zorder=1)
 
         plt.show()
 
@@ -477,7 +514,7 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     return points_df
 
 
-generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-11.01450', n=10)
+generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-11.01450', n=1000)
 
 # RGI60-08.00001 has no Millan data
 # RGI60-11.00846 has multiple intersects with neighbors
