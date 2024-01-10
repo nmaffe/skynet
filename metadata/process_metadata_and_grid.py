@@ -24,6 +24,8 @@ parser.add_argument('--input_metadata_file', type=str,
                     default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final.csv",
                     help="Input metadata file to be gridded")
 parser.add_argument('--nbins_grid_latlon', type=float, default=20, help="How many bins in the lat/lon directions")
+parser.add_argument('--save', type=bool, default=False, help="Save final dataset or not.")
+
 args = parser.parse_args()
 
 run_compare = False
@@ -142,7 +144,7 @@ for n, rgiid in enumerate(ids_rgiid):
 
         # plot
         ifplot = False
-        if (feature == 'ith_m' and ifplot):
+        if (feature == 'vx' and ifplot):
 
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
 
@@ -173,8 +175,7 @@ for n, rgiid in enumerate(ids_rgiid):
 
 print(f'Finished. No. original measurements {len(glathida)} down to {len(glathida_gridded)}.')
 
-ifsave = True
-if ifsave:
+if args.save:
     filename_out = args.input_metadata_file.replace('TTT_final.csv', f'TTT_final_grid_{args.nbins_grid_latlon}.csv')
     glathida_gridded.to_csv(filename_out, index=False)
     print(f"Gridded dataframe saved: {filename_out}.")
