@@ -30,8 +30,8 @@ args = parser.parse_args()
 
 run_compare = False
 if run_compare:
-    f1 = "/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final_grid_200.csv"
-    f2 = "/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final_grid_200_old.csv"
+    f1 = "/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final_grid_20.csv"
+    f2 = "/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final_grid_20_old.csv"
     df1 = pd.read_csv(f1, low_memory=False)
     df2 = pd.read_csv(f2, low_memory=False)
     print(df1.equals(df2))
@@ -71,8 +71,8 @@ glathida = glathida.dropna(subset=cols)
 """ B. Grid the dataset """
 # We loop over all unique glacier ids; for each unique glacier we grid every feature.
 print(f"Begin gridding.")
-ids_rgiid = glathida['RGIId'].unique().tolist()
-print(f'We have {len(ids_rgiid)} unique glaciers and {len(glathida)} rows')
+rgi_ids = glathida['RGIId'].unique().tolist()
+print(f'We have {len(rgi_ids)} unique glaciers and {len(glathida)} rows')
 
 glathida_gridded = pd.DataFrame(columns=glathida.columns)
 
@@ -84,7 +84,7 @@ list_num_measurements_before_grid = []
 list_num_measurements_after_grid = []
 
 # loop over unique glaciers
-for n, rgiid in enumerate(ids_rgiid):
+for n, rgiid in enumerate(rgi_ids):
 
     glathida_id = glathida.loc[glathida['RGIId'] == rgiid]
     glathida_id_grid = pd.DataFrame(columns=glathida_id.columns)
@@ -98,7 +98,7 @@ for n, rgiid in enumerate(ids_rgiid):
     if not glathida_id['RGI'].nunique() == 1: raise ValueError(f"Glacier {rgiid} should have only 1 unique RGI.")
     if not glathida_id['RGIId'].nunique() == 1: raise ValueError(f"Glacier {rgiid} should have only 1 unique RGIId.")
 
-    print(f'{n}/{len(ids_rgiid)}, {rgiid}, Tot. meas to be gridded: {len(glathida_id)}')
+    print(f'{n}/{len(rgi_ids)}, {rgiid}, Tot. meas to be gridded: {len(glathida_id)}')
 
     list_num_measurements_before_grid.append(len(glathida_id))
 
