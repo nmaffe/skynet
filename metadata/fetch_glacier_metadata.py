@@ -92,38 +92,27 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)             # get rgi dataset of glaciers
     oggm_rgi_intersects =  gpd.read_file(oggm_rgi_intersects_shp) # get rgi dataset of glaciers intersects
 
+    def add_new_neighbors(neigbords, df):
+        """ I give a list of neighbors and I should return a new list with added neighbors"""
+        for id in neigbords:
+            neighbors_wrt_id = df[df['RGIId_1'] == id]['RGIId_2'].unique()
+            neigbords = np.append(neigbords, neighbors_wrt_id)
+        neigbords = np.unique(neigbords)
+        return neigbords
+
     def find_cluster_RGIIds(id, df):
-        neighbors = np.array([])
-        analyzed = np.array([])
-        df_intersects = df[df['RGIId_1']==id]
-        #print(df_intersects)
-        uniques = df_intersects['RGIId_2'].unique()
-        #print(f"Glacier {id} neighbors: {uniques}")
-        neighbors = np.append(neighbors, uniques)
-        neighbors = np.unique(neighbors) # remove duplicates (and sort)
-        analyzed = np.append(analyzed, id)
-        #print(f"Neighbors: {neighbors}")
-        #print("Analyzed:", analyzed)
+        neighbors0 = np.array([id])
+        len0 = len(neighbors0)
+        neighbors1 = add_new_neighbors(neighbors0, df)
+        len1 = len(neighbors1)
+        while (len1 > len0):
+            len0 = len1
+            neighbors1 = add_new_neighbors(neighbors1, df)
+            len1 = len(neighbors1)
+        if (len(neighbors1)) ==1: return None
+        else: return neighbors1
 
-        if len(neighbors)==0: return None
 
-        while len(neighbors)>0 and not np.array_equal(np.unique(analyzed), np.unique(neighbors)):
-            #print(f"Still not scanned all possible neighbors")
-            for n_id in neighbors:
-                if n_id not in analyzed:
-                    df_intersects = df[df['RGIId_1'] == n_id]
-                    uniques = df_intersects['RGIId_2'].unique()
-                    #print(f"Glacier {n_id} neighbors: {uniques}")
-                    neighbors = np.append(neighbors, uniques)
-                    neighbors = np.unique(neighbors)  # remove duplicates (and sort)
-                    analyzed = np.append(analyzed, n_id)
-                    #print(f"Neighbors: {neighbors}")
-                else:
-                    #print(f"Glacier {n_id} already analyzed.")
-                    continue
-        #print("Finished:", neighbors)
-        #print("Analyzed:", analyzed)
-        return neighbors
 
     # Get glacier dataset
     try:
@@ -419,7 +408,7 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         if nunatak == 0: points_df.loc[i, 'dist_from_border_km'] = min_dist/1000.
 
         # Plot
-        plot_calculate_distance = False
+        plot_calculate_distance = True
         if plot_calculate_distance:
             fig, (ax1, ax2) = plt.subplots(1,2)
             ax1.plot(*gl_geom_ext.exterior.xy, lw=1, c='red')
@@ -513,8 +502,9 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     return points_df
 
 
-generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-11.01450', n=20)
+generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-11.02774', n=20)
 
+# RGI60-11.00781 has only 1 neighbor
 # RGI60-08.00001 has no Millan data
 # RGI60-11.00846 has multiple intersects with neighbors
 # RGI60-11.02774 has no neighbors
