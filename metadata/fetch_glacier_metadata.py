@@ -151,11 +151,10 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     gl_geom_nunataks_list = [Polygon(nunatak) for nunatak in gl_geom.interiors] # list of nunataks Polygons
     llx, lly, urx, ury = gl_geom.bounds # geometry bounds
 
-    # Dictionary of points to be generated
-    points = {'lons':[], 'lats':[], 'nunataks':[]}
-    points_df = pd.DataFrame(columns=CFG.features+['lons', 'lats', 'nunataks'])
-
     # Generate points (no points can be generated inside nunataks)
+    points = {'lons': [], 'lats': [], 'nunataks': []}
+    points_df = pd.DataFrame(columns=CFG.features + ['lons', 'lats', 'nunataks'])
+
     while (len(points['lons']) < n):
         r_lon = np.random.uniform(llx, urx)
         r_lat = np.random.uniform(lly, ury)
@@ -244,9 +243,9 @@ def populate_glacier_with_metadata(glacier_name, n=50):
 
     """ Calculate Farinotti ith_f """
     print(f"Calculating ith_f...")
-    # Import farinotti ice thickness folder
+    # Set farinotti ice thickness folder
     folder_rgi_farinotti = args.farinotti_icethickness_folder + f'composite_thickness_RGI60-{rgi:02d}/RGI60-{rgi:02d}/'
-    try:
+    try: # Import farinotti ice thickness file. Note that it contains zero where ice not present.
         file_glacier_farinotti =rioxarray.open_rasterio(f'{folder_rgi_farinotti}{glacier_name}_thickness.tif', masked=False)
         file_glacier_farinotti = file_glacier_farinotti.where(file_glacier_farinotti != 0.0) # replace zeros with nans.
         file_glacier_farinotti.rio.write_nodata(np.nan, inplace=True)
