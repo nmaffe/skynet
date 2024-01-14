@@ -56,7 +56,7 @@ print(f'Original columns: {list(glathida)} \n')
 
 # A.3 Keep only these columns
 cols = ['RGI', 'RGIId', 'POINT_LAT', 'POINT_LON', 'THICKNESS', 'Area', 'elevation_astergdem',
-        'slope_lat', 'slope_lon', 'vx', 'vy', 'dist_from_border_km', 'v', 'slope',
+        'slope_lat', 'slope_lon', 'vx', 'vy', 'dist_from_border_km', 'dist_from_border_km_geom', 'v', 'slope',
        'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'elevation_from_zmin', 'ith_m', 'ith_f']
 
 glathida = glathida[cols]
