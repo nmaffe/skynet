@@ -24,7 +24,10 @@ This program generates glacier metadata at some random locations inside the glac
 Input: glacier name (RGIId), how many points you want to generate. 
 Output: pandas dataframe with features calculated for each generated point. 
 
-Note: the interpolation method="nearest" yields much less nans close to borders if compared to linear
+Note: the points are generated inside the glacier but outside nunataks (there is a check for this)
+
+Note: Millan and Farinotti products needs to be interpolated. Interpolation close to the borders may result in nans. 
+The interpolation method="nearest" yields much less nans close to borders if compared to linear
 interpolation and therefore is chosen. 
 
 Note that Farinotti interpolation ith_f may result in nan when generated point too close to the border.
@@ -34,6 +37,9 @@ Note the following policy for Millan special cases to produce vx, vy, v, ith_m:
     2) In case the interpolation of Millan's fields yields nan because points are either too close to the margins. 
     I keep the nans that will be however removed before returning the dataset.   
 """
+# todo: question remains open on if and how to smooth millan, farinotti and slope fiels before interpolation
+# todo: so far I use only neighboring pixels but Eric suggests to account for a wider window.
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--mosaic', type=str,default="/media/nico/samsung_nvme/ASTERDEM_v3_mosaics/",
                     help="Path to DEM mosaics")
@@ -53,23 +59,8 @@ utils.get_rgi_intersects_dir(version='62')
 class CFG:
     # I need to reconstruct these features for each point created inside the glacier polygon
     features = ['Area', 'slope_lat', 'slope_lon', 'elevation_astergdem', 'vx', 'vy',
-     'dist_from_border_km', 'v', 'slope', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
+     'dist_from_border_km_geom', 'v', 'slope', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
      'elevation_from_zmin', 'RGI', 'ith_m', 'ith_f']
-
-RGI_burned = ['RGI60-11.00562', 'RGI60-11.00590', 'RGI60-11.00603', 'RGI60-11.00638', 'RGI60-11.00647',
-                  'RGI60-11.00689', 'RGI60-11.00695', 'RGI60-11.00846', 'RGI60-11.00950', 'RGI60-11.01024',
-                  'RGI60-11.01041', 'RGI60-11.01067', 'RGI60-11.01144', 'RGI60-11.01199', 'RGI60-11.01296',
-                  'RGI60-11.01344', 'RGI60-11.01367', 'RGI60-11.01376', 'RGI60-11.01473', 'RGI60-11.01509',
-                  'RGI60-11.01576', 'RGI60-11.01604', 'RGI60-11.01698', 'RGI60-11.01776', 'RGI60-11.01786',
-                  'RGI60-11.01790', 'RGI60-11.01791', 'RGI60-11.01806', 'RGI60-11.01813', 'RGI60-11.01840',
-                  'RGI60-11.01857', 'RGI60-11.01894', 'RGI60-11.01928', 'RGI60-11.01962', 'RGI60-11.01986',
-                  'RGI60-11.02006', 'RGI60-11.02024', 'RGI60-11.02027', 'RGI60-11.02244', 'RGI60-11.02249',
-                  'RGI60-11.02261', 'RGI60-11.02448', 'RGI60-11.02490', 'RGI60-11.02507', 'RGI60-11.02549',
-                  'RGI60-11.02558', 'RGI60-11.02583', 'RGI60-11.02584', 'RGI60-11.02596', 'RGI60-11.02600',
-                  'RGI60-11.02624', 'RGI60-11.02673', 'RGI60-11.02679', 'RGI60-11.02704', 'RGI60-11.02709',
-                  'RGI60-11.02715', 'RGI60-11.02740', 'RGI60-11.02745', 'RGI60-11.02755', 'RGI60-11.02774',
-                  'RGI60-11.02775', 'RGI60-11.02787', 'RGI60-11.02796', 'RGI60-11.02864', 'RGI60-11.02884',
-                  'RGI60-11.02890', 'RGI60-11.02909', 'RGI60-11.03249']
 
 
 def from_lat_lon_to_utm_and_epsg(lat, lon):
@@ -112,8 +103,6 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         if (len(neighbors1)) ==1: return None
         else: return neighbors1
 
-
-
     # Get glacier dataset
     try:
         gl_df = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name]
@@ -134,7 +123,6 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     if list_cluster_RGIIds is not None:
         cluster_intersects = oggm.utils.get_rgi_intersects_entities(list_cluster_RGIIds, version='62') # (need only for plotting purposes)
     else: cluster_intersects = None
-
     gl_geom = gl_df['geometry'].item() # glacier geometry Polygon
     gl_geom_ext = Polygon(gl_geom.exterior)  # glacier geometry Polygon
     gl_geom_nunataks_list = [Polygon(nunatak) for nunatak in gl_geom.interiors] # list of nunataks Polygons
@@ -152,7 +140,7 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         is_inside = gl_geom_ext.contains(point)
         is_nunatak = any(nunatak.contains(point) for nunatak in gl_geom_nunataks_list)
 
-        if (is_inside is False or is_nunatak is True): # either outside geometry or inside any nunatak
+        if (is_inside is False or is_nunatak is True): # if outside geometry or inside any nunatak discard the point
             continue
 
         points['lons'].append(r_lon)
@@ -160,10 +148,13 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         points['nunataks'].append(int(is_nunatak))
 
     # Fill lats, lons and nunataks
-    points_df['lats']=points['lats']
-    points_df['lons']=points['lons']
-    points_df['nunataks']=points['nunataks']
-    print(f"The generation pipeline has produced {points_df['nunataks'].sum()} points inside nunataks")
+    points_df['lats'] = points['lats']
+    points_df['lons'] = points['lons']
+    points_df['nunataks'] = points['nunataks']
+    if (points_df['nunataks'].sum() != 0):
+        print(f"The generation pipeline has produced n. {points_df['nunataks'].sum()} points inside nunataks")
+        raise ValueError
+
 
     # Let's start filling the other features
     points_df['RGI'] = rgi
@@ -249,7 +240,7 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         ith_f_data = file_glacier_farinotti.interp(y=xarray.DataArray(lats_crs_f), x=xarray.DataArray(lons_crs_f),
                                     method="nearest").data.squeeze()
         points_df['ith_f'] = ith_f_data
-        print(f"From Farinotti ith we have generated {np.isnan(ith_f_data).sum()} nans.")
+        print(f"From Farinotti ith interpolation we have generated {np.isnan(ith_f_data).sum()} nans.")
         no_farinotti_data = False
     except:
         print(f"Farinotti interpolation rgi {rgi} glacier {glacier_name} is problematic. Check")
@@ -330,7 +321,7 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         ith_data = focus_ith.interp(y=xarray.DataArray(lats_crs), x=xarray.DataArray(lons_crs),
                                     method="nearest").data.squeeze()
         print(
-            f"From Millan vx, vy, ith we have generated {np.isnan(vx_data).sum()}/{np.isnan(vy_data).sum()}/{np.isnan(ith_data).sum()} nans.")
+            f"From Millan vx, vy, ith interpolations we have generated {np.isnan(vx_data).sum()}/{np.isnan(vy_data).sum()}/{np.isnan(ith_data).sum()} nans.")
 
         # Fill dataframe with vx, vy, ith_m
         points_df['vx'] = vx_data  # note this may contain nans from interpolation at the margin/inside nunatak
@@ -373,9 +364,22 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         # Now remove all ice divides
         cluster_geometry_no_divides_4326 = gpd.GeoSeries(cluster_geometry_4326.unary_union, crs="EPSG:4326")
         cluster_geometry_no_divides_epsg = cluster_geometry_no_divides_4326.to_crs(epsg=glacier_epsg)
-        cluster_exterior_ring = cluster_geometry_no_divides_epsg.item().exterior  # shapely.geometry.polygon.LinearRing
-        cluster_interior_rings = cluster_geometry_no_divides_epsg.item().interiors
-        geoseries_geometries_epsg = gpd.GeoSeries([cluster_exterior_ring] + list(cluster_interior_rings))
+        if cluster_geometry_no_divides_epsg.item().geom_type == 'Polygon':
+            cluster_exterior_ring = [cluster_geometry_no_divides_epsg.item().exterior]  # shapely.geometry.polygon.LinearRing
+            cluster_interior_rings = list(cluster_geometry_no_divides_epsg.item().interiors)  # shapely.geometry.polygon.LinearRing
+            multipolygon = False
+        elif cluster_geometry_no_divides_epsg.item().geom_type == 'MultiPolygon':
+            polygons = list(cluster_geometry_no_divides_epsg.item().geoms)
+            cluster_exterior_ring = [polygon.exterior for polygon in polygons]  # list of shapely.geometry.polygon.LinearRing
+            num_multipoly = len(cluster_exterior_ring)
+            cluster_interior_ringSequences = [polygon.interiors for polygon in polygons]  # list of shapely.geometry.polygon.InteriorRingSequence
+            cluster_interior_rings = [ring for sequence in cluster_interior_ringSequences for ring in sequence]  # list of shapely.geometry.polygon.LinearRing
+            multipolygon = True
+        else: raise ValueError("Unexpected geometry type. Please check.")
+
+        # Create a geoseries of all external and internal geometries
+        geoseries_geometries_epsg = gpd.GeoSeries(cluster_exterior_ring + cluster_interior_rings)
+
 
     # Get all generated points and create Geopandas geoseries and convert to UTM
     list_points = [Point(lon, lat) for (lon, lat) in zip(points_df['lons'], points_df['lats'])]
@@ -404,11 +408,12 @@ def populate_glacier_with_metadata(glacier_name, n=50):
             nearest_point_on_line = nearest_line.interpolate(nearest_line.project(point_epsg))
             # print(f"{i} Minimum distance: {min_dist:.2f} meters.")
 
-        # Fill dataset if generated point not is not inside (any) nunatak
-        if nunatak == 0: points_df.loc[i, 'dist_from_border_km'] = min_dist/1000.
+        # Fill dataset
+        # note that the generated points cannot be in nunataks so distances are well defined
+        points_df.loc[i, 'dist_from_border_km_geom'] = min_dist/1000.
 
         # Plot
-        plot_calculate_distance = True
+        plot_calculate_distance = False
         if plot_calculate_distance:
             fig, (ax1, ax2) = plt.subplots(1,2)
             ax1.plot(*gl_geom_ext.exterior.xy, lw=1, c='red')
@@ -432,16 +437,36 @@ def populate_glacier_with_metadata(glacier_name, n=50):
                     ax1.plot(*intersect.xy, lw=1, color='k') #np.random.rand(3)
 
                 # Plot cluster ice divides removed
-                ax1.plot(*cluster_geometry_no_divides_4326.item().exterior.xy, lw=1, c='red', zorder=3)
-                for interior in cluster_geometry_no_divides_4326.item().interiors:
-                    ax1.plot(*interior.xy, lw=1, c='blue', zorder=3)
+                if multipolygon:
+                    polygons = list(cluster_geometry_no_divides_4326.item().geoms)
+                    cluster_exterior_ring = [polygon.exterior for polygon in polygons]  # list of shapely.geometry.polygon.LinearRing
+                    cluster_interior_ringSequences = [polygon.interiors for polygon in polygons]  # list of shapely.geometry.polygon.InteriorRingSequence
+                    cluster_interior_rings = [ring for sequence in cluster_interior_ringSequences for ring in sequence]  # list of shapely.geometry.polygon.LinearRing
+                    for exterior in cluster_exterior_ring:
+                        ax1.plot(*exterior.xy, lw=1, c='red', zorder=3)
+                    for interior in cluster_interior_rings:
+                        ax1.plot(*interior.xy, lw=1, c='blue', zorder=3)
+
+                else:
+                    ax1.plot(*cluster_geometry_no_divides_4326.item().exterior.xy, lw=1, c='red', zorder=3)
+                    for interior in cluster_geometry_no_divides_4326.item().interiors:
+                        ax1.plot(*interior.xy, lw=1, c='blue', zorder=3)
 
             if nunatak: ax1.scatter(lon, lat, s=50, lw=2, c='b')
             else: ax1.scatter(lon, lat, s=50, lw=2, c='r', ec='r')
 
-            ax2.plot(*geoseries_geometries_epsg.loc[0].xy, lw=1, c='red') # first entry is outside border
-            for inter in geoseries_geometries_epsg.loc[1:]: # all interiors if present
-                ax2.plot(*inter.xy, lw=1, c='blue')
+            if multipolygon:
+                for i_poly in range(num_multipoly):
+                    ax2.plot(*geoseries_geometries_epsg.loc[i_poly].xy, lw=1, c='red')  # first num_multipoly are outside borders
+                for inter in geoseries_geometries_epsg.loc[num_multipoly:]:  # all interiors if present
+                    ax2.plot(*inter.xy, lw=1, c='blue')
+
+            else:
+                ax2.plot(*geoseries_geometries_epsg.loc[0].xy, lw=1, c='red')  # first entry is outside border
+                for inter in geoseries_geometries_epsg.loc[1:]:  # all interiors if present
+                    ax2.plot(*inter.xy, lw=1, c='blue')
+
+
             if nunatak: ax2.scatter(*point_epsg.xy, s=50, lw=2, c='b')
             else: ax2.scatter(*point_epsg.xy, s=50, lw=2, c='r', ec='r')
             if debug_distance: ax2.scatter(*nearest_point_on_line.xy, s=50, lw=2, c='g')
@@ -454,8 +479,8 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     # Show the result
     show_glacier_with_produced_points = True
     if show_glacier_with_produced_points:
-        fig, axes = plt.subplots(1,4, figsize=(12,4))
-        ax1, ax2, ax3, ax4 = axes.flatten()
+        fig, axes = plt.subplots(2,3, figsize=(10,8))
+        ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
         for ax in (ax1, ax2):
             ax.plot(*gl_geom_ext.exterior.xy, lw=1, c='red')
             for interior in gl_geom.interiors:
@@ -483,6 +508,8 @@ def populate_glacier_with_metadata(glacier_name, n=50):
                              vmin=np.nanmin(vx_data), vmax=np.nanmax(vx_data), zorder=1)
             s3_1 = ax3.scatter(x=lons_crs[np.argwhere(np.isnan(vx_data))], y=lats_crs[np.argwhere(np.isnan(vx_data))], s=50,
                                c='magenta', zorder=1)
+
+        # farinotti
         if no_farinotti_data is False:
             im4 = file_glacier_farinotti.plot(ax=ax4, cmap='inferno', vmin=np.nanmin(file_glacier_farinotti),
                                               vmax=np.nanmax(file_glacier_farinotti))
@@ -491,6 +518,24 @@ def populate_glacier_with_metadata(glacier_name, n=50):
             s4_1 = ax4.scatter(x=lons_crs_f[np.argwhere(np.isnan(ith_f_data))],
                                y=lats_crs_f[np.argwhere(np.isnan(ith_f_data))], s=50, c='magenta', zorder=2)
 
+        # distance
+        if multipolygon:
+            for i_poly in range(num_multipoly):
+                ax5.plot(*geoseries_geometries_epsg.loc[i_poly].xy, lw=1, c='red')  # first num_multipoly are outside borders
+            for inter in geoseries_geometries_epsg.loc[num_multipoly:]:  # all interiors if present
+                ax5.plot(*inter.xy, lw=1, c='blue')
+        else:
+            ax5.plot(*geoseries_geometries_epsg.loc[0].xy, lw=1, c='red')  # first entry is outside border
+            for inter in geoseries_geometries_epsg.loc[1:]:  # all interiors if present
+                ax5.plot(*inter.xy, lw=1, c='blue')
+
+        ax5.scatter(x=geoseries_points_epsg.x, y=geoseries_points_epsg.y, s=5, lw=2, cmap='cividis',
+                    c=points_df['dist_from_border_km_geom'],  vmin=points_df['dist_from_border_km_geom'].min(),
+                    vmax=points_df['dist_from_border_km_geom'].max())
+
+        ax6.axis('off')
+
+        plt.tight_layout()
         plt.show()
 
 
@@ -502,8 +547,24 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     return points_df
 
 
-generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-11.02774', n=20)
+RGI_burned = ['RGI60-11.00562', 'RGI60-11.00590', 'RGI60-11.00603', 'RGI60-11.00638', 'RGI60-11.00647',
+                  'RGI60-11.00689', 'RGI60-11.00695', 'RGI60-11.00846', 'RGI60-11.00950', 'RGI60-11.01024',
+                  'RGI60-11.01041', 'RGI60-11.01067', 'RGI60-11.01144', 'RGI60-11.01199', 'RGI60-11.01296',
+                  'RGI60-11.01344', 'RGI60-11.01367', 'RGI60-11.01376', 'RGI60-11.01473', 'RGI60-11.01509',
+                  'RGI60-11.01576', 'RGI60-11.01604', 'RGI60-11.01698', 'RGI60-11.01776', 'RGI60-11.01786',
+                  'RGI60-11.01790', 'RGI60-11.01791', 'RGI60-11.01806', 'RGI60-11.01813', 'RGI60-11.01840',
+                  'RGI60-11.01857', 'RGI60-11.01894', 'RGI60-11.01928', 'RGI60-11.01962', 'RGI60-11.01986',
+                  'RGI60-11.02006', 'RGI60-11.02024', 'RGI60-11.02027', 'RGI60-11.02244', 'RGI60-11.02249',
+                  'RGI60-11.02261', 'RGI60-11.02448', 'RGI60-11.02490', 'RGI60-11.02507', 'RGI60-11.02549',
+                  'RGI60-11.02558', 'RGI60-11.02583', 'RGI60-11.02584', 'RGI60-11.02596', 'RGI60-11.02600',
+                  'RGI60-11.02624', 'RGI60-11.02673', 'RGI60-11.02679', 'RGI60-11.02704', 'RGI60-11.02709',
+                  'RGI60-11.02715', 'RGI60-11.02740', 'RGI60-11.02745', 'RGI60-11.02755', 'RGI60-11.02774',
+                  'RGI60-11.02775', 'RGI60-11.02787', 'RGI60-11.02796', 'RGI60-11.02864', 'RGI60-11.02884',
+                  'RGI60-11.02890', 'RGI60-11.02909', 'RGI60-11.03249']
 
+generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-11.01450', n=200)
+
+# 'RGI60-07.00228' should be a multiplygon
 # RGI60-11.00781 has only 1 neighbor
 # RGI60-08.00001 has no Millan data
 # RGI60-11.00846 has multiple intersects with neighbors
