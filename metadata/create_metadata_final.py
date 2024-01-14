@@ -11,6 +11,7 @@ from rioxarray import merge
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
+import oggm
 from oggm import cfg, utils, workflow, tasks, graphics
 import geopandas as gpd
 from tqdm import tqdm
@@ -23,7 +24,7 @@ from shapely.ops import unary_union
 from math import radians, cos, sin, asin, sqrt
 from pyproj import Transformer, CRS, Geod
 import scipy
-from scipy.stats import gaussian_kde
+import utm
 
 
 parser = argparse.ArgumentParser()
@@ -42,7 +43,13 @@ parser.add_argument('--millan_icethickness_folder', type=str,default="/home/nico
 parser.add_argument('--farinotti_icethickness_folder', type=str,default="/home/nico/PycharmProjects/skynet/Extra_Data/Farinotti/",
                     help="Path to Farinotti ice thickness data")
 parser.add_argument('--OGGM_folder', type=str,default="/home/nico/OGGM", help="Path to OGGM main folder")
+parser.add_argument('--save', type=bool, default=False, help="Save final dataset or not.")
 
+#todo 1: instead of regions = [3,7,8,11,18] I'd need to compute likely glathida['RGI'].unique().tolist()
+#todo 2: how to interpolate. Only neighboring pixels or a wider window ? how big ?
+
+utils.get_rgi_dir(version='62')
+utils.get_rgi_intersects_dir(version='62')
 
 args = parser.parse_args()
 
@@ -62,6 +69,14 @@ def haversine(lon1, lat1, lon2, lat2):
     r = 6371 # Radius of earth in kilometers. Use 3956 for miles. Determines return value units.
     return c * r
 
+def from_lat_lon_to_utm_and_epsg(lat, lon):
+    """https://github.com/Turbo87/utm"""
+    # Note lat lon can be also NumPy arrays.
+    # In this case zone letter and number will be calculate from first entry.
+    easting, northing, zone_number, zone_letter = utm.from_latlon(lat, lon)
+    southern_hemisphere_TrueFalse = True if zone_letter < 'N' else False
+    epsg_code = 32600 + zone_number + southern_hemisphere_TrueFalse * 100
+    return (easting, northing, zone_number, zone_letter, epsg_code)
 
 """ Add rgi values """
 def add_rgi(glathida, path_O1_shp):
@@ -173,6 +188,7 @@ def add_slopes_elevation(glathida, path_mosaic):
 
         glathida_rgi = glathida.loc[glathida['RGI'] == rgi] # collapse glathida to specific rgi
         ids_rgi = glathida_rgi['GlaThiDa_ID'].unique().tolist()  # unique IDs
+        #todo: check what is the difference between 'GlaThiDa_ID' and 'RGIId'
 
         for id_rgi in tqdm(ids_rgi, total=len(ids_rgi), leave=True):
 
@@ -435,8 +451,6 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
 
 """Add distance from border using Millan's velocity"""
 def add_dist_from_border_in_out(glathida, path_millan_velocity):
-    # todo: if there is no millan data for some glacier what is the result ?? i think it may be incorrect
-    # todo: i think i should change this to an approach that uses glacier geometries, like in fetch_glacier_metadata
     print("Adding distance to border...")
 
     if ('dist_from_border_km' in list(glathida) or 'outsider' in list(glathida)):
@@ -545,8 +559,277 @@ def add_dist_from_border_in_out(glathida, path_millan_velocity):
 
     return glathida
 
+def add_dist_from_boder_using_geometries(glathida):
+    print("Adding distance to border using a geometrical approach...")
+    # Compared to the Millan method these distances are lower, at times much lower. Geometries contain nunataks,
+    # while probably the resolution of Millan product does not see small nunataks. This algorithm consider nunataks.
+    # I suspect this algorithm is more accurate than the method that uses Millan's product.
+    # Note that if the point is inside a nunatak the distance will be set to nan.
+
+    if ('dist_from_border_km_geom' in list(glathida)):
+        print('Variable already in dataframe. Exit.')
+        exit()
+
+    glathida['dist_from_border_km_geom'] = [np.nan] * len(glathida)
+
+    def add_new_neighbors(neigbords, df):
+        """ I give a list of neighbors and I should return a new list with added neighbors"""
+        for id in neigbords:
+            neighbors_wrt_id = df[df['RGIId_1'] == id]['RGIId_2'].unique()
+            neigbords = np.append(neigbords, neighbors_wrt_id)
+        neigbords = np.unique(neigbords)
+        return neigbords
+
+    def find_cluster_RGIIds(id, df):
+        neighbors0 = np.array([id])
+        len0 = len(neighbors0)
+        neighbors1 = add_new_neighbors(neighbors0, df)
+        len1 = len(neighbors1)
+        while (len1 > len0):
+            len0 = len1
+            neighbors1 = add_new_neighbors(neighbors1, df)
+            len1 = len(neighbors1)
+        if (len(neighbors1)) ==1: return None
+        else: return neighbors1
+
+    regions = [3, 7, 8, 11, 18]
+
+    # loop over regions
+    for rgi in tqdm(regions, total=len(regions), desc='RGI',  leave=True):
+        t_ = time.time()
+
+        glathida_rgi = glathida.loc[glathida['RGI'] == rgi]
+        tqdm.write(f"Region RGI: {rgi}, {len(glathida_rgi['RGIId'].dropna())} points")
+
+        rgi_ids = glathida_rgi['RGIId'].dropna().unique().tolist()
+        # print(f"We have {len(rgi_ids)} valid glaciers and {len(glathida_rgi)} rows "
+        #      f"of which {glathida_rgi['RGIId'].isna().sum()} points without a glacier id (hence nan)"
+        #      f"and {glathida_rgi['RGIId'].notna().sum()} points with valid glacier id")
+
+        oggm_rgi_shp = utils.get_rgi_region_file(f"{rgi:02d}", version='62')  # get rgi region shp
+        oggm_rgi_intersects_shp = utils.get_rgi_intersects_region_file(f"{rgi:02d}", version='62')
+
+        oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)  # get rgi dataset of glaciers
+        oggm_rgi_intersects = gpd.read_file(oggm_rgi_intersects_shp)  # get rgi dataset of glaciers intersects
+
+        # loop over glaciers
+        # Note: It is important to note that since rgi_ids do not contain nans, looping over it automatically
+        # selects only the points inside glaciers (and not those outside)
+        for rgi_id in tqdm(rgi_ids, total=len(rgi_ids), desc=f"Glaciers in rgi {rgi}", leave=True):
+
+            multipolygon = False
+
+            # Get glacier glathida and oggm datasets
+            try:
+                glathida_id = glathida_rgi.loc[glathida_rgi['RGIId'] == rgi_id] # glathida dataset
+
+                gl_df = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId'] == rgi_id] # oggm dataset
+                gl_geom = gl_df['geometry'].item()  # glacier geometry Polygon
+                gl_geom_ext = Polygon(gl_geom.exterior)  # glacier geometry Polygon
+                gl_geom_nunataks_list = [Polygon(nunatak) for nunatak in gl_geom.interiors]  # list of nunataks Polygons
+                #print(f"Glacier {rgi_id} found and its {len(glathida_id)} points contained.")
+                assert len(gl_df) == 1, "Check this please."
+                # Get the UTM EPSG code from glacier center coordinates
+                cenLon, cenLat = gl_df['CenLon'].item(), gl_df['CenLat'].item()
+                _, _, _, _, glacier_epsg = from_lat_lon_to_utm_and_epsg(cenLat, cenLon)
+
+            except Exception as e:
+                print(f"Error {e} with glacier {rgi_id}. It was not found so it be skipped.")
+                continue
+
+            # intersects of glacier (need only for plotting purposes)
+            gl_intersects = oggm.utils.get_rgi_intersects_entities([rgi_id], version='62')
+
+            # Calculate intersects of all glaciers in the cluster
+            list_cluster_RGIIds = find_cluster_RGIIds(rgi_id, oggm_rgi_intersects)
+            #print(f"List of glacier cluster: {list_cluster_RGIIds}")
+
+            if list_cluster_RGIIds is not None:
+                # (need only for plotting purposes)
+                cluster_intersects = oggm.utils.get_rgi_intersects_entities(list_cluster_RGIIds, version='62')
+            else: cluster_intersects = None
+
+            # Now calculate the geometries
+            if list_cluster_RGIIds is None:  # Case 1: isolated glacier
+                #print(f"Isolated glacier")
+                exterior_ring = gl_geom.exterior  # shapely.geometry.polygon.LinearRing
+                interior_rings = gl_geom.interiors  # shapely.geometry.polygon.InteriorRingSequence of polygon.LinearRing
+                geoseries_geometries_4326 = gpd.GeoSeries([exterior_ring] + list(interior_rings), crs="EPSG:4326")
+                geoseries_geometries_epsg = geoseries_geometries_4326.to_crs(epsg=glacier_epsg)
+
+            elif list_cluster_RGIIds is not None:  # Case 2: cluster of glaciers with ice divides
+                #print(f"Cluster of glaciers with ice divides.")
+                cluster_geometry_list = []
+                for gl_neighbor_id in list_cluster_RGIIds:
+                    gl_neighbor_df = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId'] == gl_neighbor_id]
+                    gl_neighbor_geom = gl_neighbor_df['geometry'].item()
+                    cluster_geometry_list.append(gl_neighbor_geom)
+
+                # Combine into a series of all glaciers in the cluster
+                cluster_geometry_4326 = gpd.GeoSeries(cluster_geometry_list, crs="EPSG:4326")
+
+                # Now remove all ice divides
+                cluster_geometry_no_divides_4326 = gpd.GeoSeries(cluster_geometry_4326.unary_union, crs="EPSG:4326")
+                cluster_geometry_no_divides_epsg = cluster_geometry_no_divides_4326.to_crs(epsg=glacier_epsg)
+                if cluster_geometry_no_divides_epsg.item().geom_type == 'Polygon':
+                    cluster_exterior_ring = [cluster_geometry_no_divides_epsg.item().exterior]  # shapely.geometry.polygon.LinearRing
+                    cluster_interior_rings = list(cluster_geometry_no_divides_epsg.item().interiors) # shapely.geometry.polygon.LinearRing
+                elif cluster_geometry_no_divides_epsg.item().geom_type == 'MultiPolygon':
+                    polygons = list(cluster_geometry_no_divides_epsg.item().geoms)
+                    cluster_exterior_ring = [polygon.exterior for polygon in polygons] # list of shapely.geometry.polygon.LinearRing
+                    num_multipoly = len(cluster_exterior_ring)
+                    cluster_interior_ringSequences = [polygon.interiors for polygon in polygons] # list of shapely.geometry.polygon.InteriorRingSequence
+                    cluster_interior_rings = [ring for sequence in cluster_interior_ringSequences for ring in sequence] # list of shapely.geometry.polygon.LinearRing
+                    multipolygon = True
+                else: raise ValueError("Unexpected geometry type. Please check.")
+
+                # Create a geoseries of all external and internal geometries
+                geoseries_geometries_epsg = gpd.GeoSeries(cluster_exterior_ring + cluster_interior_rings)
+
+            # Get all points and create Geopandas geoseries and convert to glacier center UTM
+            # Note: a delicate issue is that technically each point may have its own UTM zone.
+            # To keep things consistent I decide to project all of them to the glacier center UTM.
+            lats = glathida_id['POINT_LAT'].tolist()
+            lons = glathida_id['POINT_LON'].tolist()
+            list_points = [Point(lon, lat) for (lon, lat) in zip(lons, lats)]
+            geoseries_points_4326 = gpd.GeoSeries(list_points, crs="EPSG:4326")
+            geoseries_points_epsg = geoseries_points_4326.to_crs(epsg=glacier_epsg)
+
+            # Finally ready to loop over the points inside glacier_id
+            glacier_id_dist = []
+            for i, (idx, lon, lat) in tqdm(enumerate(zip(glathida_id.index, lons, lats)), total=len(lons), desc='Points', leave=False):
+
+                make_check0 = False
+                if make_check0 and i==0:
+                    lat_check = glathida_id.loc[idx, 'POINT_LAT']
+                    lon_check = glathida_id.loc[idx, 'POINT_LON']
+                    #print(lon_check, lat_check, lon, lat)
+
+                # Make two checks.
+                make_check1 = True
+                if make_check1:
+                    is_inside = gl_geom_ext.contains(Point(lon, lat))
+                    assert is_inside is True, f"The point is expected to be inside but is outside glacier."
+
+                make_check2 = False
+                # Note that the UTM zone of one point may not be the UTM zone of the glacier center
+                # I think projecting the point using the UTM zone of the glacier center is fine.
+                if make_check2:
+                    easting, nothing, zonenum, zonelett, epsg = from_lat_lon_to_utm_and_epsg(lat, lon)
+                    if epsg != glacier_epsg:
+                        print(f"Note differet UTM zones. Point espg {epsg} and glacier center epsg {glacier_epsg}.")
+
+                # Decide whether point is inside a nunatak. If yes set the distance to nan
+                is_nunatak = any(nunatak.contains(Point(lon, lat)) for nunatak in gl_geom_nunataks_list)
+                if is_nunatak is True:
+                    min_dist = np.nan
+
+                # if not
+                else:
+                    # get shapely Point
+                    point_epsg = geoseries_points_epsg.iloc[i]
+                    # Calculate the distances between such point and all glacier geometries
+                    min_distances_point_geometries = geoseries_geometries_epsg.distance(point_epsg)
+                    min_dist = np.min(min_distances_point_geometries)  # unit UTM: m
+
+                    # To debug we want to check what point corresponds to the minimum distance.
+                    debug_distance = False
+                    if debug_distance:
+                        min_distance_index = min_distances_point_geometries.idxmin()
+                        nearest_line = geoseries_geometries_epsg.loc[min_distance_index]
+                        nearest_point_on_line = nearest_line.interpolate(nearest_line.project(point_epsg))
+                        # print(f"{i} Minimum distance: {min_dist:.2f} meters.")
+
+                # Fill distance list for glacier id of point
+                glacier_id_dist.append(min_dist/1000.)
+
+                # Compare with Millan's distance method
+                check_with_millan = False
+                if check_with_millan:
+                    dist_with_millan = glathida_id.loc[idx, 'dist_from_border_km']
+                    if (abs(min_dist/1000.-dist_with_millan)/(min_dist/1000.)>2.):
+                        millan_mismatch=True
+                        print(f"Geometry method: {min_dist / 1000.:.5f} Millan method: {dist_with_millan:.5f}")
+
+                # Plot
+                plot_calculate_distance = False
+                r = random.uniform(0,1)
+                if (plot_calculate_distance and list_cluster_RGIIds is not None and r<1.0):
+                    plot_calculate_distance = True
+                if plot_calculate_distance:
+                    fig, (ax1, ax2) = plt.subplots(1, 2)
+                    ax1.plot(*gl_geom_ext.exterior.xy, lw=1, c='magenta', zorder=4)
+                    for interior in gl_geom.interiors:
+                        ax1.plot(*interior.xy, lw=1, c='blue')
+
+                    # Plot boundaries (only external periphery) of all glaciers in the cluster
+                    if list_cluster_RGIIds is not None:
+                        for gl_neighbor_id in list_cluster_RGIIds:
+                            gl_neighbor_df = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId'] == gl_neighbor_id]
+                            gl_neighbor_geom = gl_neighbor_df['geometry'].item()  # glacier geometry Polygon
+                            ax1.plot(*gl_neighbor_geom.exterior.xy, lw=1, c='orange', zorder=0)
+
+                    # Plot intersections of central glacier with its neighbors
+                    for k, intersect in enumerate(gl_intersects['geometry']):  # Linestring gl_intersects
+                        ax1.plot(*intersect.xy, lw=1, color='k')
+
+                    # Plot intersections of all glaciers in the cluster
+                    if cluster_intersects is not None:
+                        for k, intersect in enumerate(cluster_intersects['geometry']):
+                            ax1.plot(*intersect.xy, lw=1, color='k')  # np.random.rand(3)
+
+                        # Plot cluster ice divides removed
+                        if multipolygon:
+                            polygons = list(cluster_geometry_no_divides_4326.item().geoms)
+                            cluster_exterior_ring = [polygon.exterior for polygon in polygons]  # list of shapely.geometry.polygon.LinearRing
+                            cluster_interior_ringSequences = [polygon.interiors for polygon in polygons]  # list of shapely.geometry.polygon.InteriorRingSequence
+                            cluster_interior_rings = [ring for sequence in cluster_interior_ringSequences for ring in sequence]  # list of shapely.geometry.polygon.LinearRing
+                            for exterior in cluster_exterior_ring:
+                                ax1.plot(*exterior.xy , lw=1, c='red', zorder=3)
+                            for interior in cluster_interior_rings:
+                                ax1.plot(*interior.xy, lw=1, c='blue', zorder=3)
+
+                        else:
+                            ax1.plot(*cluster_geometry_no_divides_4326.item().exterior.xy, lw=1, c='red', zorder=3)
+                            for interior in cluster_geometry_no_divides_4326.item().interiors:
+                                ax1.plot(*interior.xy, lw=1, c='blue', zorder=3)
+
+                    if is_nunatak: ax1.scatter(lon, lat, s=50, lw=2, c='b')
+                    else: ax1.scatter(lon, lat, s=50, lw=2, c='r', ec='r')
+
+                    if multipolygon:
+                        for i_poly in range(num_multipoly):
+                            ax2.plot(*geoseries_geometries_epsg.loc[i_poly].xy, lw=1, c='red')  # first num_multipoly are outside borders
+                        for inter in geoseries_geometries_epsg.loc[num_multipoly:]:  # all interiors if present
+                            ax2.plot(*inter.xy, lw=1, c='blue')
+
+                    else:
+                        ax2.plot(*geoseries_geometries_epsg.loc[0].xy, lw=1, c='red')  # first entry is outside border
+                        for inter in geoseries_geometries_epsg.loc[1:]:  # all interiors if present
+                            ax2.plot(*inter.xy, lw=1, c='blue')
+
+                    if is_nunatak: ax2.scatter(*point_epsg.xy, s=50, lw=2, c='b')
+                    else: ax2.scatter(*point_epsg.xy, s=50, lw=2, c='r', ec='r')
+                    if debug_distance: ax2.scatter(*nearest_point_on_line.xy, s=50, lw=2, c='g')
+
+                    ax1.set_title('EPSG 4326')
+                    ax2.set_title(f'EPSG {glacier_epsg}')
+                    plt.show()
+
+
+            assert len(glacier_id_dist)==len(glathida_id.index), "Number of measurements does not match index length"
+            tqdm.write(f"Finished glacier {rgi_id} with {len(glacier_id_dist)} measurements")
+
+            # Fill dataframe with distances from glacier rgi_id
+            glathida.loc[glathida_id.index, 'dist_from_border_km_geom'] = glacier_id_dist
+
+        tqdm.write(f"Finished region {rgi} in {(time.time()-t_)/60} mins.")
+
+    return glathida
+
 """Add RGIId and other OGGM stats like glacier area"""
 def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
+    # Note: points that are outside any glaciers will have nan to RGIId (and the other features)
 
     print("Adding OGGM's stats method...")
     if (any(ele in list(glathida) for ele in ['RGIId', 'Area'])):
@@ -638,7 +921,6 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
             glathida.loc[df_poins_in_glacier.index, 'Slope'] = glacier_slope
             glathida.loc[df_poins_in_glacier.index, 'Lmax'] = glacier_lmax
 
-
     return glathida
 
 """Add Farinotti's ith"""
@@ -681,6 +963,10 @@ def add_farinotti_ith(glathida, path_farinotti_icethickness):
             glacier_geometry = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name, 'geometry'].item()
 
             xds = rioxarray.open_rasterio(tiffile, masked=False)
+            #todo: unlike Millans, Farinotti's files are filled with zero where ice not present so I think I should convert
+            # zeros to nans for the interpolation.
+            # i.e. xds = xds.where(xds != 0.0)
+            # also I should consider interpolating both Millan and Farinotti with method="nearest"
             xds.rio.write_nodata(np.nan, inplace=True)
 
             xds_4326 = xds.rio.reproject("EPSG:4326")
@@ -773,19 +1059,19 @@ if __name__ == '__main__':
     if run_create_dataset:
         print(f'Begin Metadata dataset creation !')
         t0 = time.time()
-        glathida = pd.read_csv(args.path_ttt_csv, low_memory=False)
-        #glathida = pd.read_csv(args.path_ttt_rgi_csv, low_memory=False)
-        glathida = add_rgi(glathida, args.path_O1Regions_shp)
+        #glathida = pd.read_csv(args.path_ttt_csv.replace('.csv', '_final.csv'), low_memory=False)
+        glathida = pd.read_csv(args.path_ttt_rgi_csv, low_memory=False)
+        #glathida = add_rgi(glathida, args.path_O1Regions_shp)
         #glathida.to_csv(args.path_ttt_csv.replace('.csv', '_rgi.csv'), index=False)
-        glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
-        glathida = add_slopes_elevation(glathida, args.mosaic)
-        glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
-        glathida = add_dist_from_border_in_out(glathida, args.millan_velocity_folder)
+        #glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
+        #glathida = add_slopes_elevation(glathida, args.mosaic)
+        #glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
+        #glathida = add_dist_from_border_in_out(glathida, args.millan_velocity_folder)
+        #glathida = add_dist_from_boder_using_geometries(glathida)
         glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
 
-        save = False
-        if save:
-            glathida.to_csv(args.path_ttt_csv.replace('.csv', '_final.csv'), index=False)
+        if args.save:
+            glathida.to_csv(args.path_ttt_csv.replace('.csv', '_working.csv'), index=False)
             print('Metadata dataset saved.')
         print(f'Finished in {(time.time()-t0)/60} minutes. Bye bye.')
         exit()
