@@ -76,9 +76,9 @@ print(f'We have {len(rgi_ids)} unique glaciers and {len(glathida)} rows')
 
 glathida_gridded = pd.DataFrame(columns=glathida.columns)
 
-features_to_grid = ['THICKNESS', 'Area', 'slope_lat', 'slope_lon', 'elevation_astergdem', 'vx', 'vy',
-                    'dist_from_border_km', 'v', 'slope', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
-                    'elevation_from_zmin', 'ith_m', 'ith_f']
+features_to_grid = ['THICKNESS', 'Area', 'elevation_astergdem',
+        'slope_lat', 'slope_lon', 'vx', 'vy', 'dist_from_border_km', 'dist_from_border_km_geom', 'v', 'slope',
+       'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'elevation_from_zmin', 'ith_m', 'ith_f']
 
 list_num_measurements_before_grid = []
 list_num_measurements_after_grid = []
