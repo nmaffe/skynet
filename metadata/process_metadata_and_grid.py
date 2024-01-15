@@ -21,7 +21,7 @@ The processed and gridded dataframe is finally saved.
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--input_metadata_file', type=str,
-                    default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final.csv",
+                    default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final2.csv",
                     help="Input metadata file to be gridded")
 parser.add_argument('--nbins_grid_latlon', type=float, default=20, help="How many bins in the lat/lon directions")
 parser.add_argument('--save', type=bool, default=False, help="Save final dataset or not.")
@@ -111,8 +111,10 @@ for n, rgiid in enumerate(rgi_ids):
     # if more than one measurement, calcule the rectangular domain for gridding
     min_lat, max_lat = np.min(lats), np.max(lats)
     min_lon, max_lon = np.min(lons), np.max(lons)
-    binsx = np.arange(min_lon-1e-4, max_lon+1e-4, (max_lon-min_lon)/args.nbins_grid_latlon)
-    binsy = np.arange(min_lat-1e-4, max_lat+1e-4, (max_lat-min_lat)/args.nbins_grid_latlon)
+    eps = 1.e-4
+    binsx = np.linspace(min_lon-eps, max_lon+eps, num=args.nbins_grid_latlon)
+    binsy = np.linspace(min_lat-eps, max_lat+eps, num=args.nbins_grid_latlon)
+    assert len(binsx) == len(binsy) == args.nbins_grid_latlon, "Number of bins unexpected."
 
     # loop over each feature and grid
     for feature in features_to_grid:
@@ -176,7 +178,7 @@ for n, rgiid in enumerate(rgi_ids):
 print(f'Finished. No. original measurements {len(glathida)} down to {len(glathida_gridded)}.')
 
 if args.save:
-    filename_out = args.input_metadata_file.replace('TTT_final.csv', f'TTT_final_grid_{args.nbins_grid_latlon}.csv')
+    filename_out = args.input_metadata_file.replace('.csv', f'_grid_{args.nbins_grid_latlon}.csv')
     glathida_gridded.to_csv(filename_out, index=False)
     print(f"Gridded dataframe saved: {filename_out}.")
 
