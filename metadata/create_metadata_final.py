@@ -26,6 +26,15 @@ from pyproj import Transformer, CRS, Geod
 import scipy
 import utm
 
+"""
+This program creates a dataframe of metadata for the points in glathida.
+
+
+- add_farinotti_ith:
+    - Points inside the glaicer but close to the borders can be interpolated as nan.
+    - Note: method to interpolate is chosen as "nearest" to reduce as much as possible these nans.
+"""
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--path_ttt_csv', type=str,default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT.csv",
@@ -954,24 +963,21 @@ def add_farinotti_ith(glathida, path_farinotti_icethickness):
         tqdm.write(f'rgi: {rgi}. Glathida: {len(lats)} points')
 
         # Import farinotti ice thickness files
-        files = glob(path_farinotti_icethickness + f'composite_thickness_RGI60-{rgi:02d}/RGI60-{rgi:02d}/*')
-        list_xds_4326 = []
+        files_names_farinotti = glob(path_farinotti_icethickness + f'composite_thickness_RGI60-{rgi:02d}/RGI60-{rgi:02d}/*')
+        list_glaciers_farinotti_4326 = []
 
-        for n, tiffile in tqdm(enumerate(files), total=len(files), leave=True):
+        for n, tiffile in tqdm(enumerate(files_names_farinotti), total=len(files_names_farinotti), leave=True):
 
             glacier_name = tiffile.split('/')[-1].replace('_thickness.tif', '')
             glacier_geometry = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name, 'geometry'].item()
 
-            xds = rioxarray.open_rasterio(tiffile, masked=False)
-            #todo: unlike Millans, Farinotti's files are filled with zero where ice not present so I think I should convert
-            # zeros to nans for the interpolation.
-            # i.e. xds = xds.where(xds != 0.0)
-            # also I should consider interpolating both Millan and Farinotti with method="nearest"
-            xds.rio.write_nodata(np.nan, inplace=True)
+            file_glacier_farinotti = rioxarray.open_rasterio(tiffile, masked=False)
+            file_glacier_farinotti = file_glacier_farinotti.where(file_glacier_farinotti != 0.0) # set to nan outside glacier
+            file_glacier_farinotti.rio.write_nodata(np.nan, inplace=True)
 
-            xds_4326 = xds.rio.reproject("EPSG:4326")
-            xds_4326.rio.write_nodata(np.nan, inplace=True)
-            bounds_4326 = xds_4326.rio.bounds()
+            file_glacier_farinotti_4326 = file_glacier_farinotti.rio.reproject("EPSG:4326")
+            file_glacier_farinotti_4326.rio.write_nodata(np.nan, inplace=True)
+            bounds_4326 = file_glacier_farinotti_4326.rio.bounds()
 
             # dataframe of only points inside the raster bounds
             df_points_in_bound = glathida_rgi.loc[(glathida_rgi['POINT_LON']>=bounds_4326[0]) &
@@ -983,7 +989,7 @@ def add_farinotti_ith(glathida, path_farinotti_icethickness):
             if len(df_points_in_bound) == 0: continue
 
             # we want to mosaic only those raster that do contain glathida data inside the bound
-            list_xds_4326.append(xds_4326)
+            list_glaciers_farinotti_4326.append(file_glacier_farinotti_4326)
 
             lats_in_bound = df_points_in_bound['POINT_LAT']
             lons_in_bound = df_points_in_bound['POINT_LON']
@@ -1002,18 +1008,18 @@ def add_farinotti_ith(glathida, path_farinotti_icethickness):
             if len(df_poins_in_glacier) == 0: continue
 
             # if some points inside the glacier lets interpolate
-            ithf_data_glacier = xds_4326.interp(y=xarray.DataArray(lats_in_glacier),
-                                            x=xarray.DataArray(lons_in_glacier), method="linear").data.squeeze()
+            ithf_data_glacier = file_glacier_farinotti_4326.interp(y=xarray.DataArray(lats_in_glacier),
+                                            x=xarray.DataArray(lons_in_glacier), method="nearest").data.squeeze()
 
             # plot
             ifplot = False
             p = random.randrange(0, 100, 1)
-            if p > 50: ifplot = False
+            if (ifplot and p > 0): ifplot = True
             if ifplot:
                 fig, ax1 = plt.subplots()
-                im1 = xds_4326.plot(ax=ax1, vmin=np.nanmin(ithf_data_glacier), vmax=np.nanmax(ithf_data_glacier), cmap='plasma')
-                s1 = ax1.scatter(x=lons_in_bound, y=lats_in_bound, s=15, c='none', ec=(0, 1, 0, 1))
-                s2 = ax1.scatter(x=lons_in_glacier, y=lats_in_glacier, s=15, c=ithf_data_glacier,
+                im1 = file_glacier_farinotti_4326.plot(ax=ax1, vmin=np.nanmin(ithf_data_glacier), vmax=np.nanmax(ithf_data_glacier), cmap='plasma')
+                s1 = ax1.scatter(x=lons_in_bound, y=lats_in_bound, s=50, c='none', ec=(0, 1, 0, 1))
+                s2 = ax1.scatter(x=lons_in_glacier, y=lats_in_glacier, s=50, c=ithf_data_glacier,
                                  vmin=np.nanmin(ithf_data_glacier), vmax=np.nanmax(ithf_data_glacier),
                                  ec='magenta', cmap='plasma', zorder=1)
 
@@ -1028,13 +1034,14 @@ def add_farinotti_ith(glathida, path_farinotti_icethickness):
 
 
         # mosaic, interpolate the mosaic and add data to dataframe
-        mosaic_ithf_4326 = merge.merge_arrays(list_xds_4326, method='max')
+        # mosaic_ithf_4326 = merge.merge_arrays(list_glaciers_farinotti_4326, method='max')
         #ithf_data_reproj = mosaic_ithf_4326.interp(y=lats_xar, x=lons_xar, method="linear").data.squeeze()
         #glathida.loc[glathida_rgi.index, 'ith_f2'] = ithf_data_reproj
 
         # plot mosaic and glaciers
         plot_mosaic = False
         if plot_mosaic:
+            mosaic_ithf_4326 = merge.merge_arrays(list_glaciers_farinotti_4326, method='max')
             fig, ax1 = plt.subplots()
             im1 = mosaic_ithf_4326.plot(ax=ax1, cmap='plasma')
             for n, gl in enumerate(oggm_rgi_glaciers_geoms):
