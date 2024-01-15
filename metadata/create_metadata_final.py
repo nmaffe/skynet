@@ -1,11 +1,8 @@
-import os
-import sys
-import time
+import os, sys, time
 import pandas as pd
 from glob import glob
 import random
-import xarray
-import rioxarray
+import xarray, rioxarray
 import argparse
 from rioxarray import merge
 import numpy as np
@@ -15,6 +12,7 @@ import oggm
 from oggm import cfg, utils, workflow, tasks, graphics
 import geopandas as gpd
 from tqdm import tqdm
+import scipy
 from scipy import spatial
 import shapely
 from shapely.geometry import Point
@@ -23,18 +21,18 @@ from shapely.geometry import Polygon, Point, box
 from shapely.ops import unary_union
 from math import radians, cos, sin, asin, sqrt
 from pyproj import Transformer, CRS, Geod
-import scipy
 import utm
-
 """
 This program creates a dataframe of metadata for the points in glathida.
 
 
+- add_millan_vx_vy_ith:
+    - Points inside the glaicer but close to the borders can be interpolated as nan.
+    - Note: method to interpolate is chosen as "nearest" to reduce as much as possible these nans.
 - add_farinotti_ith:
     - Points inside the glaicer but close to the borders can be interpolated as nan.
     - Note: method to interpolate is chosen as "nearest" to reduce as much as possible these nans.
 """
-
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--path_ttt_csv', type=str,default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT.csv",
@@ -54,8 +52,10 @@ parser.add_argument('--farinotti_icethickness_folder', type=str,default="/home/n
 parser.add_argument('--OGGM_folder', type=str,default="/home/nico/OGGM", help="Path to OGGM main folder")
 parser.add_argument('--save', type=bool, default=False, help="Save final dataset or not.")
 
+#todo: I loop over 'GlaThiDa_ID' instead of 'RGIId'. I should see what's the difference
+#todo: add dvx/dx, dvy/dy ?
 #todo 1: instead of regions = [3,7,8,11,18] I'd need to compute likely glathida['RGI'].unique().tolist()
-#todo 2: how to interpolate. Only neighboring pixels or a wider window ? how big ?
+#todo 2: Smoothing Millan and Farinotti before interpolating ? See scipy.ndimage.convolve or some gaussian filters
 
 utils.get_rgi_dir(version='62')
 utils.get_rgi_intersects_dir(version='62')
@@ -169,7 +169,7 @@ def add_rgi(glathida, path_O1_shp):
             elif (rgi_geom.geom_type == 'MultiPolygon'):
                 for geom in rgi_geom.geoms:
                     ax1.plot(*geom.exterior.xy, c=colors[n])
-            else: print('type not recognized. Probably an error will appear.')
+            else: raise ValueError("Geom type not recognized. Check.")
         plt.show()
 
     return glathida
@@ -197,7 +197,6 @@ def add_slopes_elevation(glathida, path_mosaic):
 
         glathida_rgi = glathida.loc[glathida['RGI'] == rgi] # collapse glathida to specific rgi
         ids_rgi = glathida_rgi['GlaThiDa_ID'].unique().tolist()  # unique IDs
-        #todo: check what is the difference between 'GlaThiDa_ID' and 'RGIId'
 
         for id_rgi in tqdm(ids_rgi, total=len(ids_rgi), leave=True):
 
@@ -409,16 +408,26 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
 
 
             # interpolate
-            vx_data = focus_vx.interp(y=lats_xar, x=lons_xar, method="linear").data.squeeze()
-            vy_data = focus_vy.interp(y=lats_xar, x=lons_xar, method="linear").data.squeeze()
-            ith_data = focus_ith.interp(y=lats_xar, x=lons_xar, method="linear").data.squeeze()
+            vx_data = focus_vx.interp(y=lats_xar, x=lons_xar, method="nearest").data.squeeze()
+            vy_data = focus_vy.interp(y=lats_xar, x=lons_xar, method="nearest").data.squeeze()
+            ith_data = focus_ith.interp(y=lats_xar, x=lons_xar, method="nearest").data.squeeze()
             #print(np.sum(np.isnan(vx_data)), np.sum(np.isnan(vy_data)), np.sum(np.isnan(ith_data)))
+
+            # Define a smoothing kernel (e.g., a nxn box filter)
+            #kernel = np.ones((3, 3)) / 9
+            #conv2d = lambda x: scipy.ndimage.convolve(x, kernel, mode="nearest")
+            #gaus = lambda x: scipy.ndimage.gaussian_filter(x, sigma=1., mode="nearest")
+            # Apply convolution to smooth the xarray
+            #smth_vx = xarray.apply_ufunc(conv2d, focus_vx[0,:,:])
+            #smth_vy = xarray.apply_ufunc(conv2d, focus_vy[0,:,:])
+            #smth_ith = xarray.apply_ufunc(conv2d, focus_ith[0,:,:])
 
             # plot
             ifplot = False
-            if np.any(np.isnan(vx_data)): ifplot = False
+            if ifplot and np.any(np.isnan(vx_data)): ifplot = True
             if ifplot:
-                fig, (ax1, ax2, ax3) = plt.subplots(1,3, figsize=(13,3.5))
+                fig, axes = plt.subplots(1,3, figsize=(10,3))
+                ax1, ax2, ax3 = axes.flatten()
 
                 im1 = focus_vx.plot(ax=ax1, cmap='viridis', vmin=np.nanmin(vx_data), vmax=np.nanmax(vx_data))
                 s1 = ax1.scatter(x=lons, y=lats, s=15, c=vx_data, ec=(0,0,0,0.1), cmap='viridis',
@@ -437,6 +446,10 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
                                  vmin=0, vmax=np.nanmax(ith_data), zorder=1)
                 s3_1 = ax3.scatter(x=lons[np.argwhere(np.isnan(ith_data))], y=lats[np.argwhere(np.isnan(ith_data))], s=15,
                                    c='magenta', zorder=1)
+
+                #im4 = smth_vx.plot(ax=ax4, cmap='viridis', vmin=np.nanmin(vx_data), vmax=np.nanmax(vx_data))
+                #im5 = smth_vx2.plot(ax=ax5, cmap='viridis', vmin=np.nanmin(vx_data), vmax=np.nanmax(vx_data))
+                #im6 = smth_ith.plot(ax=ax6, cmap='viridis', vmin=0, vmax=np.nanmax(ith_data))
                 # for i, val in enumerate(ith_data): ax3.annotate(f'{val:.2f}', (lons[i], lats[i]))
 
                 ax1.title.set_text('vx')
@@ -1072,10 +1085,10 @@ if __name__ == '__main__':
         #glathida.to_csv(args.path_ttt_csv.replace('.csv', '_rgi.csv'), index=False)
         #glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
         #glathida = add_slopes_elevation(glathida, args.mosaic)
-        #glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
+        glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
         #glathida = add_dist_from_border_in_out(glathida, args.millan_velocity_folder)
         #glathida = add_dist_from_boder_using_geometries(glathida)
-        glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
+        #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
 
         if args.save:
             glathida.to_csv(args.path_ttt_csv.replace('.csv', '_working.csv'), index=False)
