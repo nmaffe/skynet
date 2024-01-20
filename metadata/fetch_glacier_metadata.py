@@ -474,10 +474,14 @@ def populate_glacier_with_metadata(glacier_name, n=50):
             ax1.set_title('EPSG 4326')
             ax2.set_title(f'EPSG {glacier_epsg}')
             plt.show()
+
+    # convert this column to float (misteriously it was an object type)
+    points_df['dist_from_border_km_geom'] = pd.to_numeric(points_df['dist_from_border_km_geom'], errors='coerce')
+
     print(f"Finished distance calculations.")
 
     # Show the result
-    show_glacier_with_produced_points = True
+    show_glacier_with_produced_points = False
     if show_glacier_with_produced_points:
         fig, axes = plt.subplots(2,3, figsize=(10,8))
         ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
@@ -562,7 +566,7 @@ RGI_burned = ['RGI60-11.00562', 'RGI60-11.00590', 'RGI60-11.00603', 'RGI60-11.00
                   'RGI60-11.02775', 'RGI60-11.02787', 'RGI60-11.02796', 'RGI60-11.02864', 'RGI60-11.02884',
                   'RGI60-11.02890', 'RGI60-11.02909', 'RGI60-11.03249']
 
-generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-11.01450', n=200)
+#generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-11.01450', n=2000)
 
 # 'RGI60-07.00228' should be a multiplygon
 # RGI60-11.00781 has only 1 neighbor
