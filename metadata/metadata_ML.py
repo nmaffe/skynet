@@ -18,8 +18,9 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.manifold import TSNE
 import xgboost as xgb
-
 import lightgbm as lgb
+
+from fetch_glacier_metadata import populate_glacier_with_metadata
 
 #from umap import UMAP
 
@@ -68,7 +69,7 @@ def create_test(df, minimum_test_size=1000, rgi=None, seed=None):
             selected_glaciers.append(glacier_name)
             n_points = df[df['RGIId'] == glacier_name].shape[0]
             n_total_points += n_points
-            print(glacier_name, n_points, n_total_points)
+            #print(glacier_name, n_points, n_total_points)
         else:
             #print('Finished with', n_total_points, 'points, and', len(selected_glaciers), 'glaciers.')
             break
@@ -77,19 +78,6 @@ def create_test(df, minimum_test_size=1000, rgi=None, seed=None):
     #print(test['RGI'].value_counts())
     #print('Total test size: ', len(test))
     return test
-
-# Train, val, and test
-test = create_test(glathida_rgis,  minimum_test_size=1800, rgi=None, seed=None)
-val = glathida_rgis.drop(test.index).sample(n=1000)
-train = glathida_rgis.drop(test.index).drop(val.index)
-
-y_train, y_test = train[CFG.target], test[CFG.target]
-X_train, X_test = train[CFG.features], test[CFG.features]
-
-print(f'Dataset sizes: {X_train.shape}, {X_test.shape}, {y_train.shape}, {y_test.shape}')
-
-y_test_m = test[CFG.millan].to_numpy()
-y_test_f = test[CFG.farinotti].to_numpy()
 
 def evaluation(y, predictions):
     mae = mean_absolute_error(y, predictions)
@@ -106,10 +94,31 @@ def evaluation(y, predictions):
     print(f'r: {r_value}')
     return mae, mse, rmse, r_squared, slope, intercept, r_value
 
+
+# Train, val, and test
+test = create_test(glathida_rgis,  minimum_test_size=1800, rgi=7, seed=None)
+val = glathida_rgis.drop(test.index).sample(n=1000)
+train = glathida_rgis.drop(test.index).drop(val.index)
+
+y_train, y_test = train[CFG.target], test[CFG.target]
+X_train, X_test = train[CFG.features], test[CFG.features]
+
+print(f'Dataset sizes: {X_train.shape}, {X_test.shape}, {y_train.shape}, {y_test.shape}')
+
+y_test_m = test[CFG.millan]#.to_numpy()
+y_test_f = test[CFG.farinotti]#.to_numpy()
+
 ### LightGBM
-ltb = lgb.LGBMRegressor()#reg_lambda=.5
-ltb.fit(X_train.to_numpy(), y_train.to_numpy())
-y_preds = ltb.predict(X_test.to_numpy())
+model = lgb.LGBMRegressor()
+model.fit(X_train, y_train)
+
+# Plot feature importance
+run_feature_importance = False
+if run_feature_importance:
+    lgb.plot_importance(model, importance_type="auto", figsize=(7,6), title="LightGBM Feature Importance")
+
+#y_preds = model.predict(X_test.to_numpy())
+y_preds = model.predict(X_test)
 
 # benchmarks
 ltb_metrics = evaluation(y_test, y_preds)
@@ -127,9 +136,9 @@ std_farinotti = np.std(y_test-y_test_f)
 print(f'Benchmarks ML, Millan and Farinotti: {std_ML:.2f} {std_millan:.2f} {std_farinotti:.2f}')
 
 # fits
-m_ML, q_ML, _, _, _ = stats.linregress(y_test,y_preds)
-m_millan, q_millan, _, _, _ = stats.linregress(y_test,y_test_m)
-m_farinotti, q_farinotti, _, _, _ = stats.linregress(y_test,y_test_f)
+m_ML, q_ML, _, _, _ = stats.linregress(y_test, y_preds)
+m_millan, q_millan, _, _, _ = stats.linregress(y_test, y_test_m)
+m_farinotti, q_farinotti, _, _, _ = stats.linregress(y_test, y_test_f)
 
 # plot
 fig, (ax1, ax2) = plt.subplots(1,2, figsize=(8,4))
@@ -161,9 +170,9 @@ ax2.text(0.05, 0.95, text_ml, transform=ax2.transAxes, fontsize=10, verticalalig
 ax2.text(0.05, 0.7, text_millan, transform=ax2.transAxes, fontsize=10, verticalalignment='top', bbox=props_millan)
 ax2.text(0.05, 0.45, text_farinotti, transform=ax2.transAxes, fontsize=10, verticalalignment='top', bbox=props_farinotti)
 
-ax1.set_xlabel('Glathida ice thickness (m)')
+ax1.set_xlabel('GT ice thickness (m)')
 ax1.set_ylabel('Modelled ice thickness (m)')
-ax2.set_xlabel('Glathida - Model (m)')
+ax2.set_xlabel('GT - Model (m)')
 ax2.legend(loc='best')
 
 plt.tight_layout()
@@ -194,12 +203,12 @@ y_min_diff = min(np.concatenate((y_preds-y_test_f, y_test-y_preds)))
 y_max_diff = max(np.concatenate((y_preds-y_test_f, y_test-y_preds)))
 absmax = max(abs(y_min_diff), abs(y_max_diff))
 
-s1 = ax1.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test, cmap='Blues', label='Glathida')
+s1 = ax1.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test, cmap='Blues', label='GT')
 s2 = ax2.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_preds, cmap='Blues', label='ML')
 s3 = ax3.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test_m, cmap='Blues', label='Millan')
 s4 = ax4.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test_f, cmap='Blues', label='Farinotti')
-s5 = ax5.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test-y_preds, cmap='bwr', label='Glathida-ML')
-s6 = ax6.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test-y_test_f, cmap='bwr', label='Glathida-Farinotti')
+s5 = ax5.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=(y_test-y_preds)/y_test, cmap='bwr', label='GT-ML')
+s6 = ax6.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=(y_test-y_test_f)/y_test, cmap='bwr', label='GT-Farinotti')
 
 for ax in (ax1, ax2, ax3, ax4, ax5, ax6):
     for geom in glacier_geometries:
@@ -216,9 +225,54 @@ for cbar in (cbar1, cbar2, cbar3, cbar4):
     cbar.mappable.set_clim(vmin=y_min,vmax=y_max)
     cbar.set_label('THICKNESS (m)', labelpad=15, rotation=270)
 for cbar in (cbar5, cbar6):
-    cbar.mappable.set_clim(vmin=-absmax, vmax=absmax)
-
+    cbar.mappable.set_clim(vmin=-3, vmax=3)
 
 for ax in (ax1, ax2, ax3, ax4, ax5, ax6): ax.legend(loc='upper left')
 
+plt.show()
+
+# Visualize test predictions of specific glacier
+# Generate points for one glacier
+glacier_name_for_generation = 'RGI60-07.00228' #RGI60–07.00027 'RGI60-11.01450'
+test_glacier = populate_glacier_with_metadata(glacier_name=glacier_name_for_generation, n=2000)
+
+X_train_glacier = test_glacier[CFG.features]
+y_test_glacier_m = test_glacier[CFG.millan]
+y_test_glacier_f = test_glacier[CFG.farinotti]
+
+y_preds_glacier = model.predict(X_train_glacier)
+
+rgi = glacier_name_for_generation[6:8]
+oggm_rgi_shp = glob(f'/home/nico/OGGM/rgi/RGIV62/{rgi}*/{rgi}*.shp')[0]
+oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)
+glacier_geometry = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name_for_generation]['geometry'].item()
+
+y_min = min(np.concatenate((y_preds_glacier, y_test_glacier_m, y_test_glacier_f)))
+y_max = max(np.concatenate((y_preds_glacier, y_test_glacier_m, y_test_glacier_f)))
+
+fig, axes = plt.subplots(1,3, figsize=(5,3))
+ax1, ax2, ax3 = axes.flatten()
+s1 = ax1.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=10, c=y_preds_glacier, cmap='Blues', label='ML')
+s2 = ax2.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=10, c=y_test_glacier_m, cmap='Blues', label='Millan')
+s3 = ax3.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=10, c=y_test_glacier_f, cmap='Blues', label='Farinotti')
+
+cbar1 = plt.colorbar(s1, ax=ax1)
+cbar2 = plt.colorbar(s2, ax=ax2)
+cbar3 = plt.colorbar(s3, ax=ax3)
+
+for cbar in (cbar1, cbar2, cbar3, cbar4):
+    cbar.mappable.set_clim(vmin=y_min,vmax=y_max)
+    cbar.set_label('THICKNESS (m)', labelpad=15, rotation=270)
+
+for ax in (ax1, ax2, ax3):
+    ax.plot(*glacier_geometry.exterior.xy, c='k')
+
+for ax in (ax1, ax2, ax3):
+    ax.legend(loc='upper left')
+    #ax.set_xlabel('')
+    #ax.set_ylabel('')
+    ax.axis("off")
+
+fig.suptitle(f'{glacier_name_for_generation}', fontsize=13)
+plt.tight_layout()
 plt.show()
