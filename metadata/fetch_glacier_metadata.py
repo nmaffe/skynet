@@ -391,7 +391,8 @@ def populate_glacier_with_metadata(glacier_name, n=50):
 
         # Make a check.
         easting, nothing, zonenum, zonelett, epsg = from_lat_lon_to_utm_and_epsg(lat, lon)
-        assert epsg==glacier_epsg, f"Inconsistency found between point espg {epsg} and glacier center epsg {glacier_epsg}."
+        if epsg != glacier_epsg:
+            print(f"Note differet UTM zones. Point espg {epsg} and glacier center epsg {glacier_epsg}.")
 
         # Get shapely Point
         point_epsg = geoseries_points_epsg.iloc[i]
@@ -546,8 +547,8 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     """ Cleaning the produced dataset """
     # At this stage any nan may be present in vx, vy, v, ith_m, ith_f. Remove those points.
     points_df = points_df.dropna(subset=['vx', 'vy', 'v', 'ith_m', 'ith_f'])
-    print(points_df.T)
-    print(f"Are there nans ? {points_df.isnull().any().any()}")
+    #print(points_df.T)
+    print(f"Generated dataset. Nan present: {points_df.isnull().any().any()}")
     return points_df
 
 
