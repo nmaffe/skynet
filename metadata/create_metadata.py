@@ -25,11 +25,17 @@ import utm
 """
 This program creates a dataframe of metadata for the points in glathida.
 
+Run time evaluated on on rgi = [3,7,8,11,18]
 
-- add_millan_vx_vy_ith:
+1. add_rgi. Time: 2min.
+2. add_RGIId_and_OGGM_stats. Time: 30 min.
+3. add_slopes_elevation. Time: 30 min.
+4. add_millan_vx_vy_ith. Time: 1 min
     - Points inside the glaicer but close to the borders can be interpolated as nan.
     - Note: method to interpolate is chosen as "nearest" to reduce as much as possible these nans.
-- add_farinotti_ith:
+5. add_dist_from_border_in_out. Time: 6.5 h
+6. add_dist_from_boder_using_geometries. Time: 6 h
+7. add_farinotti_ith. Time: 45 min
     - Points inside the glaicer but close to the borders can be interpolated as nan.
     - Note: method to interpolate is chosen as "nearest" to reduce as much as possible these nans.
 """
@@ -54,8 +60,10 @@ parser.add_argument('--save', type=bool, default=False, help="Save final dataset
 
 #todo: I loop over 'GlaThiDa_ID' instead of 'RGIId'. I should see what's the difference
 #todo: add dvx/dx, dvy/dy ?
-#todo 1: instead of regions = [3,7,8,11,18] I'd need to compute likely glathida['RGI'].unique().tolist()
-#todo 2: Smoothing Millan and Farinotti before interpolating ? See scipy.ndimage.convolve or some gaussian filters
+#todo 1: instead of regions = [3,7,8,11,18] I'd need to compute likely glathida['RGI'].unique().tolist().
+# I could but not many points to gain from the dataset.
+#todo 2: Smoothing vx, vy, slopes, before interpolating ? See scipy.ndimage.convolve or some gaussian filters
+#todo: add additional features from OGGM E.g. Aspect ? Or glathida ?
 
 utils.get_rgi_dir(version='62')
 utils.get_rgi_intersects_dir(version='62')
@@ -92,8 +100,8 @@ def add_rgi(glathida, path_O1_shp):
     print(f'Adding RGI method...')
 
     if ('RGI' in list(glathida)):
-        print('Variable already in dataframe. Exit.')
-        exit()
+        print('Variable already in dataframe.')
+        return glathida
 
     world = gpd.read_file(path_O1_shp)
     glathida['RGI'] = [np.nan]*len(glathida)
@@ -177,13 +185,17 @@ def add_rgi(glathida, path_O1_shp):
 """ Add Slopes and Elevation """
 def add_slopes_elevation(glathida, path_mosaic):
     print('Running slope and elevation method...')
+    #todo: smussare con filtro gaussiano oppure mediare un intorno del punto per interpolare ?
 
     if ('slope_lat' in list(glathida) or 'slope_lon' in list(glathida)):
-        print('Variable already in dataframe. Exit.')
-        exit()
+        print('Variables slope_lat, slope_lon already in dataframe.')
+        pass
+        #return glathida
 
     glathida['slope_lat'] = [np.nan] * len(glathida)
     glathida['slope_lon'] = [np.nan] * len(glathida)
+    glathida['slope_lat_gf150'] = [np.nan] * len(glathida)
+    glathida['slope_lon_gf150'] = [np.nan] * len(glathida)
     datax = []  # just to analyse the results
     datay = []  # just to analyse the results
     glathida['elevation_astergdem'] = [np.nan] * len(glathida)
@@ -227,7 +239,7 @@ def add_slopes_elevation(glathida, path_mosaic):
                     maxy=nelat + (deltalat + eps)
                 )
             except:
-                tqdm.write(f'problemi per glacier_id: {id_rgi}')
+                tqdm.write(f'Problems in method add_slopes_elevation for glacier_id: {id_rgi}')
                 continue
 
             focus = focus.squeeze()
@@ -237,18 +249,29 @@ def add_slopes_elevation(glathida, path_mosaic):
             ris_metre_lon = haversine(lon_c, lat_c, lon_c + ris_ang, lat_c) * 1000
             ris_metre_lat = haversine(lon_c, lat_c, lon_c, lat_c + ris_ang) * 1000
 
+            # se voglio una sigma da 150m quanti pixel devo prendere ?
+            # I want such amount of pixels to have an equivalent sigma of 150m.
+            sigma_150_lon, sigma_150_lat = max(1, round(150./ris_metre_lon)), max(1, round(150./ris_metre_lat))
+            #print(ris_metre_lon, ris_metre_lat)
+            #print(sigma_npx_lon, sigma_npx_lat)
+
+            # Apply some filter to the restricted dem
+            focus_filter = scipy.ndimage.gaussian_filter(focus.values, sigma=[sigma_150_lat, sigma_150_lon], mode='nearest')
+            focus_filter_xarray = focus.copy(data=focus_filter)
+
             # calculate slope for restricted dem
             dz_dlat, dz_dlon = np.gradient(focus.values, ris_metre_lat, ris_metre_lon)  # [m/m]
+            dz_dlat_filter, dz_dlon_filter = np.gradient(focus_filter, ris_metre_lat, ris_metre_lon)  # [m/m]
 
-            dz_dlat_xarray = focus.copy(data=dz_dlat)
-            dz_dlon_xarray = focus.copy(data=dz_dlon)
+            dz_dlat_xarray, dz_dlon_xarray = focus.copy(data=dz_dlat), focus.copy(data=dz_dlon)
+            dz_dlat_filter_xarray, dz_dlon_filter_xarray = focus.copy(data=dz_dlat_filter), focus.copy(data=dz_dlon_filter)
 
-            # interpolate slope
+            # interpolate slope and dem
             slope_lat_data = dz_dlat_xarray.interp(y=lats_xar, x=lons_xar, method='linear').data
             slope_lon_data = dz_dlon_xarray.interp(y=lats_xar, x=lons_xar, method='linear').data
-
-            # interpolate dem
             elevation_data = focus.interp(y=lats_xar, x=lons_xar, method='linear').data
+            slope_lat_data_filter = dz_dlat_filter_xarray.interp(y=lats_xar, x=lons_xar, method='linear').data
+            slope_lon_data_filter = dz_dlon_filter_xarray.interp(y=lats_xar, x=lons_xar, method='linear').data
 
             if (len(slope_lat_data.shape) != 0):
                 datax.extend(list(slope_lat_data))
@@ -261,28 +284,46 @@ def add_slopes_elevation(glathida, path_mosaic):
             #if (np.any(np.isnan(slope_lat_data)) or np.any(np.isnan(slope_lon_data))): ifplot = False
             #if (np.any(slope_lat_data>3)): ifplot = True
             if ifplot:
-                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
+                fig, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3, figsize=(8, 5))
 
-                im1 = dz_dlat_xarray.plot(ax=ax1, cmap='viridis', vmin=np.nanmin(slope_lat_data), vmax=np.nanmax(slope_lat_data))
-                s1 = ax1.scatter(x=lons, y=lats, s=15, c=slope_lat_data, ec=(0, 0, 0, 0.1), cmap='viridis',
+                im1 = focus.plot(ax=ax1, cmap='viridis', )
+
+                im2 = dz_dlat_xarray.plot(ax=ax2, cmap='viridis', vmin=np.nanmin(slope_lat_data), vmax=np.nanmax(slope_lat_data))
+                s2 = ax2.scatter(x=lons, y=lats, s=15, c=slope_lat_data, ec=(0, 0, 0, 0.1), cmap='viridis',
                                  vmin=np.nanmin(slope_lat_data), vmax=np.nanmax(slope_lat_data), zorder=1)
-                s1_1 = ax1.scatter(x=lons[np.argwhere(np.isnan(slope_lat_data))],
+                s2_1 = ax2.scatter(x=lons[np.argwhere(np.isnan(slope_lat_data))],
                                    y=lats[np.argwhere(np.isnan(slope_lat_data))], s=15, c='magenta', zorder=1)
-                im2 = dz_dlon_xarray.plot(ax=ax2, cmap='viridis', vmin=np.nanmin(slope_lon_data), vmax=np.nanmax(slope_lon_data))
-                s2 = ax2.scatter(x=lons, y=lats, s=15, c=slope_lon_data, ec=(0, 0, 0, 0.1), cmap='viridis',
+                im3 = dz_dlon_xarray.plot(ax=ax3, cmap='viridis', vmin=np.nanmin(slope_lon_data), vmax=np.nanmax(slope_lon_data))
+                s3 = ax3.scatter(x=lons, y=lats, s=15, c=slope_lon_data, ec=(0, 0, 0, 0.1), cmap='viridis',
                                  vmin=np.nanmin(slope_lon_data), vmax=np.nanmax(slope_lon_data), zorder=1)
-                s2_1 = ax2.scatter(x=lons[np.argwhere(np.isnan(slope_lon_data))],
+                s3_1 = ax3.scatter(x=lons[np.argwhere(np.isnan(slope_lon_data))],
                                    y=lats[np.argwhere(np.isnan(slope_lon_data))], s=15, c='magenta', zorder=1)
+
+                im4 = focus_filter_xarray.plot(ax=ax4, cmap='viridis',)
+                im5 = dz_dlat_filter_xarray.plot(ax=ax5, cmap='viridis', vmin=np.nanmin(slope_lat_data), vmax=np.nanmax(slope_lat_data))
+                s5 = ax5.scatter(x=lons, y=lats, s=15, c=slope_lat_data_filter, ec=(0, 0, 0, 0.1), cmap='viridis',
+                                 vmin=np.nanmin(slope_lat_data), vmax=np.nanmax(slope_lat_data), zorder=1)
+                s5_1 = ax5.scatter(x=lons[np.argwhere(np.isnan(slope_lat_data_filter))],
+                                   y=lats[np.argwhere(np.isnan(slope_lat_data_filter))], s=15, c='magenta', zorder=1)
+                im6 = dz_dlon_filter_xarray.plot(ax=ax6, cmap='viridis', vmin=np.nanmin(slope_lon_data), vmax=np.nanmax(slope_lon_data))
+                s6 = ax6.scatter(x=lons, y=lats, s=15, c=slope_lon_data_filter, ec=(0, 0, 0, 0.1), cmap='viridis',
+                                 vmin=np.nanmin(slope_lon_data), vmax=np.nanmax(slope_lon_data), zorder=1)
+                s6_1 = ax6.scatter(x=lons[np.argwhere(np.isnan(slope_lon_data))],
+                                   y=lats[np.argwhere(np.isnan(slope_lon_data))], s=15, c='magenta', zorder=1)
+
 
                 plt.tight_layout()
                 plt.show()
 
             assert slope_lat_data.shape == slope_lon_data.shape == elevation_data.shape, "Different shapes, something wrong!"
+            assert slope_lat_data_filter.shape == slope_lon_data_filter.shape == elevation_data.shape, "Different shapes, something wrong!"
 
             # write to dataframe
             glathida.loc[indexes_all, 'slope_lat'] = slope_lat_data
             glathida.loc[indexes_all, 'slope_lon'] = slope_lon_data
             glathida.loc[indexes_all, 'elevation_astergdem'] = elevation_data
+            glathida.loc[indexes_all, 'slope_lat_gf150'] = slope_lat_data_filter
+            glathida.loc[indexes_all, 'slope_lon_gf150'] = slope_lon_data_filter
 
     return glathida
 
@@ -294,9 +335,12 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
     :return: dataframe with velocity added
     """
     print('Adding Millan velocity and ice thickness method...')
+    #todo: smussare con filtro gaussiano oppure mediare un intorno del punto per vx, vy ?
+    # todo: Millan usa filtro mediano + filtro gaussiano con width variabili
+
     if (any(ele in list(glathida) for ele in ['vx', 'vy', 'ith_m'])):
-        print('Variable already in dataframe. Exit.')
-        exit()
+        print('Variable already in dataframe.')
+        return glathida
 
     glathida['vx'] = [np.nan] * len(glathida)
     glathida['vy'] = [np.nan] * len(glathida)
@@ -476,8 +520,8 @@ def add_dist_from_border_in_out(glathida, path_millan_velocity):
     print("Adding distance to border...")
 
     if ('dist_from_border_km' in list(glathida) or 'outsider' in list(glathida)):
-        print('Variable already in dataframe. Exit.')
-        exit()
+        print('Variable already in dataframe.')
+        return glathida
 
     glathida['dist_from_border_km'] = [np.nan]*len(glathida)
     glathida['outsider'] = [np.nan]*len(glathida)
@@ -581,6 +625,7 @@ def add_dist_from_border_in_out(glathida, path_millan_velocity):
 
     return glathida
 
+"""Add distance from border using glacier geometries"""
 def add_dist_from_boder_using_geometries(glathida):
     print("Adding distance to border using a geometrical approach...")
     # Compared to the Millan method these distances are lower, at times much lower. Geometries contain nunataks,
@@ -589,8 +634,8 @@ def add_dist_from_boder_using_geometries(glathida):
     # Note that if the point is inside a nunatak the distance will be set to nan.
 
     if ('dist_from_border_km_geom' in list(glathida)):
-        print('Variable already in dataframe. Exit.')
-        exit()
+        print('Variable already in dataframe.')
+        return glathida
 
     glathida['dist_from_border_km_geom'] = [np.nan] * len(glathida)
 
@@ -855,8 +900,8 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
 
     print("Adding OGGM's stats method...")
     if (any(ele in list(glathida) for ele in ['RGIId', 'Area'])):
-        print('Variable already in dataframe. Exit.')
-        exit()
+        print('Variable already in dataframe.')
+        return glathida
 
     glathida['RGIId'] = [np.nan] * len(glathida)
     glathida['Area'] = [np.nan] * len(glathida)
@@ -865,6 +910,8 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
     glathida['Zmed'] = [np.nan] * len(glathida) # -999 are bad values
     glathida['Slope'] = [np.nan] * len(glathida)
     glathida['Lmax'] = [np.nan] * len(glathida) # -9 missing values, see https://essd.copernicus.org/articles/14/3889/2022/essd-14-3889-2022.pdf
+    #todo: have I managed these bad values ? -999 and -9 ?
+    #todo: add Athe following features: Form, TermType, Status, Aspect
 
     regions = [3, 7, 8, 11, 18]
 
@@ -950,8 +997,8 @@ def add_farinotti_ith(glathida, path_farinotti_icethickness):
     print("Adding Farinotti ice thickness...")
 
     if ('ith_f' in list(glathida)):
-        print('Variable already in dataframe. Exit.')
-        exit()
+        print('Variable already in dataframe.')
+        return glathida
 
     glathida['ith_f'] = [np.nan] * len(glathida)
 
@@ -1079,35 +1126,46 @@ if __name__ == '__main__':
     if run_create_dataset:
         print(f'Begin Metadata dataset creation !')
         t0 = time.time()
-        #glathida = pd.read_csv(args.path_ttt_csv.replace('.csv', '_final.csv'), low_memory=False)
-        glathida = pd.read_csv(args.path_ttt_rgi_csv, low_memory=False)
+        glathida = pd.read_csv(args.path_ttt_csv.replace('.csv', '_final2.csv'), low_memory=False)
+        #glathida = pd.read_csv(args.path_ttt_csv.replace('.csv', '_rgi.csv'), low_memory=False)
         #glathida = add_rgi(glathida, args.path_O1Regions_shp)
         #glathida.to_csv(args.path_ttt_csv.replace('.csv', '_rgi.csv'), index=False)
-        #glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
-        #glathida = add_slopes_elevation(glathida, args.mosaic)
+        glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
+        glathida = add_slopes_elevation(glathida, args.mosaic)
         glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
-        #glathida = add_dist_from_border_in_out(glathida, args.millan_velocity_folder)
-        #glathida = add_dist_from_boder_using_geometries(glathida)
-        #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
+        glathida = add_dist_from_border_in_out(glathida, args.millan_velocity_folder)
+        glathida = add_dist_from_boder_using_geometries(glathida)
+        glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
 
         if args.save:
-            glathida.to_csv(args.path_ttt_csv.replace('.csv', '_working.csv'), index=False)
+            glathida.to_csv(args.path_ttt_csv.replace('.csv', '_finalX.csv'), index=False)
             print('Metadata dataset saved.')
         print(f'Finished in {(time.time()-t0)/60} minutes. Bye bye.')
         exit()
 
-    glathida = pd.read_csv(args.path_ttt_csv.replace('.csv', '_final.csv'), low_memory=False)
 
+    # Run some stuff
+    glathida = pd.read_csv(args.path_ttt_csv.replace('.csv', '_final.csv'), low_memory=False)
+    glathida2 = pd.read_csv(args.path_ttt_csv.replace('.csv', '_final2.csv'), low_memory=False)
+    pd.set_option('display.max_columns', None)
     rgis = [3, 7, 8, 11]
     for rgi in rgis:
 
-        cond = ((glathida['RGI'] == rgi) & (glathida['SURVEY_DATE'] > 20050000))
+        glathida_i = glathida.loc[((glathida['RGI'] == rgi) & (glathida['SURVEY_DATE'] > 20050000))]
+        glathida2_i = glathida2.loc[((glathida2['RGI'] == rgi) & (glathida2['SURVEY_DATE'] > 20050000))]
 
-        glathida_i = glathida.loc[cond]
-        print(f'{rgi} - {len(glathida_i)}')
+        glathida2_i = glathida2_i.copy()
+
+        glathida2_i['v'] = np.sqrt(glathida2_i['vx']**2 + glathida2_i['vy']**2)
+        glathida2_i['slope'] = np.sqrt(glathida2_i['slope_lat'] ** 2 + glathida2_i['slope_lon'] ** 2)
+        glathida['elevation_from_zmin'] = glathida['elevation_astergdem'] - glathida['Zmin']
+
+        print(f'{rgi} - {len(glathida_i)} - {len(glathida2_i)}')
 
         # Correlations between varibles
-        # print(glathida_i.corr(method='pearson'))
+        print(glathida2_i.corr(method='pearson', numeric_only=True)['THICKNESS'].abs().sort_values(ascending=False))
+
+        input('wait')
 
 
         """ Distributions of all variables"""
