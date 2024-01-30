@@ -8,7 +8,6 @@ from pandas.testing import assert_frame_equal
 """
 This program imports the generated metadata dataset from create_metadata.py and:
 1. Processing:
-    - Calculated the extra features: v, slope, elevation_from_zmin
     - Remove old measurements
     - Remove possible bad data
     - Retain only some final features and remove any nan.
@@ -21,7 +20,7 @@ The processed and gridded dataframe is finally saved.
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--input_metadata_file', type=str,
-                    default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final2.csv",
+                    default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final3.csv",
                     help="Input metadata file to be gridded")
 parser.add_argument('--nbins_grid_latlon', type=float, default=20, help="How many bins in the lat/lon directions")
 parser.add_argument('--save', type=bool, default=False, help="Save final dataset or not.")
@@ -43,26 +42,23 @@ if run_compare:
 glathida = pd.read_csv(args.input_metadata_file, low_memory=False)
 
 """ A. Work on the dataset """
-# A.1 Add features
-glathida['v'] = np.sqrt(glathida['vx']**2 + glathida['vy']**2)
-glathida['slope'] = np.sqrt(glathida['slope_lat']**2 + glathida['slope_lon']**2)
-glathida['elevation_from_zmin'] = glathida['elevation_astergdem'] - glathida['Zmin']
-
-# A.2 Remove old (-er than 2005) measurements and erroneous data (if DATA_FLAG is not nan)
+# A.1 Remove old (-er than 2005) measurements and erroneous data (if DATA_FLAG is not nan)
 cond = ((glathida['SURVEY_DATE'] > 20050000) & (glathida['DATA_FLAG'].isna()) & (glathida['THICKNESS']>=0))
 
 glathida = glathida[cond]
 print(f'Original columns: {list(glathida)} \n')
 
-# A.3 Keep only these columns
+# A.2 Keep only these columns (now removed v, slope, elevation_from_zmin
 cols = ['RGI', 'RGIId', 'POINT_LAT', 'POINT_LON', 'THICKNESS', 'Area', 'elevation_astergdem',
-        'slope_lat', 'slope_lon', 'vx', 'vy', 'dist_from_border_km', 'dist_from_border_km_geom', 'v', 'slope',
-       'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'elevation_from_zmin', 'ith_m', 'ith_f']
+        'slope_lat', 'slope_lon', 'vx', 'vy', 'dist_from_border_km', 'dist_from_border_km_geom',
+       'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'ith_m', 'ith_f',
+        'slope_lon_gf50', 'slope_lat_gf50', 'slope_lon_gf100', 'slope_lat_gf100', 'slope_lon_gf150', 'slope_lat_gf150',
+        'slope_lon_gf300', 'slope_lat_gf300']
 
 glathida = glathida[cols]
 print(f'We keep only the following columns: \n {list(glathida)} \n{len(glathida)} rows')
 
-# A.4 Remove nans
+# A.3 Remove nans
 glathida = glathida.dropna(subset=cols)
 #print(glathida.isna().sum())
 #print(f'After having removed nans we have {len(glathida)} rows')
@@ -77,8 +73,10 @@ print(f'We have {len(rgi_ids)} unique glaciers and {len(glathida)} rows')
 glathida_gridded = pd.DataFrame(columns=glathida.columns)
 
 features_to_grid = ['THICKNESS', 'Area', 'elevation_astergdem',
-        'slope_lat', 'slope_lon', 'vx', 'vy', 'dist_from_border_km', 'dist_from_border_km_geom', 'v', 'slope',
-       'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'elevation_from_zmin', 'ith_m', 'ith_f']
+        'slope_lat', 'slope_lon', 'vx', 'vy', 'dist_from_border_km', 'dist_from_border_km_geom',
+       'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'ith_m', 'ith_f',
+        'slope_lon_gf50', 'slope_lat_gf50', 'slope_lon_gf100', 'slope_lat_gf100', 'slope_lon_gf150', 'slope_lat_gf150',
+        'slope_lon_gf300', 'slope_lat_gf300']
 
 list_num_measurements_before_grid = []
 list_num_measurements_after_grid = []
