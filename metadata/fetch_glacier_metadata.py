@@ -7,8 +7,10 @@ import argparse
 import numpy as np
 import xarray
 import pandas as pd
+import scipy
 import matplotlib.pyplot as plt
 import rioxarray
+import rasterio
 from rioxarray import merge
 import geopandas as gpd
 import oggm
@@ -39,6 +41,12 @@ Note the following policy for Millan special cases to produce vx, vy, v, ith_m:
 """
 # todo: question remains open on if and how to smooth millan, farinotti and slope fiels before interpolation
 # todo: so far I use only neighboring pixels but Eric suggests to account for a wider window.
+# todo: migliorare velocita inserita in caso nessun dato di millan.
+# todo: inserire anche un ulteriore feature che è la velocità media di tutto il ghiacciao ? sia vxm, vym, vm ?
+# todo: inserire dvx/dx, dvx/dy, dvy/dx, dvy/vy ?
+# todo: inserire anche la curvatura ? Vedi la tesi di farinotti, pare la curvatura sia importante
+# todo: a proposito di come smussare i campi di slope e velocita, guardare questo articolo:
+#  Slope estimation influences on ice thickness inversion models: a case study for Monte Tronador glaciers, North Patagonian Andes
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--mosaic', type=str,default="/media/nico/samsung_nvme/ASTERDEM_v3_mosaics/",
@@ -72,9 +80,22 @@ def from_lat_lon_to_utm_and_epsg(lat, lon):
     epsg_code = 32600 + zone_number + southern_hemisphere_TrueFalse * 100
     return (easting, northing, zone_number, zone_letter, epsg_code)
 
+def gaussian_filter_with_nans(U, sigma):
+    # Since the reprojection into utm leads to distortions (=nans) we need to take care of this during filtering
+    # From David in https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
+    V = U.copy()
+    V[np.isnan(U)] = 0
+    VV = scipy.ndimage.gaussian_filter(V, sigma=[sigma, sigma], mode='nearest')
+    W = np.ones_like(U)
+    W[np.isnan(U)] = 0
+    WW = scipy.ndimage.gaussian_filter(W, sigma=[sigma, sigma], mode='nearest')
+    WW[WW == 0] = np.nan
+    filtered_U = VV / WW
+    return filtered_U
+
 
 def populate_glacier_with_metadata(glacier_name, n=50):
-    print(f"Investigating glacier {glacier_name}")
+    print(f"******* FETCHING FEATURES FOR GLACIER {glacier_name} *******")
 
     rgi = int(glacier_name[6:8]) # get rgi from the glacier code
     oggm_rgi_shp = utils.get_rgi_region_file(f"{rgi:02d}", version='62') # get rgi region shp
@@ -170,6 +191,9 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     dem_rgi = rioxarray.open_rasterio(args.mosaic + f'mosaic_RGI_{rgi:02d}.tif')
     ris_ang = dem_rgi.rio.resolution()[0]
 
+    cenLon, cenLat = gl_df['CenLon'].item(), gl_df['CenLat'].item()
+    _, _, _, _, glacier_epsg = from_lat_lon_to_utm_and_epsg(cenLat, cenLon)
+
     swlat = points_df['lats'].min()
     swlon = points_df['lons'].min()
     nelat = points_df['lats'].max()
@@ -190,36 +214,161 @@ def populate_glacier_with_metadata(glacier_name, n=50):
             maxy=nelat + (deltalat + eps)
         )
     except:
-        input(f"Problemi")
+        raise ValueError(f"Problems in method for fetching add_slopes_elevation")
 
     focus = focus.squeeze()
 
-    lon_c = (0.5 * (focus.coords['x'][-1] + focus.coords['x'][0])).to_numpy()
-    lat_c = (0.5 * (focus.coords['y'][-1] + focus.coords['y'][0])).to_numpy()
-    ris_metre_lon = haversine(lon_c, lat_c, lon_c + ris_ang, lat_c) * 1000
-    ris_metre_lat = haversine(lon_c, lat_c, lon_c, lat_c + ris_ang) * 1000
+    # ***************** Calculate elevation and slopes in UTM ********************
+    # Reproject to utm (projection distortions along boundaries converted to nans)
+    # Default resampling is nearest which leads to weird artifacts. Options are bilinear (long) and cubic (very long)
+    focus_utm = focus.rio.reproject(glacier_epsg, resampling=rasterio.enums.Resampling.bilinear, nodata=-9999) # long!
+    focus_utm = focus_utm.where(focus_utm != -9999, np.nan)
+    # Calculate the resolution in meters of the utm focus (resolutions in x and y are the same!)
+    res_utm_metres = focus_utm.rio.resolution()[0]
 
-    # calculate slope for restricted dem
-    dz_dlat, dz_dlon = np.gradient(focus.values, ris_metre_lat, ris_metre_lon)  # [m/m]
+    eastings, northings, _, _, _ = from_lat_lon_to_utm_and_epsg(np.array(points_df['lats']),
+                                                                np.array(points_df['lons']))
+    northings_xar = xarray.DataArray(northings)
+    eastings_xar = xarray.DataArray(eastings)
 
-    dz_dlat_xarray = focus.copy(data=dz_dlat)
-    dz_dlon_xarray = focus.copy(data=dz_dlon)
+    # clip the utm with a buffer of 2 km in both dimentions. This is necessary since smoothing is otherwise long
+    focus_utm = focus_utm.rio.clip_box(
+        minx=min(eastings) - 2000,
+        miny=min(northings) - 2000,
+        maxx=max(eastings) + 2000,
+        maxy=max(northings) + 2000)
 
-    # interpolate slope
-    slope_lat_data = dz_dlat_xarray.interp(y=lats_xar, x=lons_xar, method='linear').data # (N,)
-    slope_lon_data = dz_dlon_xarray.interp(y=lats_xar, x=lons_xar, method='linear').data # (N,)
 
-    # interpolate dem
-    elevation_data = focus.interp(y=lats_xar, x=lons_xar, method='linear').data # (N,)
+    num_px_sigma_50 = max(1, round(50 / res_utm_metres))
+    num_px_sigma_100 = max(1, round(100 / res_utm_metres))
+    num_px_sigma_150 = max(1, round(150 / res_utm_metres))
+    num_px_sigma_300 = max(1, round(300 / res_utm_metres))
 
-    assert slope_lat_data.shape == slope_lon_data.shape == elevation_data.shape, "Different shapes, something wrong!"
+    # Apply filter (utm here)
+    focus_filter_50_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_50)
+    focus_filter_100_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_100)
+    focus_filter_150_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_150)
+    focus_filter_300_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_300)
+
+    # Mask back the filtered arrays
+    focus_filter_50_utm = np.where(np.isnan(focus_utm.values), np.nan, focus_filter_50_utm)
+    focus_filter_100_utm = np.where(np.isnan(focus_utm.values), np.nan, focus_filter_100_utm)
+    focus_filter_150_utm = np.where(np.isnan(focus_utm.values), np.nan, focus_filter_150_utm)
+    focus_filter_300_utm = np.where(np.isnan(focus_utm.values), np.nan, focus_filter_300_utm)
+    # create xarray object of filtered dem
+    focus_filter_xarray_50_utm = focus_utm.copy(data=focus_filter_50_utm)
+    focus_filter_xarray_100_utm = focus_utm.copy(data=focus_filter_100_utm)
+    focus_filter_xarray_150_utm = focus_utm.copy(data=focus_filter_150_utm)
+    focus_filter_xarray_300_utm = focus_utm.copy(data=focus_filter_300_utm)
+
+    # create xarray slopes
+    dz_dlat_xar, dz_dlon_xar = focus_utm.differentiate(coord='y'), focus_utm.differentiate(coord='x')
+    dz_dlat_filter_xar_50, dz_dlon_filter_xar_50 = focus_filter_xarray_50_utm.differentiate(coord='y'), focus_filter_xarray_50_utm.differentiate(coord='x')
+    dz_dlat_filter_xar_100, dz_dlon_filter_xar_100 = focus_filter_xarray_100_utm.differentiate(coord='y'), focus_filter_xarray_100_utm.differentiate(coord='x')
+    dz_dlat_filter_xar_150, dz_dlon_filter_xar_150 = focus_filter_xarray_150_utm.differentiate(coord='y'), focus_filter_xarray_150_utm.differentiate(coord='x')
+    dz_dlat_filter_xar_300, dz_dlon_filter_xar_300  = focus_filter_xarray_300_utm.differentiate(coord='y'), focus_filter_xarray_300_utm.differentiate(coord='x')
+
+    # interpolate slope and dem
+    elevation_data = focus_utm.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    slope_lat_data = dz_dlat_xar.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    slope_lon_data = dz_dlon_xar.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    slope_lat_data_filter_50 = dz_dlat_filter_xar_50.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    slope_lon_data_filter_50 = dz_dlon_filter_xar_50.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    slope_lat_data_filter_100 = dz_dlat_filter_xar_100.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    slope_lon_data_filter_100 = dz_dlon_filter_xar_100.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    slope_lat_data_filter_150 = dz_dlat_filter_xar_150.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    slope_lon_data_filter_150 = dz_dlon_filter_xar_150.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    slope_lat_data_filter_300 = dz_dlat_filter_xar_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    slope_lon_data_filter_300 = dz_dlon_filter_xar_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
+
+    # check if any nan in the interpolate data
+    contains_nan = any(np.isnan(arr).any() for arr in [slope_lon_data, slope_lat_data,
+                                                       slope_lon_data_filter_50, slope_lat_data_filter_50,
+                                                       slope_lon_data_filter_100, slope_lat_data_filter_100,
+                                                       slope_lon_data_filter_150, slope_lat_data_filter_150,
+                                                       slope_lon_data_filter_300, slope_lat_data_filter_300])
+    if contains_nan:
+        raise ValueError(f"Nan detected in elevation/slope calc. Check")
 
     # Fill dataframe with slope_lat, slope_lon, slope, elevation_astergdem and elevation_from_zmin
-    points_df['slope_lat'] = slope_lat_data
-    points_df['slope_lon'] = slope_lon_data
     points_df['elevation_astergdem'] = elevation_data
     points_df['elevation_from_zmin'] = points_df['elevation_astergdem'] - points_df['Zmin']
+    points_df['slope_lat'] = slope_lat_data
+    points_df['slope_lon'] = slope_lon_data
     points_df['slope'] = np.sqrt(points_df['slope_lat'] ** 2 + points_df['slope_lon'] ** 2)
+    points_df['slope_lat_gf50'] = slope_lat_data_filter_50
+    points_df['slope_lon_gf50'] = slope_lon_data_filter_50
+    points_df['slope_lat_gf100'] = slope_lat_data_filter_100
+    points_df['slope_lon_gf100'] = slope_lon_data_filter_100
+    points_df['slope_lat_gf150'] = slope_lat_data_filter_150
+    points_df['slope_lon_gf150'] = slope_lon_data_filter_150
+    points_df['slope_lat_gf300'] = slope_lat_data_filter_300
+    points_df['slope_lon_gf300'] = slope_lon_data_filter_300
+
+    calculate_elevation_and_slopes_in_epsg_4326_and_show_differences_wrt_utm = False
+    if calculate_elevation_and_slopes_in_epsg_4326_and_show_differences_wrt_utm:
+        lon_c = (0.5 * (focus.coords['x'][-1] + focus.coords['x'][0])).to_numpy()
+        lat_c = (0.5 * (focus.coords['y'][-1] + focus.coords['y'][0])).to_numpy()
+        ris_metre_lon = haversine(lon_c, lat_c, lon_c + ris_ang, lat_c) * 1000
+        ris_metre_lat = haversine(lon_c, lat_c, lon_c, lat_c + ris_ang) * 1000
+
+        # calculate slope for restricted dem
+        dz_dlat, dz_dlon = np.gradient(focus.values, -ris_metre_lat, ris_metre_lon)  # [m/m]
+        dz_dlat_xarray = focus.copy(data=dz_dlat)
+        dz_dlon_xarray = focus.copy(data=dz_dlon)
+
+        # interpolate dem and slope
+        elevation_data1 = focus.interp(y=lats_xar, x=lons_xar, method='linear').data  # (N,)
+        slope_lat_data1 = dz_dlat_xarray.interp(y=lats_xar, x=lons_xar, method='linear').data  # (N,)
+        slope_lon_data1 = dz_dlon_xarray.interp(y=lats_xar, x=lons_xar, method='linear').data  # (N,)
+
+        assert slope_lat_data1.shape == slope_lon_data1.shape == elevation_data1.shape, "Different shapes, something wrong!"
+
+        fig, axes = plt.subplots(2,3, figsize=(10,8))
+        ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
+
+        # elevation
+        im1 = focus.plot(ax=ax1, cmap='viridis', vmin=np.nanmin(elevation_data1),
+                                  vmax=np.nanmax(elevation_data1), zorder=0)
+        s1 = ax1.scatter(x=lons_xar, y=lats_xar, s=50, c=elevation_data1, ec=None, cmap='viridis',
+                         vmin=np.nanmin(elevation_data1), vmax=np.nanmax(elevation_data1), zorder=1)
+        # slope_lat
+        im2 = dz_dlat_xarray.plot(ax=ax2, cmap='viridis', vmin=np.nanmin(slope_lat_data1),
+                                  vmax=np.nanmax(slope_lat_data1), zorder=0)
+        s2 = ax2.scatter(x=lons_xar, y=lats_xar, s=50, c=slope_lat_data1, ec=None, cmap='viridis',
+                         vmin=np.nanmin(slope_lat_data1), vmax=np.nanmax(slope_lat_data1), zorder=1)
+        # slope_lon
+        im3 = dz_dlon_xarray.plot(ax=ax3, cmap='viridis', vmin=np.nanmin(slope_lon_data1),
+                                  vmax=np.nanmax(slope_lon_data1), zorder=0)
+        s3 = ax3.scatter(x=lons_xar, y=lats_xar, s=50, c=slope_lon_data1, ec=None, cmap='viridis',
+                         vmin=np.nanmin(slope_lon_data1), vmax=np.nanmax(slope_lon_data1), zorder=1)
+        # utm elevation
+        im4 = focus_utm.plot(ax=ax4, cmap='viridis', vmin=np.nanmin(elevation_data),
+                                  vmax=np.nanmax(elevation_data), zorder=0)
+        s4 = ax4.scatter(x=eastings_xar, y=northings_xar, s=50, c=elevation_data, ec=None, cmap='viridis',
+                         vmin=np.nanmin(elevation_data), vmax=np.nanmax(elevation_data), zorder=1)
+        # utm slope_lat
+        im5 = dz_dlat_xar.plot(ax=ax5, cmap='viridis', vmin=np.nanmin(slope_lat_data),
+                                  vmax=np.nanmax(slope_lat_data), zorder=0)
+        s5 = ax5.scatter(x=eastings_xar, y=northings_xar, s=50, c=slope_lat_data, ec=None, cmap='viridis',
+                         vmin=np.nanmin(slope_lat_data), vmax=np.nanmax(slope_lat_data), zorder=1)
+        # utm slope_lon
+        im6 = dz_dlon_xar.plot(ax=ax6, cmap='viridis', vmin=np.nanmin(slope_lon_data),
+                                  vmax=np.nanmax(slope_lon_data), zorder=0)
+        s6 = ax6.scatter(x=eastings_xar, y=northings_xar, s=50, c=slope_lon_data, ec=None, cmap='viridis',
+                         vmin=np.nanmin(slope_lon_data), vmax=np.nanmax(slope_lon_data), zorder=1)
+
+        plt.show()
+
+        fig, (ax1, ax2, ax3) = plt.subplots(1,3)
+        ax1.scatter(x=elevation_data1, y=elevation_data)
+        ax2.scatter(x=slope_lon_data1, y=slope_lon_data)
+        ax3.scatter(x=slope_lat_data1, y=slope_lat_data)
+        l1 = ax1.plot([0, 2000], [0, 2000], color='red', linestyle='--')
+        l2 = ax2.plot([-3, 3], [-3, 3], color='red', linestyle='--')
+        l3 = ax3.plot([-2, 2], [-2, 2], color='red', linestyle='--')
+        plt.show()
+
 
     """ Calculate Farinotti ith_f """
     print(f"Calculating ith_f...")
@@ -332,6 +481,7 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     except:
         print(f"No Millan data can be found for rgi {rgi} glacier {glacier_name}")
         no_millan_data = True
+        #todo: invece che zero mettere la media dei ghiacciai nella regione con lo stesso segno dello slopes ?
         for col in ['vx','vy', 'v']: # Fill Millan velocities with zero (keep ith_m as nan)
             points_df[col] = 0.0
 
@@ -540,6 +690,9 @@ def populate_glacier_with_metadata(glacier_name, n=50):
 
         ax6.axis('off')
 
+        for ax in (ax1, ax2, ax3, ax4, ax5, ax6):
+            ax.axis("off")
+
         plt.tight_layout()
         plt.show()
 
@@ -549,6 +702,7 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     points_df = points_df.dropna(subset=['vx', 'vy', 'v', 'ith_m', 'ith_f'])
     #print(points_df.T)
     print(f"Generated dataset. Nan present: {points_df.isnull().any().any()}")
+    print(f"*******FINISHED FETCHING FEATURES*******")
     return points_df
 
 
@@ -567,7 +721,7 @@ RGI_burned = ['RGI60-11.00562', 'RGI60-11.00590', 'RGI60-11.00603', 'RGI60-11.00
                   'RGI60-11.02775', 'RGI60-11.02787', 'RGI60-11.02796', 'RGI60-11.02864', 'RGI60-11.02884',
                   'RGI60-11.02890', 'RGI60-11.02909', 'RGI60-11.03249']
 
-#generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-11.01450', n=2000)
+generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-07.00832', n=2000)
 
 # 'RGI60-07.00228' should be a multiplygon
 # RGI60-11.00781 has only 1 neighbor
