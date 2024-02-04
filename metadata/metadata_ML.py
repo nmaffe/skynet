@@ -51,7 +51,7 @@ glathida_rgis = pd.read_csv(args.metadata_file, low_memory=False)
 glathida_rgis = glathida_rgis.loc[glathida_rgis['THICKNESS']>=0]
 # Add some features
 glathida_rgis['v'] = np.sqrt(glathida_rgis['vx']**2 + glathida_rgis['vy']**2)
-glathida_rgis['slope'] = np.sqrt(glathida_rgis['slope_lat_gf300']**2 + glathida_rgis['slope_lon_gf300']**2)
+glathida_rgis['slope'] = np.sqrt(glathida_rgis['slope_lon_gf300']**2 + glathida_rgis['slope_lat_gf300']**2)
 glathida_rgis['elevation_from_zmin'] = glathida_rgis['elevation_astergdem'] - glathida_rgis['Zmin']
 glathida_rgis['hbahrm'] = 0.03*(glathida_rgis['Area']**0.375)*1000 # Bahr's approximation: h in meters
 glathida_rgis['hbahrm2'] = glathida_rgis['dist_from_border_km_geom']*np.sqrt(glathida_rgis['Area'])
@@ -110,7 +110,7 @@ stds_ML, meds_ML, slopes_ML = [], [], []
 stds_Mil, meds_Mil, slopes_Mil = [], [], []
 stds_Far, meds_Far, slopes_Far = [], [], []
 
-for i in range(500):
+for i in range(50):
 
     # Train, val, and test
     test = create_test(glathida_rgis,  minimum_test_size=1800, rgi=None, seed=None)
@@ -143,7 +143,6 @@ for i in range(500):
     if run_feature_importance:
         lgb.plot_importance(model, importance_type="auto", figsize=(7,6), title="LightGBM Feature Importance")
         plt.show()
-        input('wait')
 
     #y_preds = model.predict(X_test.to_numpy())
     y_preds = model.predict(X_test)
@@ -182,7 +181,6 @@ print(f"Res. medians {np.mean(meds_ML):.2f}({np.std(meds_ML):.2f}) {np.mean(meds
 print(f"Res. stdevs {np.mean(stds_ML):.2f}({np.std(stds_ML):.2f}) {np.mean(stds_Mil):.2f}({np.std(stds_Mil):.2f}) {np.mean(stds_Far):.2f}({np.std(stds_Far):.2f})")
 print(f"Res. slopes {np.mean(slopes_ML):.2f}({np.std(slopes_ML):.2f}) {np.mean(slopes_Mil):.2f}({np.std(slopes_Mil):.2f}) {np.mean(slopes_Far):.2f}({np.std(slopes_Far):.2f})")
 
-exit()
 # ************************************
 # plot
 # ************************************
@@ -237,43 +235,44 @@ for glacier_name in test_glaciers_names:
     #print(glacier_geometry)
     glacier_geometries.append(glacier_geometry)
 
+plot_all_shit = False
+if plot_all_shit:
+    fig, axes = plt.subplots(2,3, figsize=(10,7))
+    ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
 
-fig, axes = plt.subplots(2,3, figsize=(10,7))
-ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
+    y_min = min(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
+    y_max = max(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
+    y_min_diff = min(np.concatenate((y_preds-y_test_f, y_test-y_preds)))
+    y_max_diff = max(np.concatenate((y_preds-y_test_f, y_test-y_preds)))
+    absmax = max(abs(y_min_diff), abs(y_max_diff))
 
-y_min = min(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
-y_max = max(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
-y_min_diff = min(np.concatenate((y_preds-y_test_f, y_test-y_preds)))
-y_max_diff = max(np.concatenate((y_preds-y_test_f, y_test-y_preds)))
-absmax = max(abs(y_min_diff), abs(y_max_diff))
+    s1 = ax1.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test, cmap='Blues', label='GT')
+    s2 = ax2.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_preds, cmap='Blues', label='ML')
+    s3 = ax3.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test_m, cmap='Blues', label='Millan')
+    s4 = ax4.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test_f, cmap='Blues', label='Farinotti')
+    s5 = ax5.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=(y_test-y_preds)/y_test, cmap='bwr', label='GT-ML')
+    s6 = ax6.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=(y_test-y_test_f)/y_test, cmap='bwr', label='GT-Farinotti')
 
-s1 = ax1.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test, cmap='Blues', label='GT')
-s2 = ax2.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_preds, cmap='Blues', label='ML')
-s3 = ax3.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test_m, cmap='Blues', label='Millan')
-s4 = ax4.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test_f, cmap='Blues', label='Farinotti')
-s5 = ax5.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=(y_test-y_preds)/y_test, cmap='bwr', label='GT-ML')
-s6 = ax6.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=(y_test-y_test_f)/y_test, cmap='bwr', label='GT-Farinotti')
+    for ax in (ax1, ax2, ax3, ax4, ax5, ax6):
+        for geom in glacier_geometries:
+            ax.plot(*geom.exterior.xy, c='k')
 
-for ax in (ax1, ax2, ax3, ax4, ax5, ax6):
-    for geom in glacier_geometries:
-        ax.plot(*geom.exterior.xy, c='k')
+    cbar1 = plt.colorbar(s1, ax=ax1)
+    cbar2 = plt.colorbar(s2, ax=ax2)
+    cbar3 = plt.colorbar(s3, ax=ax3)
+    cbar4 = plt.colorbar(s4, ax=ax4)
+    cbar5 = plt.colorbar(s5, ax=ax5)
+    cbar6 = plt.colorbar(s6, ax=ax6)
 
-cbar1 = plt.colorbar(s1, ax=ax1)
-cbar2 = plt.colorbar(s2, ax=ax2)
-cbar3 = plt.colorbar(s3, ax=ax3)
-cbar4 = plt.colorbar(s4, ax=ax4)
-cbar5 = plt.colorbar(s5, ax=ax5)
-cbar6 = plt.colorbar(s6, ax=ax6)
+    for cbar in (cbar1, cbar2, cbar3, cbar4):
+        cbar.mappable.set_clim(vmin=y_min,vmax=y_max)
+        cbar.set_label('THICKNESS (m)', labelpad=15, rotation=270)
+    for cbar in (cbar5, cbar6):
+        cbar.mappable.set_clim(vmin=-3, vmax=3)
 
-for cbar in (cbar1, cbar2, cbar3, cbar4):
-    cbar.mappable.set_clim(vmin=y_min,vmax=y_max)
-    cbar.set_label('THICKNESS (m)', labelpad=15, rotation=270)
-for cbar in (cbar5, cbar6):
-    cbar.mappable.set_clim(vmin=-3, vmax=3)
+    for ax in (ax1, ax2, ax3, ax4, ax5, ax6): ax.legend(loc='upper left')
 
-for ax in (ax1, ax2, ax3, ax4, ax5, ax6): ax.legend(loc='upper left')
-
-plt.show()
+    plt.show()
 
 # *********************************************
 # Model deploy
@@ -293,12 +292,16 @@ def get_random_glacier_rgiid(df, rgi=11, name=None, seed=None):
     return rgiid
 
 #glacier_name_for_generation = np.random.choice(RGI_burned)
-glacier_name_for_generation = get_random_glacier_rgiid(df=glathida_rgis, rgi=3, name='RGI60-07.00832', seed=None)
+glacier_name_for_generation = get_random_glacier_rgiid(df=glathida_rgis, rgi=3, name='RGI60-07.00228', seed=None)
 #glacier_name_for_generation = 'RGI60-07.00228' #RGI60–07.00027 'RGI60-11.01450' RGI60-07.00552,'RGI60-07.00228'
 #glacier_name_for_generation = 'RGI60-07.00832'
 
 # Generate points for one glacier
-test_glacier = populate_glacier_with_metadata(glacier_name=glacier_name_for_generation, n=100)
+test_glacier = populate_glacier_with_metadata(glacier_name=glacier_name_for_generation, n=10000)
+test_glacier['v'] = np.sqrt(test_glacier['vx']**2 + test_glacier['vy']**2)
+test_glacier['slope'] = np.sqrt(test_glacier['slope_lon_gf300']**2 + test_glacier['slope_lat_gf300']**2)
+test_glacier['elevation_from_zmin'] = test_glacier['elevation_astergdem'] - test_glacier['Zmin']
+
 X_train_glacier = test_glacier[CFG.features]
 y_test_glacier_m = test_glacier[CFG.millan]
 y_test_glacier_f = test_glacier[CFG.farinotti]
@@ -327,7 +330,7 @@ cbar1 = plt.colorbar(s1, ax=ax1)
 cbar2 = plt.colorbar(s2, ax=ax2)
 cbar3 = plt.colorbar(s3, ax=ax3)
 
-for cbar in (cbar1, cbar2, cbar3, cbar4):
+for cbar in (cbar1, cbar2, cbar3):
     cbar.mappable.set_clim(vmin=y_min,vmax=y_max)
     cbar.set_label('THICKNESS (m)', labelpad=15, rotation=270)
 

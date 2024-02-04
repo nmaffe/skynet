@@ -39,7 +39,7 @@ Note the following policy for Millan special cases to produce vx, vy, v, ith_m:
     2) In case the interpolation of Millan's fields yields nan because points are either too close to the margins. 
     I keep the nans that will be however removed before returning the dataset.   
 """
-# todo: question remains open on if and how to smooth millan, farinotti and slope fiels before interpolation
+# todo: smooth millan, farinotti and slope fiels before interpolation
 # todo: so far I use only neighboring pixels but Eric suggests to account for a wider window.
 # todo: migliorare velocita inserita in caso nessun dato di millan.
 # todo: inserire anche un ulteriore feature che è la velocità media di tutto il ghiacciao ? sia vxm, vym, vm ?
@@ -47,6 +47,8 @@ Note the following policy for Millan special cases to produce vx, vy, v, ith_m:
 # todo: inserire anche la curvatura ? Vedi la tesi di farinotti, pare la curvatura sia importante
 # todo: a proposito di come smussare i campi di slope e velocita, guardare questo articolo:
 #  Slope estimation influences on ice thickness inversion models: a case study for Monte Tronador glaciers, North Patagonian Andes
+# todo: remove from here and move to model.py the calculation of slope, v, elevation_from_zmin
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--mosaic', type=str,default="/media/nico/samsung_nvme/ASTERDEM_v3_mosaics/",
@@ -292,10 +294,9 @@ def populate_glacier_with_metadata(glacier_name, n=50):
 
     # Fill dataframe with slope_lat, slope_lon, slope, elevation_astergdem and elevation_from_zmin
     points_df['elevation_astergdem'] = elevation_data
-    points_df['elevation_from_zmin'] = points_df['elevation_astergdem'] - points_df['Zmin']
+    #points_df['elevation_from_zmin'] = points_df['elevation_astergdem'] - points_df['Zmin'] #todo: remove this. Needs to be calculated in mode.py
     points_df['slope_lat'] = slope_lat_data
     points_df['slope_lon'] = slope_lon_data
-    points_df['slope'] = np.sqrt(points_df['slope_lat'] ** 2 + points_df['slope_lon'] ** 2)
     points_df['slope_lat_gf50'] = slope_lat_data_filter_50
     points_df['slope_lon_gf50'] = slope_lon_data_filter_50
     points_df['slope_lat_gf100'] = slope_lat_data_filter_100
@@ -304,6 +305,7 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     points_df['slope_lon_gf150'] = slope_lon_data_filter_150
     points_df['slope_lat_gf300'] = slope_lat_data_filter_300
     points_df['slope_lon_gf300'] = slope_lon_data_filter_300
+    #points_df['slope'] = np.sqrt(points_df['slope_lat_gf300'] ** 2 + points_df['slope_lon_gf300'] ** 2) #todo: remove this. Needs to be calculated in mode.py
 
     calculate_elevation_and_slopes_in_epsg_4326_and_show_differences_wrt_utm = False
     if calculate_elevation_and_slopes_in_epsg_4326_and_show_differences_wrt_utm:
@@ -476,7 +478,7 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         points_df['vx'] = vx_data  # note this may contain nans from interpolation at the margin/inside nunatak
         points_df['vy'] = vy_data  # note this may contain nans from interpolation at the margin/inside nunatak
         points_df['ith_m'] = ith_data  # note this may contain nans from interpolation at the margin/inside nunatak
-        points_df['v'] = np.sqrt(points_df['vx'] ** 2 + points_df['vy'] ** 2)  # note this may contain nans
+        #points_df['v'] = np.sqrt(points_df['vx'] ** 2 + points_df['vy'] ** 2)  # note this may contain nans
         no_millan_data = False
     except:
         print(f"No Millan data can be found for rgi {rgi} glacier {glacier_name}")
@@ -699,7 +701,7 @@ def populate_glacier_with_metadata(glacier_name, n=50):
 
     """ Cleaning the produced dataset """
     # At this stage any nan may be present in vx, vy, v, ith_m, ith_f. Remove those points.
-    points_df = points_df.dropna(subset=['vx', 'vy', 'v', 'ith_m', 'ith_f'])
+    points_df = points_df.dropna(subset=['vx', 'vy', 'ith_m', 'ith_f'])
     #print(points_df.T)
     print(f"Generated dataset. Nan present: {points_df.isnull().any().any()}")
     print(f"*******FINISHED FETCHING FEATURES*******")
@@ -721,7 +723,7 @@ RGI_burned = ['RGI60-11.00562', 'RGI60-11.00590', 'RGI60-11.00603', 'RGI60-11.00
                   'RGI60-11.02775', 'RGI60-11.02787', 'RGI60-11.02796', 'RGI60-11.02864', 'RGI60-11.02884',
                   'RGI60-11.02890', 'RGI60-11.02909', 'RGI60-11.03249']
 
-generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-07.00832', n=2000)
+# generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-07.00832', n=2000)
 
 # 'RGI60-07.00228' should be a multiplygon
 # RGI60-11.00781 has only 1 neighbor
