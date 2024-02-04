@@ -4,6 +4,7 @@ from glob import glob
 import random
 import xarray, rioxarray
 import argparse
+import rasterio
 from rioxarray import merge
 import numpy as np
 import matplotlib
@@ -30,6 +31,7 @@ Run time evaluated on on rgi = [3,7,8,11,18]
 1. add_rgi. Time: 2min.
 2. add_RGIId_and_OGGM_stats. Time: 30 min.
 3. add_slopes_elevation. Time: 30 min.
+    - No nan can be produced here
 4. add_millan_vx_vy_ith. Time: 1 min
     - Points inside the glaicer but close to the borders can be interpolated as nan.
     - Note: method to interpolate is chosen as "nearest" to reduce as much as possible these nans.
@@ -57,6 +59,10 @@ parser.add_argument('--farinotti_icethickness_folder', type=str,default="/home/n
                     help="Path to Farinotti ice thickness data")
 parser.add_argument('--OGGM_folder', type=str,default="/home/nico/OGGM", help="Path to OGGM main folder")
 parser.add_argument('--save', type=bool, default=False, help="Save final dataset or not.")
+parser.add_argument('--save_outname', type=str,
+            default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final3.csv",
+            help="Saved dataframe name.")
+
 
 #todo: I loop over 'GlaThiDa_ID' instead of 'RGIId'. I should see what's the difference
 #todo: add dvx/dx, dvy/dy ?
@@ -64,6 +70,8 @@ parser.add_argument('--save', type=bool, default=False, help="Save final dataset
 # I could but not many points to gain from the dataset.
 #todo 2: Smoothing vx, vy, slopes, before interpolating ? See scipy.ndimage.convolve or some gaussian filters
 #todo: add additional features from OGGM E.g. Aspect ? Or glathida ?
+#todo: whenever i call clip_box i need to check if there is only 1 measurement !
+#todo: change all reprojecting method from nearest to something else, like bisampling
 
 utils.get_rgi_dir(version='62')
 utils.get_rgi_intersects_dir(version='62')
@@ -188,9 +196,9 @@ def add_slopes_elevation(glathida, path_mosaic):
 
     if (any(ele in list(glathida) for ele in ['slope_lat', 'slope_lon', 'elevation_astergdem'])):
         print('Variables slope_lat, slope_lon or elevation_astergdem already in dataframe.')
-        pass
         #return glathida
 
+    glathida['elevation_astergdem'] = [np.nan] * len(glathida)
     glathida['slope_lat'] = [np.nan] * len(glathida)
     glathida['slope_lon'] = [np.nan] * len(glathida)
     glathida['slope_lat_gf50'] = [np.nan] * len(glathida)
@@ -203,9 +211,8 @@ def add_slopes_elevation(glathida, path_mosaic):
     glathida['slope_lon_gf300'] = [np.nan] * len(glathida)
     datax = []  # just to analyse the results
     datay = []  # just to analyse the results
-    glathida['elevation_astergdem'] = [np.nan] * len(glathida)
 
-    for rgi in [3, 7, 8, 11, 18]:
+    for rgi in [3,7,8,11,18]:
 
         print(f'rgi: {rgi}')
         # get dem
@@ -218,104 +225,106 @@ def add_slopes_elevation(glathida, path_mosaic):
         for id_rgi in tqdm(ids_rgi, total=len(ids_rgi), leave=True):
 
             glathida_id = glathida_rgi.loc[glathida_rgi['GlaThiDa_ID'] == id_rgi]  # collapse glathida_rgi to specific id
-            indexes_all = glathida_id.index.tolist()
+            glathida_id = glathida_id.copy()
+            indexes_all = glathida_id.index.tolist() # useless
 
-            lats = np.array(glathida_id['POINT_LAT'])
-            lons = np.array(glathida_id['POINT_LON'])
-
-            swlat = np.amin(lats)
-            swlon = np.amin(lons)
-            nelat = np.amax(lats)
-            nelon = np.amax(lons)
-
-            deltalat = np.abs(swlat - nelat)
-            deltalon = np.abs(swlon - nelon)
-            delta = max(deltalat, deltalon)
-            lats_xar = xarray.DataArray(lats)
-            lons_xar = xarray.DataArray(lons)
-
-            eps = 5 * ris_ang
-
-            # clip
-            try:
-                focus = dem_rgi.rio.clip_box(
-                    minx=swlon - (deltalon + eps),
-                    miny=swlat - (deltalat + eps),
-                    maxx=nelon + (deltalon + eps),
-                    maxy=nelat + (deltalat + eps),
-                    #minx = swlon - (delta + eps),
-                    #miny = swlat - (delta + eps),
-                    #maxx = nelon + (delta + eps),
-                    #maxy = nelat + (delta + eps)
-                )
-            except:
-                raise ValueError(f"Problems in method add_slopes_elevation for glacier_id: {id_rgi}")
-
-            focus = focus.squeeze()
-
-            lon_c = (0.5 * (focus.coords['x'][-1] + focus.coords['x'][0])).to_numpy()
-            lat_c = (0.5 * (focus.coords['y'][-1] + focus.coords['y'][0])).to_numpy()
-            ris_metre_lon = haversine(lon_c, lat_c, lon_c + ris_ang, lat_c) * 1000
-            ris_metre_lat = haversine(lon_c, lat_c, lon_c, lat_c + ris_ang) * 1000
-
-            # Reproject focus in utm
-            #_, _, _, _, epsg_focus = from_lat_lon_to_utm_and_epsg(lat_c, lon_c)
-            #focus_utm = focus.rio.reproject(epsg_focus, nodata=-9999)
-            #focus_utm = focus_utm.where(focus_utm != -9999, np.nan)
-
-            # Create a dictionary of point eastings, northings, epsg
-            points_utm_dict = {'northings': [], 'eastings':[], 'epsg': []}
-            for (lat, lon) in zip(lats, lons):
+            glathida_id['northings'] = np.nan
+            glathida_id['eastings'] = np.nan
+            glathida_id['epsg'] = np.nan
+            for idx in glathida_id.index:
+                lat = glathida_id.at[idx, 'POINT_LAT']
+                lon = glathida_id.at[idx, 'POINT_LON']
                 e, n, _, _, epsg = from_lat_lon_to_utm_and_epsg(lat, lon)
-                points_utm_dict['eastings'].append(e)
-                points_utm_dict['northings'].append(n)
-                points_utm_dict['epsg'].append(epsg)
+                glathida_id.at[idx, 'northings'] = n
+                glathida_id.at[idx, 'eastings'] = e
+                glathida_id.at[idx, 'epsg'] = int(epsg)
 
-            # Loop over unique epsg of points
-            for epsg_unique in np.unique(points_utm_dict['epsg']):
-                epsg_unique = int(epsg_unique)
+            # get unique epsgs
+            unique_epsgs = glathida_id['epsg'].unique().astype(int).tolist()
 
-                northings = [n for n, epsg in zip(points_utm_dict['northings'], points_utm_dict['epsg']) if epsg==epsg_unique]
-                eastings = [e for e, epsg in zip(points_utm_dict['eastings'], points_utm_dict['epsg']) if epsg==epsg_unique]
+            for epsg_unique in unique_epsgs:
+                glathida_id_epsg = glathida_id.loc[glathida_id['epsg'] == epsg_unique]
+                indexes_all_epsg = glathida_id_epsg.index.tolist()
 
+                lats = np.array(glathida_id_epsg['POINT_LAT'])
+                lons = np.array(glathida_id_epsg['POINT_LON'])
+                northings = np.array(glathida_id_epsg['northings'])
+                eastings = np.array(glathida_id_epsg['eastings'])
+
+                swlat = np.amin(lats)
+                swlon = np.amin(lons)
+                nelat = np.amax(lats)
+                nelon = np.amax(lons)
+
+                deltalat = np.abs(swlat - nelat)
+                deltalon = np.abs(swlon - nelon)
+                delta = max(deltalat, deltalon, 0.1)
                 northings_xar = xarray.DataArray(northings)
                 eastings_xar = xarray.DataArray(eastings)
 
-                # Reproject focus in utm
-                focus_utm = focus.rio.reproject(epsg_unique, nodata=-9999)
+                eps = 5 * ris_ang
 
-                #print(focus_utm.rio.bounds())
-                #print(min(eastings)-1000, min(northings)-1000, max(eastings)+1000, max(northings) +1000)
+                # clip
+                try:
+                    focus = dem_rgi.rio.clip_box(
+                        #minx=swlon - (deltalon + eps),
+                        #miny=swlat - (deltalat + eps),
+                        #maxx=nelon + (deltalon + eps),
+                        #maxy=nelat + (deltalat + eps),
+                        minx = swlon - delta,
+                        miny = swlat - delta,
+                        maxx = nelon + delta,
+                        maxy = nelat + delta,
+                    )
+                except:
+                    raise ValueError(f"Problems in method add_slopes_elevation for glacier_id: {id_rgi}")
 
-                # clip the utm with a buffer in both dimentions
+                focus = focus.squeeze()
+
+                # Reproject to utm (projection distortions along boundaries converted to nans)
+                focus_utm = focus.rio.reproject(epsg_unique, resampling=rasterio.enums.Resampling.bilinear, nodata=-9999)
+                focus_utm = focus_utm.where(focus_utm != -9999, np.nan)
+
+                # clip the utm with a buffer of 2 km in both dimentions
                 focus_utm_clipped = focus_utm.rio.clip_box(
-                    minx=min(eastings)-1000,
-                    miny=min(northings)-1000,
-                    maxx=max(eastings)+1000,
-                    maxy=max(northings) +1000)
+                    minx=min(eastings)-2000,
+                    miny=min(northings)-2000,
+                    maxx=max(eastings)+2000,
+                    maxy=max(northings)+2000)
 
                 # Calculate the resolution in meters of the utm focus (resolutions in x and y are the same!)
                 res_utm_metres = focus_utm_clipped.rio.resolution()[0]
 
+                # Calculate how many pixels I need for a resolution of 50, 100, 150, 300 meters
                 num_px_sigma_50 = max(1, round(50/res_utm_metres))
                 num_px_sigma_100 = max(1, round(100/res_utm_metres))
                 num_px_sigma_150 = max(1, round(150/res_utm_metres))
                 num_px_sigma_300 = max(1, round(300/res_utm_metres))
 
-                #focus_utm_filtered = focus_utm.where(np.isnan(focus_utm), drop=True)
-                #focus_utm_filtered = focus_utm.where(focus_utm<0, drop=True)
-                #focus_utm_filtered = focus_utm.dropna(dim='y')
-                #print(focus_utm_filtered)
-                # this may be necessary since projection to utm may distort (=nan) the boundaries
-                #focus_utm_np = focus_utm_clipped.values
-                #focus_utm_np = np.nan_to_num(focus_utm_np, nan=0)
-                #focus_filter_300_utm = scipy.ndimage.gaussian_filter(np.ma.masked_invalid(focus_utm_np), sigma=[num_px_sigma_300,num_px_sigma_300], mode='nearest')
+                def gaussian_filter_with_nans(U, sigma):
+                    # Since the reprojection into utm leads to distortions (=nans) we need to take care of this during filtering
+                    # From David in https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
+                    V = U.copy()
+                    V[np.isnan(U)] = 0
+                    VV = scipy.ndimage.gaussian_filter(V, sigma=[sigma, sigma], mode='nearest')
+                    W = np.ones_like(U)
+                    W[np.isnan(U)] = 0
+                    WW = scipy.ndimage.gaussian_filter(W, sigma=[sigma, sigma], mode='nearest')
+                    WW[WW==0]=np.nan
+                    filtered_U = VV/WW
+                    return filtered_U
 
                 # Apply filter
-                focus_filter_50_utm = scipy.ndimage.gaussian_filter(focus_utm_clipped.values, sigma=[num_px_sigma_50,num_px_sigma_50], mode='nearest')
-                focus_filter_100_utm = scipy.ndimage.gaussian_filter(focus_utm_clipped.values, sigma=[num_px_sigma_100,num_px_sigma_100], mode='nearest')
-                focus_filter_150_utm = scipy.ndimage.gaussian_filter(focus_utm_clipped.values, sigma=[num_px_sigma_150,num_px_sigma_150], mode='nearest')
-                focus_filter_300_utm = scipy.ndimage.gaussian_filter(focus_utm_clipped.values, sigma=[num_px_sigma_300,num_px_sigma_300], mode='nearest')
+                focus_filter_50_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_50)
+                focus_filter_100_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_100)
+                focus_filter_150_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_150)
+                focus_filter_300_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_300)
+
+                # Mask back the filtered arrays
+                focus_filter_50_utm = np.where(np.isnan(focus_utm_clipped.values), np.nan, focus_filter_50_utm)
+                focus_filter_100_utm = np.where(np.isnan(focus_utm_clipped.values), np.nan, focus_filter_100_utm)
+                focus_filter_150_utm = np.where(np.isnan(focus_utm_clipped.values), np.nan, focus_filter_150_utm)
+                focus_filter_300_utm = np.where(np.isnan(focus_utm_clipped.values), np.nan, focus_filter_300_utm)
 
                 # create xarray object of filtered dem
                 focus_filter_xarray_50_utm = focus_utm_clipped.copy(data=focus_filter_50_utm)
@@ -324,18 +333,12 @@ def add_slopes_elevation(glathida, path_mosaic):
                 focus_filter_xarray_300_utm = focus_utm_clipped.copy(data=focus_filter_300_utm)
 
                 # calculate slopes for restricted dem
-                dz_dlat, dz_dlon = np.gradient(focus_utm_clipped.values, -res_utm_metres, res_utm_metres)  # [m/m]
-                dz_dlat_filter_50, dz_dlon_filter_50 = np.gradient(focus_filter_50_utm, -res_utm_metres, res_utm_metres)  # [m/m]
-                dz_dlat_filter_100, dz_dlon_filter_100 = np.gradient(focus_filter_100_utm, -res_utm_metres, res_utm_metres)  # [m/m]
-                dz_dlat_filter_150, dz_dlon_filter_150 = np.gradient(focus_filter_150_utm, -res_utm_metres, res_utm_metres)  # [m/m]
-                dz_dlat_filter_300, dz_dlon_filter_300 = np.gradient(focus_filter_300_utm, -res_utm_metres, res_utm_metres)  # [m/m]
-
-                # create xarray object of slopes
-                dz_dlat_xar, dz_dlon_xar = focus_utm_clipped.copy(data=dz_dlat), focus_utm_clipped.copy(data=dz_dlon)
-                dz_dlat_filter_xar_50, dz_dlon_filter_xar_50 = focus_utm_clipped.copy(data=dz_dlat_filter_50), focus_utm_clipped.copy(data=dz_dlon_filter_50)
-                dz_dlat_filter_xar_100, dz_dlon_filter_xar_100 = focus_utm_clipped.copy(data=dz_dlat_filter_100), focus_utm_clipped.copy(data=dz_dlon_filter_100)
-                dz_dlat_filter_xar_150, dz_dlon_filter_xar_150 = focus_utm_clipped.copy(data=dz_dlat_filter_150), focus_utm_clipped.copy(data=dz_dlon_filter_150)
-                dz_dlat_filter_xar_300, dz_dlon_filter_xar_300 = focus_utm_clipped.copy(data=dz_dlat_filter_300), focus_utm_clipped.copy(data=dz_dlon_filter_300)
+                # using numpy.gradient dz_dlat, dz_dlon = np.gradient(focus_utm_clipped.values, -res_utm_metres, res_utm_metres)  # [m/m]
+                dz_dlat_xar, dz_dlon_xar = focus_utm_clipped.differentiate(coord='y'), focus_utm_clipped.differentiate(coord='x')
+                dz_dlat_filter_xar_50, dz_dlon_filter_xar_50 = focus_filter_xarray_50_utm.differentiate(coord='y'), focus_filter_xarray_50_utm.differentiate(coord='x')
+                dz_dlat_filter_xar_100, dz_dlon_filter_xar_100 = focus_filter_xarray_100_utm.differentiate(coord='y'), focus_filter_xarray_100_utm.differentiate(coord='x')
+                dz_dlat_filter_xar_150, dz_dlon_filter_xar_150 = focus_filter_xarray_150_utm.differentiate(coord='y'), focus_filter_xarray_150_utm.differentiate(coord='x')
+                dz_dlat_filter_xar_300, dz_dlon_filter_xar_300  = focus_filter_xarray_300_utm.differentiate(coord='y'), focus_filter_xarray_300_utm.differentiate(coord='x')
 
                 # interpolate slope and dem
                 elevation_data = focus_utm_clipped.interp(y=northings_xar, x=eastings_xar, method='linear').data
@@ -350,17 +353,65 @@ def add_slopes_elevation(glathida, path_mosaic):
                 slope_lat_data_filter_300 = dz_dlat_filter_xar_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 slope_lon_data_filter_300 = dz_dlon_filter_xar_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
 
+                # check if any nan in the interpolate data
+                contains_nan = any(np.isnan(arr).any() for arr in [slope_lon_data, slope_lat_data,
+                                                                   slope_lon_data_filter_50, slope_lat_data_filter_50,
+                                                                   slope_lon_data_filter_100, slope_lat_data_filter_100,
+                                                                   slope_lon_data_filter_150, slope_lat_data_filter_150,
+                                                                   slope_lon_data_filter_300, slope_lat_data_filter_300])
+                if contains_nan:
+                    raise ValueError(f"Nan detected in elevation/slope calc. Check")
+
+                # other checks
+                assert slope_lat_data.shape == slope_lon_data.shape == elevation_data.shape, "Different shapes, something wrong!"
+                assert slope_lat_data_filter_150.shape == slope_lon_data_filter_150.shape == elevation_data.shape, "Different shapes, something wrong!"
+                assert len(slope_lat_data) == len(indexes_all_epsg), "Different shapes, something wrong!"
+
+                # write to dataframe
+                glathida.loc[indexes_all_epsg, 'elevation_astergdem'] = elevation_data
+                glathida.loc[indexes_all_epsg, 'slope_lat'] = slope_lat_data
+                glathida.loc[indexes_all_epsg, 'slope_lon'] = slope_lon_data
+                glathida.loc[indexes_all_epsg, 'slope_lat_gf50'] = slope_lat_data_filter_50
+                glathida.loc[indexes_all_epsg, 'slope_lon_gf50'] = slope_lon_data_filter_50
+                glathida.loc[indexes_all_epsg, 'slope_lat_gf100'] = slope_lat_data_filter_100
+                glathida.loc[indexes_all_epsg, 'slope_lon_gf100'] = slope_lon_data_filter_100
+                glathida.loc[indexes_all_epsg, 'slope_lat_gf150'] = slope_lat_data_filter_150
+                glathida.loc[indexes_all_epsg, 'slope_lon_gf150'] = slope_lon_data_filter_150
+                glathida.loc[indexes_all_epsg, 'slope_lat_gf300'] = slope_lat_data_filter_300
+                glathida.loc[indexes_all_epsg, 'slope_lon_gf300'] = slope_lon_data_filter_300
+
                 plot_utm = False
                 if plot_utm:
-                    fig, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3, figsize=(8, 5))
-                    im1 = focus.plot(ax=ax1, cmap='viridis', )
-                    s1 = ax1.scatter(x=lons, y=lats, s=15, c='k')
-                    im2 = focus_utm_clipped.plot(ax=ax2, cmap='viridis', vmin=focus.min(),vmax=focus.max())
-                    s2 = ax2.scatter(x=eastings, y=northings, s=15, c='k')
-                    im3 = focus_filter_xarray_300_utm.plot(ax=ax3, cmap='viridis', vmin=focus.min(),vmax=focus.max())
-                    s3 = ax3.scatter(x=eastings, y=northings, s=15, c='k')
-                    plt.show()
+                    fig, ((ax0, ax1, ax2, ax3), (ax01, ax4, ax5, ax6)) = plt.subplots(2, 4, figsize=(8, 5))
 
+                    im0 =focus.plot(ax=ax0, cmap='viridis', )
+
+                    im01 =focus_utm.plot(ax=ax01, cmap='viridis', )
+                    s01 = ax01.scatter(x=eastings, y=northings, s=15, c='k')
+
+                    im1 = focus_utm_clipped.plot(ax=ax1, cmap='viridis', vmin=focus_utm_clipped.min(),vmax=focus_utm_clipped.max())
+                    s1 = ax1.scatter(x=eastings, y=northings, s=15, c=elevation_data, ec=(0, 0, 0, 0.1), cmap='viridis',
+                                     vmin=focus_utm_clipped.min(), vmax=focus_utm_clipped.max(), zorder=1)
+
+                    im2 = dz_dlat_xar.plot(ax=ax2, cmap='viridis', vmin=dz_dlat_xar.min(), vmax=dz_dlat_xar.max())
+                    s2 = ax2.scatter(x=eastings, y=northings, s=15, c=slope_lat_data, ec=(0, 0, 0, 0.1), cmap='viridis',
+                                     vmin=dz_dlat_xar.min(), vmax=dz_dlat_xar.max(), zorder=1)
+
+                    im3 = dz_dlon_xar.plot(ax=ax3, cmap='viridis', vmin=dz_dlon_xar.min(), vmax=dz_dlon_xar.max())
+                    s3 = ax3.scatter(x=eastings, y=northings, s=15, c=slope_lon_data, ec=(0, 0, 0, 0.1), cmap='viridis',
+                                     vmin=dz_dlon_xar.min(), vmax=dz_dlon_xar.max(), zorder=1)
+
+                    im4 = focus_filter_xarray_300_utm.plot(ax=ax4, cmap='viridis', )
+                    s4 = ax4.scatter(x=eastings, y=northings, s=15, c='k')
+
+                    im5 = dz_dlat_filter_xar_300.plot(ax=ax5, cmap='viridis', vmin=dz_dlat_filter_xar_300.min(), vmax=dz_dlat_filter_xar_300.max())
+                    s5 = ax5.scatter(x=eastings, y=northings, s=15, c=slope_lat_data_filter_300, ec=(0, 0, 0, 0.1),
+                                     cmap='viridis', vmin=dz_dlat_filter_xar_300.min(), vmax=dz_dlat_filter_xar_300.max(), zorder=1)
+                    im6 = dz_dlon_filter_xar_300.plot(ax=ax6, cmap='viridis', vmin=dz_dlon_filter_xar_300.min(), vmax=dz_dlon_filter_xar_300.max())
+                    s6 = ax6.scatter(x=eastings, y=northings, s=15, c=slope_lon_data_filter_300, ec=(0, 0, 0, 0.1),
+                                     cmap='viridis', vmin=dz_dlon_filter_xar_300.min(), vmax=dz_dlon_filter_xar_300.max(), zorder=1)
+
+                    plt.show()
 
 
             """
@@ -679,7 +730,7 @@ def add_dist_from_border_in_out(glathida, path_millan_velocity):
         for tiffile in files_v:
             xds = rioxarray.open_rasterio(tiffile, masked=False)
             xds.rio.write_nodata(np.nan, inplace=True)
-            xds_4326.append(xds.rio.reproject("EPSG:4326"))
+            xds_4326.append(xds.rio.reproject("EPSG:4326")) #todo: need to change reproject resampling method
         mosaic_v = merge.merge_arrays(xds_4326)
         #mosaic_v.plot()
         #plt.show()
@@ -925,6 +976,7 @@ def add_dist_from_boder_using_geometries(glathida):
                     easting, nothing, zonenum, zonelett, epsg = from_lat_lon_to_utm_and_epsg(lat, lon)
                     if epsg != glacier_epsg:
                         print(f"Note differet UTM zones. Point espg {epsg} and glacier center epsg {glacier_epsg}.")
+                        #todo: maybe need to correct for this.
 
                 # Decide whether point is inside a nunatak. If yes set the distance to nan
                 is_nunatak = any(nunatak.contains(Point(lon, lat)) for nunatak in gl_geom_nunataks_list)
@@ -1052,6 +1104,7 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
     glathida['Lmax'] = [np.nan] * len(glathida) # -9 missing values, see https://essd.copernicus.org/articles/14/3889/2022/essd-14-3889-2022.pdf
     #todo: have I managed these bad values ? -999 and -9 ?
     #todo: add Athe following features: Form, TermType, Status, Aspect
+    # todo: check if any nan results from this method
 
     regions = [3, 7, 8, 11, 18]
 
@@ -1175,6 +1228,7 @@ def add_farinotti_ith(glathida, path_farinotti_icethickness):
             file_glacier_farinotti = file_glacier_farinotti.where(file_glacier_farinotti != 0.0) # set to nan outside glacier
             file_glacier_farinotti.rio.write_nodata(np.nan, inplace=True)
 
+            #todo: need to likely change reproject resampling method
             file_glacier_farinotti_4326 = file_glacier_farinotti.rio.reproject("EPSG:4326")
             file_glacier_farinotti_4326.rio.write_nodata(np.nan, inplace=True)
             bounds_4326 = file_glacier_farinotti_4326.rio.bounds()
@@ -1278,7 +1332,7 @@ if __name__ == '__main__':
         glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
 
         if args.save:
-            glathida.to_csv(args.path_ttt_csv.replace('.csv', '_final3.csv'), index=False)
+            glathida.to_csv(args.save_outname, index=False)
             print('Metadata dataset saved.')
         print(f'Finished in {(time.time()-t0)/60} minutes. Bye bye.')
         exit()
@@ -1305,7 +1359,7 @@ if __name__ == '__main__':
         # Correlations between varibles
         print(glathida2_i.corr(method='pearson', numeric_only=True)['THICKNESS'].abs().sort_values(ascending=False))
 
-        input('wait')
+        exit()
 
 
         """ Distributions of all variables"""
