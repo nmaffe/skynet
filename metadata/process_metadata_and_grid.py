@@ -20,7 +20,7 @@ The processed and gridded dataframe is finally saved.
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--input_metadata_file', type=str,
-                    default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final3.csv",
+                    default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final4.csv",
                     help="Input metadata file to be gridded")
 parser.add_argument('--nbins_grid_latlon', type=float, default=20, help="How many bins in the lat/lon directions")
 parser.add_argument('--save', type=bool, default=False, help="Save final dataset or not.")
@@ -53,7 +53,7 @@ cols = ['RGI', 'RGIId', 'POINT_LAT', 'POINT_LON', 'THICKNESS', 'Area', 'elevatio
         'slope_lat', 'slope_lon', 'vx', 'vy', 'dist_from_border_km', 'dist_from_border_km_geom',
        'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'ith_m', 'ith_f',
         'slope_lon_gf50', 'slope_lat_gf50', 'slope_lon_gf100', 'slope_lat_gf100', 'slope_lon_gf150', 'slope_lat_gf150',
-        'slope_lon_gf300', 'slope_lat_gf300']
+        'slope_lon_gf300', 'slope_lat_gf300', 'Form', 'Aspect', 'TermType']
 
 glathida = glathida[cols]
 print(f'We keep only the following columns: \n {list(glathida)} \n{len(glathida)} rows')
@@ -90,6 +90,9 @@ for n, rgiid in enumerate(rgi_ids):
     lons = glathida_id['POINT_LON'].to_numpy()
     lats = glathida_id['POINT_LAT'].to_numpy()
     rgi = glathida_id['RGI'].iloc[0]
+    form = glathida_id['Form'].iloc[0]
+    aspect = glathida_id['Aspect'].iloc[0]
+    termtype = glathida_id['TermType'].iloc[0]
 
     # make same checks
     if not glathida_id['Area'].nunique() == 1: raise ValueError(f"Glacier {rgiid} should have only 1 unique Area.")
@@ -167,6 +170,9 @@ for n, rgiid in enumerate(rgi_ids):
     # add these two features as well
     glathida_id_grid['RGI'] = np.repeat(rgi, len(glathida_id_grid))
     glathida_id_grid['RGIId'] = np.repeat(rgiid, len(glathida_id_grid))
+    glathida_id_grid['Form'] = np.repeat(form, len(glathida_id_grid))
+    glathida_id_grid['TermType'] = np.repeat(termtype, len(glathida_id_grid))
+    glathida_id_grid['Aspect'] = np.repeat(aspect, len(glathida_id_grid))
 
     # append glacier gridded dataset to main gridded dataset
     glathida_gridded = pd.concat([glathida_gridded, glathida_id_grid], ignore_index=True)
