@@ -2,9 +2,8 @@ import os, sys, time
 import pandas as pd
 from glob import glob
 import random
-import xarray, rioxarray
+import xarray, rioxarray, rasterio
 import argparse
-import rasterio
 from rioxarray import merge
 import numpy as np
 import matplotlib
@@ -30,7 +29,7 @@ Run time evaluated on on rgi = [3,7,8,11,18]
 
 1. add_rgi. Time: 2min.
 2. add_RGIId_and_OGGM_stats. Time: 30 min.
-3. add_slopes_elevation. Time: 30 min.
+3. add_slopes_elevation. Time: 60 min.
     - No nan can be produced here
 4. add_millan_vx_vy_ith. Time: 1 min
     - Points inside the glaicer but close to the borders can be interpolated as nan.
@@ -196,7 +195,7 @@ def add_slopes_elevation(glathida, path_mosaic):
 
     if (any(ele in list(glathida) for ele in ['slope_lat', 'slope_lon', 'elevation_astergdem'])):
         print('Variables slope_lat, slope_lon or elevation_astergdem already in dataframe.')
-        #return glathida
+        return glathida
 
     glathida['elevation_astergdem'] = [np.nan] * len(glathida)
     glathida['slope_lat'] = [np.nan] * len(glathida)
@@ -527,7 +526,6 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
     """
     print('Adding Millan velocity and ice thickness method...')
     #todo: smussare con filtro gaussiano oppure mediare un intorno del punto per vx, vy ?
-    # todo: Millan usa filtro mediano + filtro gaussiano con width variabili
 
     if (any(ele in list(glathida) for ele in ['vx', 'vy', 'ith_m'])):
         print('Variable already in dataframe.')
@@ -1092,8 +1090,8 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
 
     print("Adding OGGM's stats method...")
     if (any(ele in list(glathida) for ele in ['RGIId', 'Area'])):
-        print('Variables RGIId/Area already in dataframe.')
-        return glathida
+        print('Variables RGIId/Area etc already in dataframe.')
+        #return glathida
 
     glathida['RGIId'] = [np.nan] * len(glathida)
     glathida['Area'] = [np.nan] * len(glathida)
@@ -1102,21 +1100,26 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
     glathida['Zmed'] = [np.nan] * len(glathida) # -999 are bad values
     glathida['Slope'] = [np.nan] * len(glathida)
     glathida['Lmax'] = [np.nan] * len(glathida) # -9 missing values, see https://essd.copernicus.org/articles/14/3889/2022/essd-14-3889-2022.pdf
-    #todo: have I managed these bad values ? -999 and -9 ?
-    #todo: add Athe following features: Form, TermType, Status, Aspect
-    # todo: check if any nan results from this method
+    glathida['Form'] = [np.nan] * len(glathida) # 9 Not assigned
+    glathida['TermType'] = [np.nan] * len(glathida) # 9 Not assigned
+    glathida['Aspect'] = [np.nan] * len(glathida) # -9 bad values
 
-    regions = [3, 7, 8, 11, 18]
+    regions = [3,7,8,11,18]
 
     for rgi in tqdm(regions, total=len(regions), leave=True):
         # get OGGM's dataframe of rgi glaciers
         oggm_rgi_shp = glob(f'{path_OGGM_folder}/rgi/RGIV62/{rgi:02d}*/{rgi:02d}*.shp')[0]
         oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)
+        #pd.set_option('display.max_columns', None)
         #print(oggm_rgi_glaciers.describe())
+        #print(oggm_rgi_glaciers['Form'].value_counts())
+        #print(oggm_rgi_glaciers['Aspect'].value_counts())
+        #fig, ax = plt.subplots()
+        #ax.hist(oggm_rgi_glaciers['Aspect'], bins=400)
+        #plt.show()
+        #print(oggm_rgi_glaciers['TermType'].value_counts())
+        #print(oggm_rgi_glaciers['Surging'].value_counts())
         #input('wait')
-        #print(oggm_rgi_glaciers['Status'].unique())
-        #print(oggm_rgi_glaciers['TermType'].unique())
-        #print(oggm_rgi_glaciers['Surging'].unique())
         #print(oggm_rgi_glaciers.head(5))
         print(f'rgi: {rgi}. Imported OGGMs {oggm_rgi_shp} dataframe of {len(oggm_rgi_glaciers)} glaciers')
 
@@ -1128,12 +1131,15 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
 
             glacier_geometry = oggm_rgi_glaciers.loc[ind, 'geometry']
             glacier_RGIId = oggm_rgi_glaciers.loc[ind, 'RGIId']
-            glacier_area = oggm_rgi_glaciers.loc[ind, 'Area'] #km2
+            glacier_area = oggm_rgi_glaciers.loc[ind, 'Area']
             glacier_zmin = oggm_rgi_glaciers.loc[ind, 'Zmin']
             glacier_zmax = oggm_rgi_glaciers.loc[ind, 'Zmax']
             glacier_zmed = oggm_rgi_glaciers.loc[ind, 'Zmed']
             glacier_slope = oggm_rgi_glaciers.loc[ind, 'Slope']
             glacier_lmax = oggm_rgi_glaciers.loc[ind, 'Lmax']
+            glacier_form = oggm_rgi_glaciers.loc[ind, 'Form']
+            glacier_termtype = oggm_rgi_glaciers.loc[ind, 'TermType']
+            glacier_aspect = oggm_rgi_glaciers.loc[ind, 'Aspect']
             # calculate the area using pyproj and shapely for comparison with oggm
             # area_pyproj = abs(Geod(ellps="WGS84").geometry_area_perimeter(shapely.wkt.loads(str(glacier_geometry)))[0])*1.e-6 #km2
 
@@ -1174,6 +1180,20 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
                 ax1.plot(*glacier_geometry.exterior.xy, c='magenta')
                 plt.show()
 
+            # some checks before returning values to dataframe
+            assert glacier_zmin != -999, "Zmin should not be -999"
+            assert glacier_zmax != -999, "Zmax should not be -999"
+            assert glacier_zmed != -999, "Zmed should not be -999"
+            assert glacier_lmax != -9, "Lmax should not be -9"
+            assert glacier_form != 9, "Form should not be 9 (not assigned)"
+            assert glacier_termtype != 9, "TermType should not be 9 (not assigned)"
+            assert glacier_aspect != -9, "Aspect should not be -9"
+
+            assert not np.any(np.isnan(np.array([glacier_area, glacier_zmin, glacier_zmax,
+                                                     glacier_zmed, glacier_slope, glacier_lmax,
+                                                 glacier_form, glacier_termtype, glacier_aspect]))), \
+                "Found nan in some variables in method add_RGIId_and_OGGM_stats. Check why this value appeared."
+
             # Add to dataframe
             glathida.loc[df_poins_in_glacier.index, 'RGIId'] = glacier_RGIId
             glathida.loc[df_poins_in_glacier.index, 'Area'] = glacier_area
@@ -1182,6 +1202,9 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
             glathida.loc[df_poins_in_glacier.index, 'Zmed'] = glacier_zmed
             glathida.loc[df_poins_in_glacier.index, 'Slope'] = glacier_slope
             glathida.loc[df_poins_in_glacier.index, 'Lmax'] = glacier_lmax
+            glathida.loc[df_poins_in_glacier.index, 'Form'] = glacier_form
+            glathida.loc[df_poins_in_glacier.index, 'TermType'] = glacier_termtype
+            glathida.loc[df_poins_in_glacier.index, 'Aspect'] = glacier_aspect
 
     return glathida
 
@@ -1322,7 +1345,7 @@ if __name__ == '__main__':
         t0 = time.time()
         glathida = pd.read_csv(args.path_ttt_csv.replace('.csv', '_final2.csv'), low_memory=False)
         #glathida = pd.read_csv(args.path_ttt_csv.replace('.csv', '_rgi.csv'), low_memory=False)
-        glathida = add_rgi(glathida, args.path_O1Regions_shp)
+        #glathida = add_rgi(glathida, args.path_O1Regions_shp)
         #glathida.to_csv(args.path_ttt_csv.replace('.csv', '_rgi.csv'), index=False)
         glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
         glathida = add_slopes_elevation(glathida, args.mosaic)
@@ -1339,125 +1362,131 @@ if __name__ == '__main__':
 
 
     # Run some stuff
-    glathida = pd.read_csv(args.path_ttt_csv.replace('.csv', '_final.csv'), low_memory=False)
-    glathida2 = pd.read_csv(args.path_ttt_csv.replace('.csv', '_final3.csv'), low_memory=False)
+    glathida = pd.read_csv(args.path_ttt_csv.replace('.csv', '_final3.csv'), low_memory=False)
     pd.set_option('display.max_columns', None)
-    rgis = [3, 7, 8, 11]
+    rgis = [3, 7, 8, 11, 18]
     for rgi in rgis:
 
         glathida_i = glathida.loc[((glathida['RGI'] == rgi) & (glathida['SURVEY_DATE'] > 20050000))]
-        glathida2_i = glathida2.loc[((glathida2['RGI'] == rgi) & (glathida2['SURVEY_DATE'] > 20050000))]
 
-        glathida2_i = glathida2_i.copy()
+        print(f'{rgi} - {len(glathida_i)}')
 
-        glathida2_i['v'] = np.sqrt(glathida2_i['vx']**2 + glathida2_i['vy']**2)
-        glathida2_i['slope'] = np.sqrt(glathida2_i['slope_lat'] ** 2 + glathida2_i['slope_lon'] ** 2)
-        glathida['elevation_from_zmin'] = glathida['elevation_astergdem'] - glathida['Zmin']
+        print(glathida_i.describe())
+        """    'Area', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax'"""
+        fig, axes = plt.subplots(3,2)
+        ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
+        ax1.hist(glathida_i['Area'], bins=100)
+        ax2.hist(glathida_i['Zmin'], bins=100)
+        ax3.hist(glathida_i['Zmed'], bins=100)
+        ax4.hist(glathida_i['Zmax'], bins=100)
+        ax5.hist(glathida_i['Slope'], bins=100)
+        ax6.hist(glathida_i['Lmax'], bins=100)
+        plt.show()
 
-        print(f'{rgi} - {len(glathida_i)} - {len(glathida2_i)}')
+        input('next')
 
         # Correlations between varibles
-        print(glathida2_i.corr(method='pearson', numeric_only=True)['THICKNESS'].abs().sort_values(ascending=False))
+        # print(glathida_i.corr(method='pearson', numeric_only=True)['THICKNESS'].abs().sort_values(ascending=False))
 
-        exit()
-
-
-        """ Distributions of all variables"""
-        #min_ = min(glathida_i['vx'].min(), glathida_i['vx'].min())
-        #max_ = max(glathida_i['vx'].max(), glathida_i['vy'].max())
-        #min_ = glathida_i['elevation_astergdem'].min()
-        #max_ = glathida_i['elevation_astergdem'].max()
-        #print(min_, max_)
-        #v = max(abs(min_), abs(max_))+1
-        #fig, ax = plt.subplots()
-        #h1 = plt.hist(glathida_i['elevation_astergdem'], color='r', alpha=0.5, bins=np.arange(0, v, 10), log=False, label='elevation_astergdem')
-        #h1 = plt.hist(glathida_i['vx'], color='r', alpha=0.5, bins=np.arange(-v, v, 1), log=True, label='vx')
-        #h2 = plt.hist(glathida_i['vy'], color='b', alpha=0.5, bins=np.arange(-v, v, 1), log=True, label='vy')
-        #plt.legend(title=f'elevation_astergdem - rgi{rgi}')
-        #plt.show()
+    exit()
 
 
-        """
-        Visualize scatter plot between 2 variables + 1 as color 
-        """
-        """
-        glathida_i.sort_values('THICKNESS', inplace=True)
+    """ Distributions of all variables"""
+    #min_ = min(glathida_i['vx'].min(), glathida_i['vx'].min())
+    #max_ = max(glathida_i['vx'].max(), glathida_i['vy'].max())
+    #min_ = glathida_i['elevation_astergdem'].min()
+    #max_ = glathida_i['elevation_astergdem'].max()
+    #print(min_, max_)
+    #v = max(abs(min_), abs(max_))+1
+    #fig, ax = plt.subplots()
+    #h1 = plt.hist(glathida_i['elevation_astergdem'], color='r', alpha=0.5, bins=np.arange(0, v, 10), log=False, label='elevation_astergdem')
+    #h1 = plt.hist(glathida_i['vx'], color='r', alpha=0.5, bins=np.arange(-v, v, 1), log=True, label='vx')
+    #h2 = plt.hist(glathida_i['vy'], color='b', alpha=0.5, bins=np.arange(-v, v, 1), log=True, label='vy')
+    #plt.legend(title=f'elevation_astergdem - rgi{rgi}')
+    #plt.show()
 
-        fig, ax1  = plt.subplots(1,1, figsize=(8,8))
-        #s1 = ax1.scatter(x=glathida_i['slope_lon'], y=glathida_i['vx'], c=glathida_i['THICKNESS'],
-        #                 s=1, alpha=1, norm=None, cmap='plasma', label=f'rgi: {rgi}')
-        #s2 = ax2.scatter(x=glathida_i['slope_lat'], y=glathida_i['vy'], c=glathida_i['THICKNESS'],
-        #                 s=1, alpha=1, norm=None, cmap='plasma', label=f'rgi: {rgi}')
 
-        s1 = ax1.scatter(x=glathida_i['dist_from_border_km'], y=glathida_i['elevation_astergdem'], c=glathida_i['THICKNESS'],
-                         s=1, alpha=1, norm=None, cmap='plasma', label=f'rgi: {rgi}')
+    """
+    Visualize scatter plot between 2 variables + 1 as color 
+    """
+    """
+    glathida_i.sort_values('THICKNESS', inplace=True)
 
-        for ax in (ax1, ):
-            ax.axhline(y=0, color='grey', alpha=.3)
-            ax.axvline(x=0, color='grey', alpha=.3)
-            ax.legend()
-        ax1.set_xlabel('dist_from_border_km')
-        ax1.set_ylabel('elevation_astergdem')
-        #ax2.set_xlabel('slope_lat')
-        #ax2.set_ylabel('vy (m/yr)')
-        cbar1 = plt.colorbar(s1, ax=ax1, alpha=1)
-        #cbar2 = plt.colorbar(s2, ax=ax2, alpha=1)
-        for cbar in (cbar1, ): cbar.set_label('THICKNESS (m)', labelpad=15, rotation=270)
-        plt.tight_layout()
-        plt.show()"""
+    fig, ax1  = plt.subplots(1,1, figsize=(8,8))
+    #s1 = ax1.scatter(x=glathida_i['slope_lon'], y=glathida_i['vx'], c=glathida_i['THICKNESS'],
+    #                 s=1, alpha=1, norm=None, cmap='plasma', label=f'rgi: {rgi}')
+    #s2 = ax2.scatter(x=glathida_i['slope_lat'], y=glathida_i['vy'], c=glathida_i['THICKNESS'],
+    #                 s=1, alpha=1, norm=None, cmap='plasma', label=f'rgi: {rgi}')
 
-        """
-        Glathida Ice thickness vs all variables
-        """
-        """
-        fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(1, 5, figsize=(19, 5))
-        s1 = ax1.scatter(x=glathida_i['slope_lon'], y=glathida_i['THICKNESS'], s=1)
-        s2 = ax2.scatter(x=glathida_i['slope_lat'], y=glathida_i['THICKNESS'], s=1)
-        s3 = ax3.scatter(x=glathida_i['vx'], y=glathida_i['THICKNESS'], s=1)
-        s4 = ax4.scatter(x=glathida_i['vy'], y=glathida_i['THICKNESS'], s=1)
-        s5 = ax5.scatter(x=glathida_i['dist_from_border_km'], y=glathida_i['THICKNESS'], s=1)
+    s1 = ax1.scatter(x=glathida_i['dist_from_border_km'], y=glathida_i['elevation_astergdem'], c=glathida_i['THICKNESS'],
+                     s=1, alpha=1, norm=None, cmap='plasma', label=f'rgi: {rgi}')
 
-        xtitles = ['slope_lon', 'slope_lat', 'vx', 'vy', 'dist_from_border']
-        for i in range(len(fig.axes)):
-            fig.axes[i].set_xlabel(xtitles[i])
-            fig.axes[i].set_ylabel('Ice thickness (m)')
+    for ax in (ax1, ):
+        ax.axhline(y=0, color='grey', alpha=.3)
+        ax.axvline(x=0, color='grey', alpha=.3)
+        ax.legend()
+    ax1.set_xlabel('dist_from_border_km')
+    ax1.set_ylabel('elevation_astergdem')
+    #ax2.set_xlabel('slope_lat')
+    #ax2.set_ylabel('vy (m/yr)')
+    cbar1 = plt.colorbar(s1, ax=ax1, alpha=1)
+    #cbar2 = plt.colorbar(s2, ax=ax2, alpha=1)
+    for cbar in (cbar1, ): cbar.set_label('THICKNESS (m)', labelpad=15, rotation=270)
+    plt.tight_layout()
+    plt.show()"""
 
-        fig.suptitle(f'rgi {rgi}', fontsize=16)
-        fig.tight_layout(pad=1.0)
-        plt.show()"""
-        """
-        fig, ax = plt.subplots(1, 1, figsize=(5, 5))
-        s1 = ax.scatter(x=glathida_i['elevation_astergdem'], y=glathida_i['THICKNESS'], s=1)
-        ax.set_xlabel('elevation_astergdem')
-        ax.set_ylabel('Ice thickness (m)')
-        fig.suptitle(f'rgi {rgi}', fontsize=16)
-        fig.tight_layout(pad=1.0)
-        plt.show()"""
+    """
+    Glathida Ice thickness vs all variables
+    """
+    """
+    fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(1, 5, figsize=(19, 5))
+    s1 = ax1.scatter(x=glathida_i['slope_lon'], y=glathida_i['THICKNESS'], s=1)
+    s2 = ax2.scatter(x=glathida_i['slope_lat'], y=glathida_i['THICKNESS'], s=1)
+    s3 = ax3.scatter(x=glathida_i['vx'], y=glathida_i['THICKNESS'], s=1)
+    s4 = ax4.scatter(x=glathida_i['vy'], y=glathida_i['THICKNESS'], s=1)
+    s5 = ax5.scatter(x=glathida_i['dist_from_border_km'], y=glathida_i['THICKNESS'], s=1)
 
-        """
-        Glathida Ice thickness vs Millan ice thickness
-        """
-        """
-        diff = glathida_i['THICKNESS'] - glathida_i['ith_m']
+    xtitles = ['slope_lon', 'slope_lat', 'vx', 'vy', 'dist_from_border']
+    for i in range(len(fig.axes)):
+        fig.axes[i].set_xlabel(xtitles[i])
+        fig.axes[i].set_ylabel('Ice thickness (m)')
 
-        fig, (ax1, ax2) = plt.subplots(1,2, figsize=(10,4))
-        s1 = ax1.scatter(x=glathida_i['THICKNESS'], y=glathida_i['ith_m'], s=1)
-        lims = [np.min([ax1.get_xlim(), ax1.get_ylim()]), np.max([ax1.get_xlim(), ax1.get_ylim()])]
-        ax1.plot(lims, lims, 'k-', alpha=0.75, zorder=1)
-        h1 = ax2.hist(diff, bins=np.arange(diff.min(), diff.max(), 1))
+    fig.suptitle(f'rgi {rgi}', fontsize=16)
+    fig.tight_layout(pad=1.0)
+    plt.show()"""
+    """
+    fig, ax = plt.subplots(1, 1, figsize=(5, 5))
+    s1 = ax.scatter(x=glathida_i['elevation_astergdem'], y=glathida_i['THICKNESS'], s=1)
+    ax.set_xlabel('elevation_astergdem')
+    ax.set_ylabel('Ice thickness (m)')
+    fig.suptitle(f'rgi {rgi}', fontsize=16)
+    fig.tight_layout(pad=1.0)
+    plt.show()"""
 
-        ax2.text(0.6, 0.9, f'rgi: {rgi}', transform=ax2.transAxes)
-        ax2.text(0.6, 0.85, f'mean = {diff.mean():.1f} m', transform=ax2.transAxes)
-        ax2.text(0.6, 0.8, f'median = {diff.median():.1f} m', transform=ax2.transAxes)
-        ax2.text(0.6, 0.75, f'std = {diff.std():.1f} m', transform=ax2.transAxes)
+    """
+    Glathida Ice thickness vs Millan ice thickness
+    """
+    """
+    diff = glathida_i['THICKNESS'] - glathida_i['ith_m']
 
-        ax1.set_xlabel('Glathida ice thickness (m)')
-        ax1.set_ylabel('Millan ice thickness (m)')
-        ax2.set_xlabel('Glathida - Millan ice thick (m)')
-        ax2.set_ylabel('Counts')
+    fig, (ax1, ax2) = plt.subplots(1,2, figsize=(10,4))
+    s1 = ax1.scatter(x=glathida_i['THICKNESS'], y=glathida_i['ith_m'], s=1)
+    lims = [np.min([ax1.get_xlim(), ax1.get_ylim()]), np.max([ax1.get_xlim(), ax1.get_ylim()])]
+    ax1.plot(lims, lims, 'k-', alpha=0.75, zorder=1)
+    h1 = ax2.hist(diff, bins=np.arange(diff.min(), diff.max(), 1))
 
-        plt.tight_layout()
-        plt.show()"""
+    ax2.text(0.6, 0.9, f'rgi: {rgi}', transform=ax2.transAxes)
+    ax2.text(0.6, 0.85, f'mean = {diff.mean():.1f} m', transform=ax2.transAxes)
+    ax2.text(0.6, 0.8, f'median = {diff.median():.1f} m', transform=ax2.transAxes)
+    ax2.text(0.6, 0.75, f'std = {diff.std():.1f} m', transform=ax2.transAxes)
+
+    ax1.set_xlabel('Glathida ice thickness (m)')
+    ax1.set_ylabel('Millan ice thickness (m)')
+    ax2.set_xlabel('Glathida - Millan ice thick (m)')
+    ax2.set_ylabel('Counts')
+
+    plt.tight_layout()
+    plt.show()"""
 
 
 
