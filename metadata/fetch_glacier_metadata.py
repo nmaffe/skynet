@@ -26,6 +26,8 @@ This program generates glacier metadata at some random locations inside the glac
 Input: glacier name (RGIId), how many points you want to generate. 
 Output: pandas dataframe with features calculated for each generated point. 
 
+Note: the features slope, elevation_from_zmin and v are calculated in model.py, not here.
+
 Note: the points are generated inside the glacier but outside nunataks (there is a check for this)
 
 Note: Millan and Farinotti products needs to be interpolated. Interpolation close to the borders may result in nans. 
@@ -35,20 +37,17 @@ interpolation and therefore is chosen.
 Note that Farinotti interpolation ith_f may result in nan when generated point too close to the border.
 
 Note the following policy for Millan special cases to produce vx, vy, v, ith_m:
-    1) There is no Millan data for such glacier. I force fake vy=vy=v=0.0 and keep ith_m=nan. 
+    1) There is no Millan data for such glacier. Data imputation: vy=vy=v=0.0 and ith_m=nan. 
     2) In case the interpolation of Millan's fields yields nan because points are either too close to the margins. 
     I keep the nans that will be however removed before returning the dataset.   
 """
 # todo: smooth millan, farinotti and slope fiels before interpolation
-# todo: so far I use only neighboring pixels but Eric suggests to account for a wider window.
-# todo: migliorare velocita inserita in caso nessun dato di millan.
+# todo: Data imputation: Millan and other features
 # todo: inserire anche un ulteriore feature che è la velocità media di tutto il ghiacciao ? sia vxm, vym, vm ?
 # todo: inserire dvx/dx, dvx/dy, dvy/dx, dvy/vy ?
 # todo: inserire anche la curvatura ? Vedi la tesi di farinotti, pare la curvatura sia importante
 # todo: a proposito di come smussare i campi di slope e velocita, guardare questo articolo:
 #  Slope estimation influences on ice thickness inversion models: a case study for Monte Tronador glaciers, North Patagonian Andes
-# todo: remove from here and move to model.py the calculation of slope, v, elevation_from_zmin
-
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--mosaic', type=str,default="/media/nico/samsung_nvme/ASTERDEM_v3_mosaics/",
@@ -64,13 +63,6 @@ args = parser.parse_args()
 
 utils.get_rgi_dir(version='62')  # setup oggm version
 utils.get_rgi_intersects_dir(version='62')
-
-
-class CFG:
-    # I need to reconstruct these features for each point created inside the glacier polygon
-    features = ['Area', 'slope_lat', 'slope_lon', 'elevation_astergdem', 'vx', 'vy',
-     'dist_from_border_km_geom', 'v', 'slope', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
-     'elevation_from_zmin', 'RGI', 'ith_m', 'ith_f']
 
 
 def from_lat_lon_to_utm_and_epsg(lat, lon):
@@ -153,8 +145,6 @@ def populate_glacier_with_metadata(glacier_name, n=50):
 
     # Generate points (no points can be generated inside nunataks)
     points = {'lons': [], 'lats': [], 'nunataks': []}
-    points_df = pd.DataFrame(columns=CFG.features + ['lons', 'lats', 'nunataks'])
-
     while (len(points['lons']) < n):
         r_lon = np.random.uniform(llx, urx)
         r_lat = np.random.uniform(lly, ury)
@@ -170,6 +160,8 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         points['lats'].append(r_lat)
         points['nunataks'].append(int(is_nunatak))
 
+    # Feature dataframe
+    points_df = pd.DataFrame(columns=['lons', 'lats', 'nunataks'])
     # Fill lats, lons and nunataks
     points_df['lats'] = points['lats']
     points_df['lons'] = points['lons']
@@ -178,8 +170,7 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         print(f"The generation pipeline has produced n. {points_df['nunataks'].sum()} points inside nunataks")
         raise ValueError
 
-
-    # Let's start filling the other features
+    # Fill these features
     points_df['RGI'] = rgi
     points_df['Area'] = gl_df['Area'].item()
     points_df['Zmin'] = gl_df['Zmin'].item()
@@ -187,6 +178,9 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     points_df['Zmed'] = gl_df['Zmed'].item()
     points_df['Slope'] = gl_df['Slope'].item()
     points_df['Lmax'] = gl_df['Lmax'].item()
+    points_df['Form'] = gl_df['Form'].item()
+    points_df['TermType'] = gl_df['TermType'].item()
+    points_df['Aspect'] = gl_df['Aspect'].item()
 
     """ Add Slopes and Elevation """
     print(f"Calculating slopes and elevations...")
@@ -292,9 +286,8 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     if contains_nan:
         raise ValueError(f"Nan detected in elevation/slope calc. Check")
 
-    # Fill dataframe with slope_lat, slope_lon, slope, elevation_astergdem and elevation_from_zmin
+    # Fill dataframe with elevation and slopes
     points_df['elevation_astergdem'] = elevation_data
-    #points_df['elevation_from_zmin'] = points_df['elevation_astergdem'] - points_df['Zmin'] #todo: remove this. Needs to be calculated in mode.py
     points_df['slope_lat'] = slope_lat_data
     points_df['slope_lon'] = slope_lon_data
     points_df['slope_lat_gf50'] = slope_lat_data_filter_50
@@ -305,7 +298,6 @@ def populate_glacier_with_metadata(glacier_name, n=50):
     points_df['slope_lon_gf150'] = slope_lon_data_filter_150
     points_df['slope_lat_gf300'] = slope_lat_data_filter_300
     points_df['slope_lon_gf300'] = slope_lon_data_filter_300
-    #points_df['slope'] = np.sqrt(points_df['slope_lat_gf300'] ** 2 + points_df['slope_lon_gf300'] ** 2) #todo: remove this. Needs to be calculated in mode.py
 
     calculate_elevation_and_slopes_in_epsg_4326_and_show_differences_wrt_utm = False
     if calculate_elevation_and_slopes_in_epsg_4326_and_show_differences_wrt_utm:
@@ -478,13 +470,11 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         points_df['vx'] = vx_data  # note this may contain nans from interpolation at the margin/inside nunatak
         points_df['vy'] = vy_data  # note this may contain nans from interpolation at the margin/inside nunatak
         points_df['ith_m'] = ith_data  # note this may contain nans from interpolation at the margin/inside nunatak
-        #points_df['v'] = np.sqrt(points_df['vx'] ** 2 + points_df['vy'] ** 2)  # note this may contain nans
         no_millan_data = False
     except:
         print(f"No Millan data can be found for rgi {rgi} glacier {glacier_name}")
         no_millan_data = True
-        #todo: invece che zero mettere la media dei ghiacciai nella regione con lo stesso segno dello slopes ?
-        for col in ['vx','vy', 'v']: # Fill Millan velocities with zero (keep ith_m as nan)
+        for col in ['vx','vy', 'v']: # Data imputation: set Millan velocities as zero (keep ith_m as nan)
             points_df[col] = 0.0
 
     """ Calculate distance_from_border """
