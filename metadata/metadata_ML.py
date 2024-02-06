@@ -22,14 +22,14 @@ import lightgbm as lgb
 
 from fetch_glacier_metadata import populate_glacier_with_metadata
 
-#todo: confrontare su un ghiacciaio di cui non ce la soluzione di millan
+#todo: deploy on a glacier where Millan solution not present
 #todo: fare un'analisi UMAP ?
 
 import warnings
 warnings.filterwarnings('ignore')
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--metadata_file', type=str, default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final3_grid_20.csv",
+parser.add_argument('--metadata_file', type=str, default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final4_grid_20.csv",
                     help="Training dataset.")
 parser.add_argument('--save_model', type=bool, default=False, help="True to save the model.")
 parser.add_argument('--save_outdir', type=str, default="/home/nico/PycharmProjects/skynet/code/metadata/", help="Saved model dir.")
@@ -40,7 +40,7 @@ class CFG:
 
     features = ['Area', 'slope_lon_gf300', 'slope_lat_gf300', 'elevation_astergdem', 'vx', 'vy',
                 'dist_from_border_km_geom', 'v', 'slope', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
-                'elevation_from_zmin', 'RGI']#, 'hbahrm', 'sia', 'hbahrm2'
+                'elevation_from_zmin', 'RGI', 'Form', 'TermType', 'Aspect']#, 'hbahrm', 'sia', 'hbahrm2'
     target = 'THICKNESS'
     millan = 'ith_m'
     farinotti = 'ith_f'
@@ -338,7 +338,7 @@ for ax in (ax1, ax2, ax3):
     ax.plot(*glacier_geometry.exterior.xy, c='k')
 
 for ax in (ax1, ax2, ax3):
-    ax.legend(loc='upper left')
+    ax.legend(fontsize=14, loc='upper left')
     ax.axis("off")
 
 fig.suptitle(f'{glacier_name_for_generation}', fontsize=13)
