@@ -59,18 +59,15 @@ parser.add_argument('--farinotti_icethickness_folder', type=str,default="/home/n
 parser.add_argument('--OGGM_folder', type=str,default="/home/nico/OGGM", help="Path to OGGM main folder")
 parser.add_argument('--save', type=bool, default=False, help="Save final dataset or not.")
 parser.add_argument('--save_outname', type=str,
-            default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final_sv.csv",
+            default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final_sv_dv.csv",
             help="Saved dataframe name.")
 
-
-#todo: add dvx/dx, dvy/dy ?
 #todo 1: instead of regions = [3,7,8,11,18] I'd need to compute likely glathida['RGI'].unique().tolist().
 # I not many points to gain from other regions.
-#todo 2: Smoothing vx, vy, slopes, before interpolating ? See scipy.ndimage.convolve or some gaussian filters
-#todo: add additional features from OGGM E.g. Aspect ? Or glathida ?
+#todo 2: Smoothing vx, vy, slopes, before interpolating ?
 #todo: whenever i call clip_box i need to check if there is only 1 measurement !
 #todo: change all reprojecting method from nearest to something else, like bisampling
-# todo: Slope from oggm has some strangely high values. Worth thicking of calculating it myself ?
+# todo: Slope from oggm has some strangely high values (or is it expressed in %?). Worth thicking of calculating it myself ?
 
 utils.get_rgi_dir(version='62')
 utils.get_rgi_intersects_dir(version='62')
@@ -197,6 +194,19 @@ def add_slopes_elevation(glathida, path_mosaic):
         print('Variables slope_lat, slope_lon or elevation_astergdem already in dataframe.')
         return glathida
 
+    def gaussian_filter_with_nans(U, sigma):
+        # Since the reprojection into utm leads to distortions (=nans) we need to take care of this during filtering
+        # From David in https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
+        V = U.copy()
+        V[np.isnan(U)] = 0
+        VV = scipy.ndimage.gaussian_filter(V, sigma=[sigma, sigma], mode='nearest')
+        W = np.ones_like(U)
+        W[np.isnan(U)] = 0
+        WW = scipy.ndimage.gaussian_filter(W, sigma=[sigma, sigma], mode='nearest')
+        WW[WW == 0] = np.nan
+        filtered_U = VV / WW
+        return filtered_U
+
     glathida['elevation_astergdem'] = [np.nan] * len(glathida)
     glathida['slope_lat'] = [np.nan] * len(glathida)
     glathida['slope_lon'] = [np.nan] * len(glathida)
@@ -299,19 +309,6 @@ def add_slopes_elevation(glathida, path_mosaic):
                 num_px_sigma_100 = max(1, round(100/res_utm_metres))
                 num_px_sigma_150 = max(1, round(150/res_utm_metres))
                 num_px_sigma_300 = max(1, round(300/res_utm_metres))
-
-                def gaussian_filter_with_nans(U, sigma):
-                    # Since the reprojection into utm leads to distortions (=nans) we need to take care of this during filtering
-                    # From David in https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
-                    V = U.copy()
-                    V[np.isnan(U)] = 0
-                    VV = scipy.ndimage.gaussian_filter(V, sigma=[sigma, sigma], mode='nearest')
-                    W = np.ones_like(U)
-                    W[np.isnan(U)] = 0
-                    WW = scipy.ndimage.gaussian_filter(W, sigma=[sigma, sigma], mode='nearest')
-                    WW[WW==0]=np.nan
-                    filtered_U = VV/WW
-                    return filtered_U
 
                 # Apply filter
                 focus_filter_50_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_50)
@@ -532,18 +529,18 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
         #return glathida
         pass
 
-        def gaussian_filter_with_nans(U, sigma):
-            # Since the reprojection into utm leads to distortions (=nans) we need to take care of this during filtering
-            # From David in https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
-            V = U.copy()
-            V[np.isnan(U)] = 0
-            VV = scipy.ndimage.gaussian_filter(V, sigma=[sigma, sigma], mode='nearest')
-            W = np.ones_like(U)
-            W[np.isnan(U)] = 0
-            WW = scipy.ndimage.gaussian_filter(W, sigma=[sigma, sigma], mode='nearest')
-            WW[WW == 0] = np.nan
-            filtered_U = VV / WW
-            return filtered_U
+    def gaussian_filter_with_nans(U, sigma):
+        # Since the reprojection into utm leads to distortions (=nans) we need to take care of this during filtering
+        # From David in https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
+        V = U.copy()
+        V[np.isnan(U)] = 0
+        VV = scipy.ndimage.gaussian_filter(V, sigma=[sigma, sigma], mode='nearest')
+        W = np.ones_like(U)
+        W[np.isnan(U)] = 0
+        WW = scipy.ndimage.gaussian_filter(W, sigma=[sigma, sigma], mode='nearest')
+        WW[WW == 0] = np.nan
+        filtered_U = VV / WW
+        return filtered_U
 
     glathida['ith_m'] = [np.nan] * len(glathida)
     glathida['vx'] = [np.nan] * len(glathida)
@@ -556,6 +553,10 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
     glathida['vy_gf100'] = [np.nan] * len(glathida)
     glathida['vy_gf150'] = [np.nan] * len(glathida)
     glathida['vy_gf300'] = [np.nan] * len(glathida)
+    glathida['dvx_dx'] = [np.nan] * len(glathida)
+    glathida['dvx_dy'] = [np.nan] * len(glathida)
+    glathida['dvy_dx'] = [np.nan] * len(glathida)
+    glathida['dvy_dy'] = [np.nan] * len(glathida)
 
     for rgi in [3, 7, 8, 11, 18]:
 
@@ -702,6 +703,10 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
                 focus_filter_vy_150_ar = focus_vy.copy(data=focus_filter_vy_150)
                 focus_filter_vy_300_ar = focus_vy.copy(data=focus_filter_vy_300)
 
+                # Calculate the velocity gradients
+                dvx_dx_ar, dvx_dy_ar = focus_filter_vx_300_ar.differentiate(coord='x'), focus_filter_vx_300_ar.differentiate(coord='y')
+                dvy_dx_ar, dvy_dy_ar = focus_filter_vy_300_ar.differentiate(coord='x'), focus_filter_vy_300_ar.differentiate(coord='y')
+
             except:
                 tqdm.write(f'No millan data for rgi {rgi} GlaThiDa_ID {id_rgi} ')
                 #print(swlon - deltalon - eps, nelon + deltalon + eps, swlat - deltalat - eps, nelat + deltalat + eps)
@@ -720,6 +725,11 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
             vy_filter_150_data = focus_filter_vy_150_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
             vy_filter_300_data = focus_filter_vy_300_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
 
+            dvx_dx_data = dvx_dx_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
+            dvx_dy_data = dvx_dy_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
+            dvy_dx_data = dvy_dx_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
+            dvy_dy_data = dvy_dy_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
+
             # some checks
             assert ith_data.shape == vx_data.shape == vy_data.shape, "Millan interp something wrong!"
             assert vx_filter_150_data.shape == vy_filter_150_data.shape, "Millan interp something wrong!"
@@ -728,8 +738,8 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
             ifplot = False
             if ifplot and np.any(np.isnan(vx_data)): ifplot = True
             if ifplot:
-                fig, axes = plt.subplots(2,3, figsize=(10,5))
-                ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
+                fig, axes = plt.subplots(3,3, figsize=(10,5))
+                ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9 = axes.flatten()
 
                 im1 = focus_vx.plot(ax=ax1, cmap='viridis', vmin=np.nanmin(focus_vx), vmax=np.nanmax(focus_vx))
                 s1 = ax1.scatter(x=lons, y=lats, s=15, c=vx_data, ec=(0,0,0,0.1), cmap='viridis',
@@ -767,6 +777,9 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
 
                 ax6.axis("off")
 
+                im7 = dvx_dx.plot(ax=ax7, cmap='viridis',)
+                im8 = dvx_dy.plot(ax=ax8, cmap='viridis',)
+
                 ax1.title.set_text('vx')
                 ax2.title.set_text('vy')
                 ax3.title.set_text('ice thickness')
@@ -787,11 +800,17 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
             glathida.loc[indexes_rgi_id, 'vy_gf100'] = vy_filter_100_data
             glathida.loc[indexes_rgi_id, 'vy_gf150'] = vy_filter_150_data
             glathida.loc[indexes_rgi_id, 'vy_gf300'] = vy_filter_300_data
+            glathida.loc[indexes_rgi_id, 'dvx_dx'] = dvx_dx_data
+            glathida.loc[indexes_rgi_id, 'dvx_dy'] = dvx_dy_data
+            glathida.loc[indexes_rgi_id, 'dvy_dx'] = dvy_dx_data
+            glathida.loc[indexes_rgi_id, 'dvy_dy'] = dvy_dy_data
 
         # How many nans we have produced from the interpolation
         glathida_rgi = glathida.loc[glathida['RGI'] == rgi]
         print(f"From rgi {rgi} the no. nans in vx/vy/ith/vx300/vy300: {np.sum(np.isnan(glathida_rgi['vx']))}/{np.sum(np.isnan(glathida_rgi['vy']))}"
-              f"/{np.sum(np.isnan(glathida_rgi['ith_m']))}/{np.sum(np.isnan(glathida_rgi['vx_gf300']))}/{np.sum(np.isnan(glathida_rgi['vy_gf300']))}")
+              f"/{np.sum(np.isnan(glathida_rgi['ith_m']))}/{np.sum(np.isnan(glathida_rgi['vx_gf300']))}/{np.sum(np.isnan(glathida_rgi['vy_gf300']))}/"
+              f"{np.sum(np.isnan(glathida_rgi['dvx_dx']))}/{np.sum(np.isnan(glathida_rgi['dvx_dy']))}/{np.sum(np.isnan(glathida_rgi['dvy_dx']))}/"
+              f"{np.sum(np.isnan(glathida_rgi['dvy_dy']))}")
 
     return glathida
 
@@ -1444,7 +1463,7 @@ if __name__ == '__main__':
         #glathida = add_dist_from_boder_using_geometries(glathida)
         #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
 
-        glathida = pd.read_csv(args.path_ttt_csv.replace('.csv', '_final.csv'), low_memory=False)
+        glathida = pd.read_csv(args.path_ttt_csv.replace('.csv', '_final_sv.csv'), low_memory=False)
         glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
 
         if args.save:
