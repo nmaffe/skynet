@@ -22,6 +22,8 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--input_metadata_file', type=str,
                     default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final_sv_dv.csv",
                     help="Input metadata file to be gridded")
+parser.add_argument('--tmin', type=int, default=20050000, help="Keep only measurements after this year.")
+parser.add_argument('--method_grid', type=str, default='median', help="Supported options: mean, median")
 parser.add_argument('--nbins_grid_latlon', type=int, default=20, help="How many bins in the lat/lon directions")
 parser.add_argument('--save', type=bool, default=False, help="Save final dataset or not.")
 
@@ -43,7 +45,7 @@ glathida = pd.read_csv(args.input_metadata_file, low_memory=False)
 
 """ A. Work on the dataset """
 # A.1 Remove old (-er than 2005) measurements and erroneous data (if DATA_FLAG is not nan)
-cond = ((glathida['SURVEY_DATE'] > 20050000) & (glathida['DATA_FLAG'].isna()) & (glathida['THICKNESS']>=0))
+cond = ((glathida['SURVEY_DATE'] > args.tmin) & (glathida['DATA_FLAG'].isna()) & (glathida['THICKNESS']>=0))
 
 glathida = glathida[cond]
 print(f'Original columns: {list(glathida)} \n')
@@ -125,9 +127,15 @@ for n, rgiid in enumerate(rgi_ids):
         feature_array = glathida_id[feature].to_numpy()
         if np.isnan(feature_array).any(): raise ValueError('Watch out, nan in feature vector')
 
+        if args.method_grid == 'mean':
+            statistic = np.nanmean
+        elif args.method_grid == 'median':
+            statistic = np.nanmedian
+        else: raise ValueError("method not supported.")
+
         # grid the feature
         H, xedges, yedges, binnumber = stats.binned_statistic_2d(x=lons, y=lats, values=feature_array,
-                                                                 statistic=np.nanmean, bins=[binsx, binsy])
+                                                                 statistic=statistic, bins=[binsx, binsy])
 
         # calculate the latutide and longitude of the grid
         xcenters = (xedges[:-1] + xedges[1:]) / 2
