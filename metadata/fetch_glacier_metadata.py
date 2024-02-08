@@ -509,6 +509,10 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         focus_filter_vy_150_ar = focus_vy.copy(data=focus_filter_vy_150)
         focus_filter_vy_300_ar = focus_vy.copy(data=focus_filter_vy_300)
 
+        # Calculate the velocity gradients
+        dvx_dx_ar, dvx_dy_ar = focus_filter_vx_300_ar.differentiate(coord='x'), focus_filter_vx_300_ar.differentiate(coord='y')
+        dvy_dx_ar, dvy_dy_ar = focus_filter_vy_300_ar.differentiate(coord='x'), focus_filter_vy_300_ar.differentiate(coord='y')
+
         # Interpolate (note: nans can be produced near boundaries). This should be removed at the end.
         ith_data = focus_ith.interp(y=lats_crs, x=lons_crs, method="nearest").data
         vx_data = focus_vx.interp(y=lats_crs, x=lons_crs, method="nearest").data
@@ -522,6 +526,10 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         vy_filter_150_data = focus_filter_vy_150_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
         vy_filter_300_data = focus_filter_vy_300_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
 
+        dvx_dx_data = dvx_dx_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        dvx_dy_data = dvx_dy_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        dvy_dx_data = dvy_dx_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        dvy_dy_data = dvy_dy_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
 
         print(
             f"From Millan vx, vy, ith interpolations we have generated {np.isnan(vx_data).sum()}/{np.isnan(vy_data).sum()}/{np.isnan(ith_data).sum()} nans.")
@@ -539,12 +547,17 @@ def populate_glacier_with_metadata(glacier_name, n=50):
         points_df['vy_gf100'] = vy_filter_100_data
         points_df['vy_gf150'] = vy_filter_150_data
         points_df['vy_gf300'] = vy_filter_300_data
+        points_df['dvx_dx'] = dvx_dx_data
+        points_df['dvx_dy'] = dvx_dy_data
+        points_df['dvy_dx'] = dvy_dx_data
+        points_df['dvy_dy'] = dvy_dy_data
         no_millan_data = False
     except:
         print(f"No Millan data can be found for rgi {rgi} glacier {glacier_name}")
         no_millan_data = True
         # Data imputation: set Millan velocities as zero (keep ith_m as nan)
-        for col in ['vx','vy','vx_gf50', 'vx_gf100', 'vx_gf150', 'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300']:
+        for col in ['vx','vy','vx_gf50', 'vx_gf100', 'vx_gf150', 'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300',
+                    'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy']:
             points_df[col] = 0.0
 
     """ Calculate distance_from_border """
@@ -760,8 +773,10 @@ def populate_glacier_with_metadata(glacier_name, n=50):
 
 
     """ Cleaning the produced dataset """
-    # At this stage any nan may be present in vx, vy, v, ith_m, ith_f. Remove those points.
-    points_df = points_df.dropna(subset=['vx', 'vy', 'ith_m', 'ith_f'])
+    # At this stage any nan may be present in Millan features and Farinotti. I want to remove these points.
+    list_cols_for_nan_drop = ['ith_m', 'ith_f', 'vx','vy','vx_gf50', 'vx_gf100', 'vx_gf150', 'vx_gf300', 'vy_gf50',
+                              'vy_gf100', 'vy_gf150', 'vy_gf300', 'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy']
+    points_df = points_df.dropna(subset=list_cols_for_nan_drop)
     #print(points_df.T)
     print(f"Generated dataset. Nan present: {points_df.isnull().any().any()}")
     print(f"*******FINISHED FETCHING FEATURES*******")
