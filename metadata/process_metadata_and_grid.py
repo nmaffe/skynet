@@ -23,7 +23,8 @@ parser.add_argument('--input_metadata_file', type=str,
                     default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final_sv_dv.csv",
                     help="Input metadata file to be gridded")
 parser.add_argument('--tmin', type=int, default=20050000, help="Keep only measurements after this year.")
-parser.add_argument('--method_grid', type=str, default='median', help="Supported options: mean, median")
+parser.add_argument('--hmin', type=float, default=0, help="Keep only measurements with thickness greater than this.")
+parser.add_argument('--method_grid', type=str, default='mean', help="Supported options: mean, median")
 parser.add_argument('--nbins_grid_latlon', type=int, default=20, help="How many bins in the lat/lon directions")
 parser.add_argument('--save', type=bool, default=False, help="Save final dataset or not.")
 
@@ -45,12 +46,12 @@ glathida = pd.read_csv(args.input_metadata_file, low_memory=False)
 
 """ A. Work on the dataset """
 # A.1 Remove old (-er than 2005) measurements and erroneous data (if DATA_FLAG is not nan)
-cond = ((glathida['SURVEY_DATE'] > args.tmin) & (glathida['DATA_FLAG'].isna()) & (glathida['THICKNESS']>=0))
+cond = ((glathida['SURVEY_DATE'] > args.tmin) & (glathida['DATA_FLAG'].isna()) & (glathida['THICKNESS']>=args.hmin))
 
 glathida = glathida[cond]
 print(f'Original columns: {list(glathida)} \n')
 
-# A.2 Keep only these columns (now removed v, slope, elevation_from_zmin
+# A.2 Keep only these columns
 cols = ['RGI', 'RGIId', 'POINT_LAT', 'POINT_LON', 'THICKNESS', 'Area', 'elevation_astergdem',
         'slope_lat', 'slope_lon', 'vx', 'vy', 'dist_from_border_km', 'dist_from_border_km_geom',
        'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'ith_m', 'ith_f',
@@ -192,7 +193,7 @@ for n, rgiid in enumerate(rgi_ids):
 print(f'Finished. No. original measurements {len(glathida)} down to {len(glathida_gridded)}.')
 
 if args.save:
-    filename_out = args.input_metadata_file.replace('.csv', f'_grid_{args.nbins_grid_latlon}.csv')
+    filename_out = args.input_metadata_file.replace('.csv', f'_{args.tmin}_{args.method_grid}_grid_{args.nbins_grid_latlon}.csv')
     glathida_gridded.to_csv(filename_out, index=False)
     print(f"Gridded dataframe saved: {filename_out}.")
 
