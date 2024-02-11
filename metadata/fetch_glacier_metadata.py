@@ -88,7 +88,7 @@ def gaussian_filter_with_nans(U, sigma):
     return filtered_U
 
 
-def populate_glacier_with_metadata(glacier_name, n=50):
+def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
     print(f"******* FETCHING FEATURES FOR GLACIER {glacier_name} *******")
 
     rgi = int(glacier_name[6:8]) # get rgi from the glacier code
@@ -145,6 +145,7 @@ def populate_glacier_with_metadata(glacier_name, n=50):
 
     # Generate points (no points can be generated inside nunataks)
     points = {'lons': [], 'lats': [], 'nunataks': []}
+    if seed is not None: np.random.seed(seed)
     while (len(points['lons']) < n):
         r_lon = np.random.uniform(llx, urx)
         r_lat = np.random.uniform(lly, ury)
