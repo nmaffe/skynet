@@ -5,12 +5,12 @@ from utils import haversine
 from glob import glob
 import argparse
 import numpy as np
-import xarray
 import pandas as pd
 import scipy
 import matplotlib.pyplot as plt
-import rioxarray
-import rasterio
+import xarray, rioxarray, rasterio
+import xrspatial.curvature
+import xrspatial.aspect
 from rioxarray import merge
 import geopandas as gpd
 import oggm
@@ -265,6 +265,12 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
     dz_dlat_filter_xar_150, dz_dlon_filter_xar_150 = focus_filter_xarray_150_utm.differentiate(coord='y'), focus_filter_xarray_150_utm.differentiate(coord='x')
     dz_dlat_filter_xar_300, dz_dlon_filter_xar_300  = focus_filter_xarray_300_utm.differentiate(coord='y'), focus_filter_xarray_300_utm.differentiate(coord='x')
 
+    # Calculate curvature and aspect using xrspatial
+    curv_50 = xrspatial.curvature(focus_filter_xarray_50_utm)
+    curv_300 = xrspatial.curvature(focus_filter_xarray_300_utm)
+    aspect_50 = xrspatial.aspect(focus_filter_xarray_50_utm)
+    aspect_300 = xrspatial.aspect(focus_filter_xarray_300_utm)
+
     # interpolate slope and dem
     elevation_data = focus_utm.interp(y=northings_xar, x=eastings_xar, method='linear').data
     slope_lat_data = dz_dlat_xar.interp(y=northings_xar, x=eastings_xar, method='linear').data
@@ -277,13 +283,18 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
     slope_lon_data_filter_150 = dz_dlon_filter_xar_150.interp(y=northings_xar, x=eastings_xar, method='linear').data
     slope_lat_data_filter_300 = dz_dlat_filter_xar_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
     slope_lon_data_filter_300 = dz_dlon_filter_xar_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    curv_data_50 = curv_50.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    curv_data_300 = curv_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    aspect_data_50 = aspect_50.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    aspect_data_300 = aspect_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
 
     # check if any nan in the interpolate data
     contains_nan = any(np.isnan(arr).any() for arr in [slope_lon_data, slope_lat_data,
                                                        slope_lon_data_filter_50, slope_lat_data_filter_50,
                                                        slope_lon_data_filter_100, slope_lat_data_filter_100,
                                                        slope_lon_data_filter_150, slope_lat_data_filter_150,
-                                                       slope_lon_data_filter_300, slope_lat_data_filter_300])
+                                                       slope_lon_data_filter_300, slope_lat_data_filter_300,
+                                                       curv_data_50, curv_data_300, aspect_data_50, aspect_data_300])
     if contains_nan:
         raise ValueError(f"Nan detected in elevation/slope calc. Check")
 
@@ -299,6 +310,10 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
     points_df['slope_lon_gf150'] = slope_lon_data_filter_150
     points_df['slope_lat_gf300'] = slope_lat_data_filter_300
     points_df['slope_lon_gf300'] = slope_lon_data_filter_300
+    points_df['curv_50'] = curv_data_50
+    points_df['curv_300'] = curv_data_300
+    points_df['aspect_50'] = aspect_data_50
+    points_df['aspect_300'] = aspect_data_300
 
     calculate_elevation_and_slopes_in_epsg_4326_and_show_differences_wrt_utm = False
     if calculate_elevation_and_slopes_in_epsg_4326_and_show_differences_wrt_utm:
