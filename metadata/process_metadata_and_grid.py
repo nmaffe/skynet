@@ -20,10 +20,10 @@ The processed and gridded dataframe is finally saved.
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--input_metadata_file', type=str,
-                    default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final_sv_dv.csv",
+                    default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata.csv",
                     help="Input metadata file to be gridded")
 parser.add_argument('--tmin', type=int, default=20050000, help="Keep only measurements after this year.")
-parser.add_argument('--hmin', type=float, default=0, help="Keep only measurements with thickness greater than this.")
+parser.add_argument('--hmin', type=float, default=0.0, help="Keep only measurements with thickness greater than this.")
 parser.add_argument('--method_grid', type=str, default='mean', help="Supported options: mean, median")
 parser.add_argument('--nbins_grid_latlon', type=int, default=20, help="How many bins in the lat/lon directions")
 parser.add_argument('--save', type=bool, default=False, help="Save final dataset or not.")
@@ -57,7 +57,8 @@ cols = ['RGI', 'RGIId', 'POINT_LAT', 'POINT_LON', 'THICKNESS', 'Area', 'elevatio
        'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'ith_m', 'ith_f',
         'slope_lon_gf50', 'slope_lat_gf50', 'slope_lon_gf100', 'slope_lat_gf100', 'slope_lon_gf150', 'slope_lat_gf150',
         'slope_lon_gf300', 'slope_lat_gf300', 'Form', 'Aspect', 'TermType', 'vx_gf50', 'vx_gf100', 'vx_gf150',
-        'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300', 'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy']
+        'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300', 'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy',
+        'curv_50', 'curv_300', 'aspect_50', 'aspect_300']
 
 glathida = glathida[cols]
 print(f'We keep only the following columns: \n {list(glathida)} \n{len(glathida)} rows')
@@ -81,7 +82,8 @@ features_to_grid = ['THICKNESS', 'Area', 'elevation_astergdem',
        'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'ith_m', 'ith_f',
         'slope_lon_gf50', 'slope_lat_gf50', 'slope_lon_gf100', 'slope_lat_gf100', 'slope_lon_gf150', 'slope_lat_gf150',
         'slope_lon_gf300', 'slope_lat_gf300', 'vx_gf50', 'vx_gf100', 'vx_gf150',
-        'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300', 'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy']
+        'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300', 'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy',
+                    'curv_50', 'curv_300', 'aspect_50', 'aspect_300']
 
 list_num_measurements_before_grid = []
 list_num_measurements_after_grid = []
@@ -193,7 +195,7 @@ for n, rgiid in enumerate(rgi_ids):
 print(f'Finished. No. original measurements {len(glathida)} down to {len(glathida_gridded)}.')
 
 if args.save:
-    filename_out = args.input_metadata_file.replace('.csv', f'_{args.tmin}_{args.method_grid}_grid_{args.nbins_grid_latlon}.csv')
+    filename_out = args.input_metadata_file.replace('.csv', f'_hmineq{args.hmin}_tmin{args.tmin}_{args.method_grid}_grid_{args.nbins_grid_latlon}.csv')
     glathida_gridded.to_csv(filename_out, index=False)
     print(f"Gridded dataframe saved: {filename_out}.")
 
