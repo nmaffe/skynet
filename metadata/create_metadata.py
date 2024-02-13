@@ -3,6 +3,8 @@ import pandas as pd
 from glob import glob
 import random
 import xarray, rioxarray, rasterio
+import xrspatial.curvature
+import xrspatial.aspect
 import argparse
 from rioxarray import merge
 import numpy as np
@@ -59,7 +61,7 @@ parser.add_argument('--farinotti_icethickness_folder', type=str,default="/home/n
 parser.add_argument('--OGGM_folder', type=str,default="/home/nico/OGGM", help="Path to OGGM main folder")
 parser.add_argument('--save', type=bool, default=False, help="Save final dataset or not.")
 parser.add_argument('--save_outname', type=str,
-            default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final_sv_dv.csv",
+            default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata.csv",
             help="Saved dataframe name.")
 
 #todo 1: instead of regions = [3,7,8,11,18] I'd need to compute likely glathida['RGI'].unique().tolist().
@@ -192,7 +194,8 @@ def add_slopes_elevation(glathida, path_mosaic):
 
     if (any(ele in list(glathida) for ele in ['slope_lat', 'slope_lon', 'elevation_astergdem'])):
         print('Variables slope_lat, slope_lon or elevation_astergdem already in dataframe.')
-        return glathida
+        pass
+        #return glathida
 
     def gaussian_filter_with_nans(U, sigma):
         # Since the reprojection into utm leads to distortions (=nans) we need to take care of this during filtering
@@ -218,6 +221,10 @@ def add_slopes_elevation(glathida, path_mosaic):
     glathida['slope_lon_gf150'] = [np.nan] * len(glathida)
     glathida['slope_lat_gf300'] = [np.nan] * len(glathida)
     glathida['slope_lon_gf300'] = [np.nan] * len(glathida)
+    glathida['curv_50'] = [np.nan] * len(glathida)
+    glathida['curv_300'] = [np.nan] * len(glathida)
+    glathida['aspect_50'] = [np.nan] * len(glathida)
+    glathida['aspect_300'] = [np.nan] * len(glathida)
     datax = []  # just to analyse the results
     datay = []  # just to analyse the results
 
@@ -336,6 +343,31 @@ def add_slopes_elevation(glathida, path_mosaic):
                 dz_dlat_filter_xar_150, dz_dlon_filter_xar_150 = focus_filter_xarray_150_utm.differentiate(coord='y'), focus_filter_xarray_150_utm.differentiate(coord='x')
                 dz_dlat_filter_xar_300, dz_dlon_filter_xar_300  = focus_filter_xarray_300_utm.differentiate(coord='y'), focus_filter_xarray_300_utm.differentiate(coord='x')
 
+                # Calculate curvature and aspect using xrspatial
+                # Units of the curvature output (1/100) of a z-unit. Units of aspect are between [0, 360]
+                # Note that xrspatial using a standard 3x3 grid around pixel to calculate stuff
+                # Note that xrspatial produces nans at boundaries, but that should not be a problem for interpolation.
+                curv_50 = xrspatial.curvature(focus_filter_xarray_50_utm)
+                curv_300 = xrspatial.curvature(focus_filter_xarray_300_utm)
+                aspect_50 = xrspatial.aspect(focus_filter_xarray_50_utm)
+                aspect_300 = xrspatial.aspect(focus_filter_xarray_300_utm)
+
+                # Calculate second-order derivatives for curvature
+                #d2z_dx2_300 = dz_dlon_filter_xar_300.differentiate(coord='x')
+                #d2z_dy2_300 = dz_dlat_filter_xar_300.differentiate(coord='y')
+                #d2z_dxdy_300 = dz_dlat_filter_xar_300.differentiate(coord='x')
+                #p_300 = d2z_dx2_300**2 + d2z_dy2_300**2
+                #q_300 = 1 + p_300
+                # Profile curvature kpr
+                #kpr_300 = (d2z_dx2_300*(dz_dlon_filter_xar_300**2) +
+                #          2*d2z_dxdy_300*dz_dlat_filter_xar_300*dz_dlon_filter_xar_300 +
+                #          d2z_dy2_300*(dz_dlat_filter_xar_300**2))/(p_300*(q_300**3./2))
+                # Plan curvature kpl
+                #kpl_300 = (d2z_dx2_300*(dz_dlon_filter_xar_300**2) -
+                #          2*d2z_dxdy_300*dz_dlat_filter_xar_300*dz_dlon_filter_xar_300 +
+                #          d2z_dy2_300*(dz_dlat_filter_xar_300**2))/(p_300**3./2)
+
+
                 # interpolate slope and dem
                 elevation_data = focus_utm_clipped.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 slope_lat_data = dz_dlat_xar.interp(y=northings_xar, x=eastings_xar, method='linear').data
@@ -348,13 +380,19 @@ def add_slopes_elevation(glathida, path_mosaic):
                 slope_lon_data_filter_150 = dz_dlon_filter_xar_150.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 slope_lat_data_filter_300 = dz_dlat_filter_xar_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 slope_lon_data_filter_300 = dz_dlon_filter_xar_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
+                curv_data_50 = curv_50.interp(y=northings_xar, x=eastings_xar, method='linear').data
+                curv_data_300 = curv_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
+                aspect_data_50 = aspect_50.interp(y=northings_xar, x=eastings_xar, method='linear').data
+                aspect_data_300 = aspect_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
 
                 # check if any nan in the interpolate data
                 contains_nan = any(np.isnan(arr).any() for arr in [slope_lon_data, slope_lat_data,
                                                                    slope_lon_data_filter_50, slope_lat_data_filter_50,
                                                                    slope_lon_data_filter_100, slope_lat_data_filter_100,
                                                                    slope_lon_data_filter_150, slope_lat_data_filter_150,
-                                                                   slope_lon_data_filter_300, slope_lat_data_filter_300])
+                                                                   slope_lon_data_filter_300, slope_lat_data_filter_300,
+                                                                   curv_data_50, curv_data_300,
+                                                                   aspect_data_50, aspect_data_300])
                 if contains_nan:
                     raise ValueError(f"Nan detected in elevation/slope calc. Check")
 
@@ -362,6 +400,8 @@ def add_slopes_elevation(glathida, path_mosaic):
                 assert slope_lat_data.shape == slope_lon_data.shape == elevation_data.shape, "Different shapes, something wrong!"
                 assert slope_lat_data_filter_150.shape == slope_lon_data_filter_150.shape == elevation_data.shape, "Different shapes, something wrong!"
                 assert len(slope_lat_data) == len(indexes_all_epsg), "Different shapes, something wrong!"
+                assert curv_data_50.shape == curv_data_300.shape, "Different shapes, something wrong!"
+                assert aspect_data_50.shape == aspect_data_300.shape, "Different shapes, something wrong!"
 
                 # write to dataframe
                 glathida.loc[indexes_all_epsg, 'elevation_astergdem'] = elevation_data
@@ -375,6 +415,24 @@ def add_slopes_elevation(glathida, path_mosaic):
                 glathida.loc[indexes_all_epsg, 'slope_lon_gf150'] = slope_lon_data_filter_150
                 glathida.loc[indexes_all_epsg, 'slope_lat_gf300'] = slope_lat_data_filter_300
                 glathida.loc[indexes_all_epsg, 'slope_lon_gf300'] = slope_lon_data_filter_300
+                glathida.loc[indexes_all_epsg, 'curv_50'] = curv_data_50
+                glathida.loc[indexes_all_epsg, 'curv_300'] = curv_data_300
+                glathida.loc[indexes_all_epsg, 'aspect_50'] = aspect_data_50
+                glathida.loc[indexes_all_epsg, 'aspect_300'] = aspect_data_300
+
+                plot_curvature = False
+                if plot_curvature:
+
+                    fig, (ax1, ax2, ax3, ax4, ax5, ax6) = plt.subplots(1, 6)
+                    im1 = focus_filter_xarray_50_utm.plot(ax=ax1, cmap='viridis')
+                    im2 = focus_filter_xarray_300_utm.plot(ax=ax2, cmap='viridis')
+                    im3 = curv_50.plot(ax=ax3, cmap='viridis')
+                    im4 = curv_300.plot(ax=ax4, cmap='viridis')
+                    im5 = aspect_50.plot(ax=ax5, cmap='viridis')
+                    im6 = aspect_300.plot(ax=ax6, cmap='viridis')
+
+                    plt.show()
+
 
                 plot_utm = False
                 if plot_utm:
@@ -1463,8 +1521,8 @@ if __name__ == '__main__':
         #glathida = add_dist_from_boder_using_geometries(glathida)
         #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
 
-        glathida = pd.read_csv(args.path_ttt_csv.replace('.csv', '_final_sv.csv'), low_memory=False)
-        glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
+        glathida = pd.read_csv(args.path_ttt_csv.replace('.csv', '_final_sv_dv.csv'), low_memory=False)
+        glathida = add_slopes_elevation(glathida, args.mosaic)
 
         if args.save:
             glathida.to_csv(args.save_outname, index=False)
