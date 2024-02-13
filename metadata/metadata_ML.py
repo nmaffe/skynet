@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import geopandas as gpd
 from glob import glob
-
+import rioxarray
 from sklearn.preprocessing import QuantileTransformer
 
 from scipy import stats
@@ -17,30 +17,51 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.manifold import TSNE
+
 import xgboost as xgb
 import lightgbm as lgb
+import optuna
 
 from fetch_glacier_metadata import populate_glacier_with_metadata
 
 #todo: deploy on a glacier where Millan solution not present
-#todo: fare un'analisi UMAP ?
+#todo: i notice that especially xgboost has tendency to predict few values<0. I need a policy for those (e.g. set to 0)
+#todo: if I retrain I tipically get different value (e.g. for aletsch the total volume stdev is 5%). What to do ? This
+#todo: can be a measure of model uncertainty (read https://stats.stackexchange.com/questions/285334/deep-learning-wild-differences-after-model-is-retrained-on-the-same-data-what)
+
 
 import warnings
 warnings.filterwarnings('ignore')
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--metadata_file', type=str, default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final4_grid_20.csv",
-                    help="Training dataset.")
+parser.add_argument('--metadata_file', type=str, default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/"
+                        +"glathida-3.1.0/data/metadata_hmineq0.0_tmin20050000_mean_grid_20.csv", help="Training dataset.")
+parser.add_argument('--farinotti_icethickness_folder', type=str,default="/home/nico/PycharmProjects/skynet/Extra_Data/Farinotti/",
+                    help="Path to Farinotti ice thickness data")
 parser.add_argument('--save_model', type=bool, default=False, help="True to save the model.")
 parser.add_argument('--save_outdir', type=str, default="/home/nico/PycharmProjects/skynet/code/metadata/", help="Saved model dir.")
 parser.add_argument('--save_outname', type=str, default="", help="Saved model name.")
 args = parser.parse_args()
 
+"""
+pd.set_option('display.max_columns', 500)
+pd.set_option('display.max_rows', 1615)
+oggm_rgi_shp = "/home/nico/OGGM/rgi/RGIV62/07_rgi62_Svalbard/07_rgi62_Svalbard.shp"
+oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp).sort_values(by=['Area'], ascending=False)
+print(oggm_rgi_glaciers.head(10))
+#print(oggm_rgi_glaciers.loc[:30, ['Name', 'Area', 'RGIId']])
+
+#oggm_rgi_glaciers2 = gpd.read_file(oggm_rgi_shp).sort_values(by=['GLIMSId'])
+#print(oggm_rgi_glaciers2.loc[816, ['Area', 'Name', 'GLIMSId']])
+#print(oggm_rgi_glaciers[oggm_rgi_glaciers['GLIMSId'] == 'G013542E78988N'])
+exit()"""
+
 class CFG:
 
-    features = ['Area', 'slope_lon_gf300', 'slope_lat_gf300', 'elevation_astergdem', 'vx', 'vy',
-                'dist_from_border_km_geom', 'v', 'slope', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
-                'elevation_from_zmin', 'RGI', 'Form', 'TermType', 'Aspect']#, 'hbahrm', 'sia', 'hbahrm2'
+    features = ['Area', 'slope_lon_gf300', 'slope_lat_gf300', 'elevation_astergdem', 'vx_gf300', 'vy_gf300',
+                'dist_from_border_km_geom', 'v1', 'v2', 'v3', 'slope1','slope2','slope3', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
+                'elevation_from_zmin', 'RGI', 'Form', 'TermType', 'Aspect', 'dvx_dx', 'dvx_dy', 'dvy_dx','dvy_dy', 'dvx', 'dvy',
+                'curv_50', 'curv_300', 'aspect_50', 'aspect_300']
     target = 'THICKNESS'
     millan = 'ith_m'
     farinotti = 'ith_f'
@@ -49,17 +70,48 @@ class CFG:
 glathida_rgis = pd.read_csv(args.metadata_file, low_memory=False)
 # Filter out some portion of it
 glathida_rgis = glathida_rgis.loc[glathida_rgis['THICKNESS']>=0]
+
 # Add some features
-glathida_rgis['v'] = np.sqrt(glathida_rgis['vx']**2 + glathida_rgis['vy']**2)
-glathida_rgis['slope'] = np.sqrt(glathida_rgis['slope_lon_gf300']**2 + glathida_rgis['slope_lat_gf300']**2)
+glathida_rgis['v1'] = np.sqrt(glathida_rgis['vx_gf50']**2 + glathida_rgis['vy_gf50']**2)
+glathida_rgis['v2'] = np.sqrt(glathida_rgis['vx_gf150']**2 + glathida_rgis['vy_gf150']**2)
+glathida_rgis['v3'] = np.sqrt(glathida_rgis['vx_gf300']**2 + glathida_rgis['vy_gf300']**2)
+glathida_rgis['dvx'] = np.sqrt(glathida_rgis['dvx_dx']**2 + glathida_rgis['dvx_dy']**2)
+glathida_rgis['dvy'] = np.sqrt(glathida_rgis['dvy_dx']**2 + glathida_rgis['dvy_dy']**2)
+glathida_rgis['slope1'] = np.sqrt(glathida_rgis['slope_lon_gf50']**2 + glathida_rgis['slope_lat_gf50']**2)
+glathida_rgis['slope2'] = np.sqrt(glathida_rgis['slope_lon_gf150']**2 + glathida_rgis['slope_lat_gf150']**2)
+glathida_rgis['slope3'] = np.sqrt(glathida_rgis['slope_lon_gf300']**2 + glathida_rgis['slope_lat_gf300']**2)
 glathida_rgis['elevation_from_zmin'] = glathida_rgis['elevation_astergdem'] - glathida_rgis['Zmin']
-glathida_rgis['hbahrm'] = 0.03*(glathida_rgis['Area']**0.375)*1000 # Bahr's approximation: h in meters
-glathida_rgis['hbahrm2'] = glathida_rgis['dist_from_border_km_geom']*np.sqrt(glathida_rgis['Area'])
+#glathida_rgis['hbahrm'] = 0.03*(glathida_rgis['Area']**0.375)*1000 # Bahr's approximation: h in meters
+#glathida_rgis['hbahrm2'] = glathida_rgis['dist_from_border_km_geom']*np.sqrt(glathida_rgis['Area'])
 A = 24 * np.power(10, -25.0) #s−1 Pa−3
 rho, g = 917., 9.81
-glathida_rgis['sia'] = ((0.3*glathida_rgis['v']*(3+1))/(2*A*(rho*g*glathida_rgis['v'])**3))**(1./4)
+#glathida_rgis['sia'] = ((.5*glathida_rgis['v']*(3+1))/(2*A*(rho*g*glathida_rgis['v'])**3))**(1./4)
 
-print(f"Dataset: {len(glathida_rgis)} rows, {glathida_rgis['RGI'].nunique()} regions and {glathida_rgis['RGIId'].nunique()} glaciers.")
+print(f"Overall dataset: {len(glathida_rgis)} rows, {glathida_rgis['RGI'].nunique()} regions and {glathida_rgis['RGIId'].nunique()} glaciers.")
+
+# umap and tsne
+run_umap_tsne = False
+if run_umap_tsne:
+    print(f"Begin umap and tsne")
+    import umap
+    from sklearn.manifold import TSNE
+
+    reducer = umap.UMAP(n_neighbors=5, min_dist=0.05, n_components=2, metric='euclidean')
+    embedding_umap = reducer.fit_transform(glathida_rgis[CFG.features])
+    embeddeding_tsne = TSNE(n_components=2).fit_transform(glathida_rgis[CFG.features])
+    print(embedding_umap.shape)
+    print(embeddeding_tsne.shape)
+
+    fig, (ax1, ax2) = plt.subplots(1,2)
+    s1 = ax1.scatter(embedding_umap[:, 0], embedding_umap[:, 1], c=glathida_rgis[CFG.target], cmap='gnuplot', s=5)
+    cbar1 = plt.colorbar(s1, ax=ax1, alpha=1)
+    cbar1.set_label('THICKNESS (m)', labelpad=15, rotation=270)
+    s2 = ax2.scatter(embeddeding_tsne[:, 0], embeddeding_tsne[:, 1], c=glathida_rgis[CFG.target], cmap='gnuplot', s=5)
+    cbar2 = plt.colorbar(s2, ax=ax2, alpha=1)
+    cbar2.set_label('THICKNESS (m)', labelpad=15, rotation=270)
+    plt.show()
+    input('wait')
+
 
 def create_test(df, minimum_test_size=1000, rgi=None, seed=None):
     """
@@ -91,34 +143,75 @@ def create_test(df, minimum_test_size=1000, rgi=None, seed=None):
     #print('Total test size: ', len(test))
     return test
 
-def evaluation(y, predictions):
+def evaluation(y, predictions, verbose=False):
     mae = mean_absolute_error(y, predictions)
     mse = mean_squared_error(y, predictions)
     rmse = np.sqrt(mean_squared_error(y, predictions))
     r_squared = r2_score(y, predictions)
     slope, intercept, r_value, p_value, std_err = stats.linregress(y,predictions)
-    print(f'MAE: {mae}')
-    print(f'MSE: {mse}')
-    print(f'RMSE: {rmse}')
-    print(f'R-SQUARED: {r_squared}')
-    print(f'm: {slope}')
-    print(f'q: {intercept}')
-    print(f'r: {r_value}')
-    return mae, mse, rmse, r_squared, slope, intercept, r_value
+    res = {'MAE': mae, 'MSE': mse, 'RMSE': rmse, 'R-SQUARED': r_squared, 'm': slope, 'q': intercept, 'r': r_value}
+    if verbose:
+        for key in res: print(f"{key}: {res[key]:.2f}", end=", ")
+    return res
+
+def objective(trial):
+
+    # Suggest values of the hyperparameters using a trial object.
+    params = {
+        "objective": "regression",
+        "metric": "rmse",
+        "n_estimators": 1000,
+        "verbosity": -1,
+        "bagging_freq": 1,
+        "learning_rate": trial.suggest_float("learning_rate", 1e-3, 0.1, log=True),
+        "num_leaves": trial.suggest_int("num_leaves", 2, 30),
+        "subsample": trial.suggest_float("subsample", 0.05, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.05, 1.0),
+        "min_data_in_leaf": trial.suggest_int("min_data_in_leaf", 1, 100),
+    }
+
+    test = create_test(glathida_rgis, minimum_test_size=1800, rgi=None, seed=42)
+    train = glathida_rgis.drop(test.index)
+    y_train, y_test = train[CFG.target], test[CFG.target]
+    X_train, X_test = train[CFG.features], test[CFG.features]
+
+    model = lgb.LGBMRegressor(**params)
+    model.fit(X_train, y_train)
+    y_preds = model.predict(X_test)
+
+    rmse = mean_squared_error(y_test, y_preds, squared=False)
+    return rmse
+
+optune_optimize = False
+if optune_optimize:
+    study = optuna.create_study(direction='minimize')
+    study.optimize(objective, n_trials=100)
+
+    print('Best hyperparameters:', study.best_params)
+    print('Best RMSE:', study.best_value)
+
+    input('Continue')
 
 stds_ML, meds_ML, slopes_ML = [], [], []
 stds_Mil, meds_Mil, slopes_Mil = [], [], []
 stds_Far, meds_Far, slopes_Far = [], [], []
 
-for i in range(50):
+best_model = None
+best_slope = -999
+best_rmse = 9999
+
+for i in range(100):
 
     # Train, val, and test
-    test = create_test(glathida_rgis,  minimum_test_size=1800, rgi=None, seed=None)
+    test = create_test(glathida_rgis,  minimum_test_size=round(0.06*len(glathida_rgis)), rgi=None, seed=None)
+
     create_val = False
     if create_val:
         val = glathida_rgis.drop(test.index).sample(n=500)
         train = glathida_rgis.drop(test.index).drop(val.index)
     else: train = glathida_rgis.drop(test.index)
+
+    print(f"Iter {i} Train/Test: {len(train)}/{len(test)}")
 
     plot_some_train_features = False
     if plot_some_train_features:
@@ -135,7 +228,9 @@ for i in range(50):
     y_test_f = test[CFG.farinotti]
 
     ### LightGBM
-    model = lgb.LGBMRegressor()
+    model = lgb.LGBMRegressor(num_leaves=28, n_jobs=12)
+    #model = xgb.XGBRegressor()
+    #model = RandomForestRegressor()
     model.fit(X_train, y_train)
 
     # Plot feature importance
@@ -144,11 +239,17 @@ for i in range(50):
         lgb.plot_importance(model, importance_type="auto", figsize=(7,6), title="LightGBM Feature Importance")
         plt.show()
 
-    #y_preds = model.predict(X_test.to_numpy())
     y_preds = model.predict(X_test)
 
     # benchmarks
-    ltb_metrics = evaluation(y_test, y_preds)
+    model_metrics = evaluation(y_test, y_preds, verbose=False)
+
+    #*** Note: here it is very important since this is the policy to decide which model will be selected for deploy
+    m = model_metrics['m']
+    rmse = model_metrics['RMSE']
+    if rmse < best_rmse:
+        best_rmse = rmse
+        best_model = model
 
     # stats
     mu_ML = np.mean(y_test-y_preds)
@@ -181,6 +282,8 @@ print(f"Res. medians {np.mean(meds_ML):.2f}({np.std(meds_ML):.2f}) {np.mean(meds
 print(f"Res. stdevs {np.mean(stds_ML):.2f}({np.std(stds_ML):.2f}) {np.mean(stds_Mil):.2f}({np.std(stds_Mil):.2f}) {np.mean(stds_Far):.2f}({np.std(stds_Far):.2f})")
 print(f"Res. slopes {np.mean(slopes_ML):.2f}({np.std(slopes_ML):.2f}) {np.mean(slopes_Mil):.2f}({np.std(slopes_Mil):.2f}) {np.mean(slopes_Far):.2f}({np.std(slopes_Far):.2f})")
 
+print(f"At the end of cv the best rmse is {best_rmse}")
+
 # ************************************
 # plot
 # ************************************
@@ -197,9 +300,9 @@ fit_farinotti_plot = ax1.plot([0.0, xmax], [q_farinotti, q_farinotti+xmax*m_fari
 s2 = ax1.plot([0.0, xmax], [0.0, xmax], c='k')
 ax1.axis([None, xmax, None, xmax])
 
-ax2.hist(y_test-y_preds, bins=np.arange(-1000, 1000, 10), label='ML', color='lightblue', ec='blue', alpha=.4, zorder=2)
-ax2.hist(y_test-y_test_m, bins=np.arange(-1000, 1000, 10), label='Millan', color='green', ec='green', alpha=.3, zorder=1)
-ax2.hist(y_test-y_test_f, bins=np.arange(-1000, 1000, 10), label='Farinotti', color='red', ec='red', alpha=.3, zorder=1)
+ax2.hist(y_test-y_preds, bins=np.arange(-xmax, xmax, 10), label='ML', color='lightblue', ec='blue', alpha=.4, zorder=2)
+ax2.hist(y_test-y_test_m, bins=np.arange(-xmax, xmax, 10), label='Millan', color='green', ec='green', alpha=.3, zorder=1)
+ax2.hist(y_test-y_test_f, bins=np.arange(-xmax, xmax, 10), label='Farinotti', color='red', ec='red', alpha=.3, zorder=1)
 
 # text
 text_ml = f'ML\n$\mu$ = {mu_ML:.1f}\nmed = {med_ML:.1f}\n$\sigma$ = {std_ML:.1f}'
@@ -222,21 +325,22 @@ plt.tight_layout()
 plt.show()
 
 # Visualize test predictions
-print('Test dataset:', len(test))
 test_glaciers_names = test['RGIId'].unique().tolist()
-print('Test glaciers:', test_glaciers_names)
+print(f"Test dataset: {len(test)} points and {len(test_glaciers_names)} glaciers")
 
-glacier_geometries = []
-for glacier_name in test_glaciers_names:
-    rgi = glacier_name[6:8]
-    oggm_rgi_shp = glob(f'/home/nico/OGGM/rgi/RGIV62/{rgi}*/{rgi}*.shp')[0]
-    oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)
-    glacier_geometry = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name]['geometry'].item()
-    #print(glacier_geometry)
-    glacier_geometries.append(glacier_geometry)
 
 plot_all_shit = False
 if plot_all_shit:
+
+    glacier_geometries = []
+    for glacier_name in test_glaciers_names:
+        rgi = glacier_name[6:8]
+        oggm_rgi_shp = glob(f'/home/nico/OGGM/rgi/RGIV62/{rgi}*/{rgi}*.shp')[0]
+        oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)
+        glacier_geometry = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId'] == glacier_name]['geometry'].item()
+        # print(glacier_geometry)
+        glacier_geometries.append(glacier_geometry)
+
     fig, axes = plt.subplots(2,3, figsize=(10,7))
     ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
 
@@ -292,26 +396,68 @@ def get_random_glacier_rgiid(df, rgi=11, name=None, seed=None):
     return rgiid
 
 #glacier_name_for_generation = np.random.choice(RGI_burned)
-glacier_name_for_generation = get_random_glacier_rgiid(df=glathida_rgis, rgi=3, name='RGI60-07.00228', seed=None)
+glacier_name_for_generation = get_random_glacier_rgiid(df=glathida_rgis, rgi=8, name='RGI60-07.00027', seed=None)
 #glacier_name_for_generation = 'RGI60-07.00228' #RGI60–07.00027 'RGI60-11.01450' RGI60-07.00552,'RGI60-07.00228'
-#glacier_name_for_generation = 'RGI60-07.00832'
+#glacier_name_for_generation = 'RGI60-07.00832' very nice
+#'RGI60-03.01632', 'RGI60-07.01482' ML simile agli altri 2 in termini di alte profondita
+# 'RGI60-03.00251' Dobbin Bay, 'RGI60-07.00124' Renardbreen, 'RGI60-11.01328' Unteraargletscher, 'RGI60-11.01478'
+# 'RGI60-03.02469', 'RGI60-03.04338', 'RGI60-03.01483 ML << Millan/Farinotti
+# 'RGI60-03.00228'
+# 'RGI60-11.01492' we can see millan's effect of velocity products on ice thickness calculation
+# RGI60-07.00027 biggest in Svalbard
+
+try:
+    test_glacier_rgi = glacier_name_for_generation[6:8]
+    test_glacier_folder_farinotti = glob(f"{args.farinotti_icethickness_folder}/*{test_glacier_rgi}/*{test_glacier_rgi}/")[0]
+    ice_farinotti = rioxarray.open_rasterio(test_glacier_folder_farinotti+glacier_name_for_generation+'_thickness.tif')
+    res_farinotti = ice_farinotti.rio.resolution()[0]
+    vol_farinotti = 1.e-9 * (res_farinotti ** 2) * np.nansum(ice_farinotti.values) # Volume Farinotti km3
+except ValueError:
+    print(f"Farinotti glacier {glacier_name_for_generation} not found.")
+
 
 # Generate points for one glacier
-test_glacier = populate_glacier_with_metadata(glacier_name=glacier_name_for_generation, n=10000)
-test_glacier['v'] = np.sqrt(test_glacier['vx']**2 + test_glacier['vy']**2)
-test_glacier['slope'] = np.sqrt(test_glacier['slope_lon_gf300']**2 + test_glacier['slope_lat_gf300']**2)
+test_glacier = populate_glacier_with_metadata(glacier_name=glacier_name_for_generation, n=10000, seed=42)
+test_glacier['v1'] = np.sqrt(test_glacier['vx_gf50']**2 + test_glacier['vy_gf50']**2)
+test_glacier['v2'] = np.sqrt(test_glacier['vx_gf150']**2 + test_glacier['vy_gf150']**2)
+test_glacier['v3'] = np.sqrt(test_glacier['vx_gf300']**2 + test_glacier['vy_gf300']**2)
+test_glacier['dvx'] = np.sqrt(test_glacier['dvx_dx']**2 + test_glacier['dvx_dy']**2)
+test_glacier['dvy'] = np.sqrt(test_glacier['dvy_dx']**2 + test_glacier['dvy_dy']**2)
+test_glacier['slope1'] = np.sqrt(test_glacier['slope_lon_gf50']**2 + test_glacier['slope_lat_gf50']**2)
+test_glacier['slope2'] = np.sqrt(test_glacier['slope_lon_gf150']**2 + test_glacier['slope_lat_gf150']**2)
+test_glacier['slope3'] = np.sqrt(test_glacier['slope_lon_gf300']**2 + test_glacier['slope_lat_gf300']**2)
 test_glacier['elevation_from_zmin'] = test_glacier['elevation_astergdem'] - test_glacier['Zmin']
+#test_glacier['sia'] = ((0.3*test_glacier['v']*(3+1))/(2*A*(rho*g*test_glacier['v'])**3))**(1./4)
 
 X_train_glacier = test_glacier[CFG.features]
 y_test_glacier_m = test_glacier[CFG.millan]
 y_test_glacier_f = test_glacier[CFG.farinotti]
 
-y_preds_glacier = model.predict(X_train_glacier)
+y_preds_glacier = best_model.predict(X_train_glacier)
 
 rgi = glacier_name_for_generation[6:8]
 oggm_rgi_shp = glob(f'/home/nico/OGGM/rgi/RGIV62/{rgi}*/{rgi}*.shp')[0]
 oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)
 glacier_geometry = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name_for_generation]['geometry'].item()
+glacier_area = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name_for_generation]['Area'].item()
+exterior_ring = glacier_geometry.exterior  # shapely.geometry.polygon.LinearRing
+glacier_nunataks_list = [nunatak for nunatak in glacier_geometry.interiors]
+
+def calc_volume_glacier(points_thickness, area=0):
+    # A potential drawback of this method is that I am randomly sampling in epsg:4326. In a utm projection
+    # such sampling does not turn out to be uniform so that there is a risk that certain glacier portions may be
+    # more or less sampled. One better approach would be to randomly sample in the utm projection. But maybe the error
+    # I make is very little and this approach is still good.
+    # Area should be in km2
+    # We convert thickness to km so that returned vol is in km3
+    # In some runs the volume values look suspectious ....
+    N = len(points_thickness)
+    volume = np.sum(points_thickness) * 0.001 * area / N
+
+    return volume
+
+vol_ML = calc_volume_glacier(y_preds_glacier, glacier_area)
+print(f"Glacier {glacier_name_for_generation} volML: {vol_ML:.3f} km3 volFar: {vol_farinotti:.3f} km3")
 
 # Visualize test predictions of specific glacier
 y_min = min(np.concatenate((y_preds_glacier, y_test_glacier_m, y_test_glacier_f)))
@@ -319,12 +465,13 @@ y_max = max(np.concatenate((y_preds_glacier, y_test_glacier_m, y_test_glacier_f)
 
 fig, axes = plt.subplots(1,3, figsize=(5,3))
 ax1, ax2, ax3 = axes.flatten()
-s1 = ax1.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=10, c=y_preds_glacier, cmap='Blues', label='ML')
+s1 = ax1.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_preds_glacier, cmap='Blues', label='ML')
 #cntr1 = ax1.tricontourf(test_glacier['lons'], test_glacier['lats'], y_preds_glacier, levels=5, cmap="Blues")
-s2 = ax2.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=10, c=y_test_glacier_m, cmap='Blues', label='Millan')
+s2 = ax2.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_test_glacier_m, cmap='Blues', label='Millan')
 #cntr2 = ax2.tricontourf(test_glacier['lons'], test_glacier['lats'], y_test_glacier_m, levels=5, cmap="Blues")
-s3 = ax3.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=10, c=y_test_glacier_f, cmap='Blues', label='Farinotti')
+s3 = ax3.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_test_glacier_f, cmap='Blues', label='Farinotti')
 #cntr3 = ax3.tricontourf(test_glacier['lons'], test_glacier['lats'], y_test_glacier_f, levels=5, cmap="Blues")
+#im4 = ice_farinotti.plot(ax=ax4, cmap='Blues', vmin=y_min,vmax=y_max)
 
 cbar1 = plt.colorbar(s1, ax=ax1)
 cbar2 = plt.colorbar(s2, ax=ax2)
@@ -335,11 +482,18 @@ for cbar in (cbar1, cbar2, cbar3):
     cbar.set_label('THICKNESS (m)', labelpad=15, rotation=270)
 
 for ax in (ax1, ax2, ax3):
-    ax.plot(*glacier_geometry.exterior.xy, c='k')
+    ax.plot(*exterior_ring.xy, c='k')
+    for nunatak in glacier_nunataks_list:
+        ax.plot(*nunatak.xy, c='k', lw=0.8)
 
-for ax in (ax1, ax2, ax3):
     ax.legend(fontsize=14, loc='upper left')
-    ax.axis("off")
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['bottom'].set_visible(False)
+    ax.spines['left'].set_visible(False)
+    #ax.axis("off")
+#ax4.set_title("")
+#ax4.axis("off")
 
 fig.suptitle(f'{glacier_name_for_generation}', fontsize=13)
 plt.tight_layout()
