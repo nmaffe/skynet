@@ -7,6 +7,7 @@ import argparse
 import numpy as np
 import pandas as pd
 import scipy
+from scipy.interpolate import griddata
 import matplotlib.pyplot as plt
 import xarray, rioxarray, rasterio
 import xrspatial.curvature
@@ -29,6 +30,9 @@ Output: pandas dataframe with features calculated for each generated point.
 Note: the features slope, elevation_from_zmin and v are calculated in model.py, not here.
 
 Note: the points are generated inside the glacier but outside nunataks (there is a check for this)
+
+Note: as of Feb 16, 2024 I decide to fill the nans in Millan veloity fields. I do that interpolating these fields.
+After that I interpolate at the locations of the generated points.
 
 Note: Millan and Farinotti products needs to be interpolated. Interpolation close to the borders may result in nans. 
 The interpolation method="nearest" yields much less nans close to borders if compared to linear
@@ -478,16 +482,19 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
 
     # clip millan mosaic around the generated points
     try:
-        focus_vx = mosaic_vx.rio.clip_box(minx=np.min(lons_crs) - eps_millan, miny=np.min(lats_crs) - eps_millan,
+        focus_vx0 = mosaic_vx.rio.clip_box(minx=np.min(lons_crs) - eps_millan, miny=np.min(lats_crs) - eps_millan,
                                           maxx=np.max(lons_crs) + eps_millan, maxy=np.max(lats_crs) + eps_millan)
-        focus_vy = mosaic_vy.rio.clip_box(minx=np.min(lons_crs) - eps_millan, miny=np.min(lats_crs) - eps_millan,
+        focus_vy0 = mosaic_vy.rio.clip_box(minx=np.min(lons_crs) - eps_millan, miny=np.min(lats_crs) - eps_millan,
                                           maxx=np.max(lons_crs) + eps_millan, maxy=np.max(lats_crs) + eps_millan)
         focus_ith = mosaic_ith.rio.clip_box(minx=np.min(lons_crs) - eps_millan, miny=np.min(lats_crs) - eps_millan,
                                           maxx=np.max(lons_crs) + eps_millan, maxy=np.max(lats_crs) + eps_millan)
 
-        focus_vx = focus_vx.squeeze()
-        focus_vy = focus_vy.squeeze()
-        focus_ith = focus_ith.squeeze()
+        # Crucial here. I interpolate vx, vy to remove nans (as much as possible). This is because velocity fields often have holes
+        focus_vx = focus_vx0.rio.interpolate_na(method='linear').squeeze()
+        focus_vy = focus_vy0.rio.interpolate_na(method='linear').squeeze()
+        #focus_vx = focus_vx.squeeze()
+        #focus_vy = focus_vy.squeeze()
+        focus_ith = focus_ith.squeeze() # I keep the nans in the ice thickness field
 
         # Calculate how many pixels I need for a resolution of 50, 100, 150, 300 meters
         num_px_sigma_50 = max(1, round(50 / ris_metre_millan))  # 1
@@ -516,14 +523,14 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
         focus_filter_vy_300 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_300)
 
         # create xarrays of filtered velocities
-        focus_filter_vx_50_ar = focus_vx.copy(data=focus_filter_vx_50)
-        focus_filter_vx_100_ar = focus_vx.copy(data=focus_filter_vx_100)
-        focus_filter_vx_150_ar = focus_vx.copy(data=focus_filter_vx_150)
-        focus_filter_vx_300_ar = focus_vx.copy(data=focus_filter_vx_300)
-        focus_filter_vy_50_ar = focus_vy.copy(data=focus_filter_vy_50)
-        focus_filter_vy_100_ar = focus_vy.copy(data=focus_filter_vy_100)
-        focus_filter_vy_150_ar = focus_vy.copy(data=focus_filter_vy_150)
-        focus_filter_vy_300_ar = focus_vy.copy(data=focus_filter_vy_300)
+        focus_filter_vx_50_ar = focus_vx.copy(deep=True, data=focus_filter_vx_50)
+        focus_filter_vx_100_ar = focus_vx.copy(deep=True,data=focus_filter_vx_100)
+        focus_filter_vx_150_ar = focus_vx.copy(deep=True,data=focus_filter_vx_150)
+        focus_filter_vx_300_ar = focus_vx.copy(deep=True,data=focus_filter_vx_300)
+        focus_filter_vy_50_ar = focus_vy.copy(deep=True,data=focus_filter_vy_50)
+        focus_filter_vy_100_ar = focus_vy.copy(deep=True,data=focus_filter_vy_100)
+        focus_filter_vy_150_ar = focus_vy.copy(deep=True,data=focus_filter_vy_150)
+        focus_filter_vy_300_ar = focus_vy.copy(deep=True,data=focus_filter_vy_300)
 
         # Calculate the velocity gradients
         dvx_dx_ar, dvx_dy_ar = focus_filter_vx_300_ar.differentiate(coord='x'), focus_filter_vx_300_ar.differentiate(coord='y')
@@ -547,8 +554,13 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
         dvy_dx_data = dvy_dx_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
         dvy_dy_data = dvy_dy_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
 
-        print(
-            f"From Millan vx, vy, ith interpolations we have generated {np.isnan(vx_data).sum()}/{np.isnan(vy_data).sum()}/{np.isnan(ith_data).sum()} nans.")
+        print(f"From Millan vx, vy, ith interpolations we have generated "
+              f"{np.isnan(vx_data).sum()}/{np.isnan(vy_data).sum()}/{np.isnan(ith_data).sum()}/"
+              f"{np.isnan(vx_filter_300_data).sum()}/{np.isnan(vy_filter_300_data).sum()}/"
+              f"{np.isnan(dvx_dx_data).sum()}/{np.isnan(dvx_dy_data).sum()}/"
+              f"{np.isnan(dvy_dx_data).sum()}/{np.isnan(dvy_dy_data).sum()} nans.")
+
+
 
         # Fill dataframe with vx, vy, ith_m etc
         # Note this vectors may contain nans from interpolation at the margin/inside nunatak
@@ -569,12 +581,34 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
         points_df['dvy_dy'] = dvy_dy_data
         no_millan_data = False
     except:
-        print(f"No Millan data can be found for rgi {rgi} glacier {glacier_name}")
+        print(f"No Millan data can be found for rgi {rgi} glacier {glacier_name} !")
         no_millan_data = True
         # Data imputation: set Millan velocities as zero (keep ith_m as nan)
         for col in ['vx','vy','vx_gf50', 'vx_gf100', 'vx_gf150', 'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300',
                     'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy']:
             points_df[col] = 0.0
+
+    ifplot_millan = False
+    if ifplot_millan:
+        fig, axes = plt.subplots(1, 6, figsize=(10,4))
+        ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
+
+        im1 = focus_vx0.plot(ax=ax1, cmap='viridis')
+
+        im2 = focus_vx.plot(ax=ax2, cmap='viridis')
+
+        im3 = focus_filter_vx_300_ar.plot(ax=ax3, cmap='viridis')
+        im4 = focus_filter_vy_300_ar.plot(ax=ax4, cmap='viridis')
+        im5 = dvx_dx_ar.plot(ax=ax5, cmap='viridis')
+        im6 = dvx_dy_ar.plot(ax=ax6, cmap='viridis')
+
+        for ax in axes.flatten():
+            ax.scatter(x=lons_crs, y=lats_crs, s=20, c='k', alpha=.1, zorder=1)
+
+        plt.tight_layout()
+        plt.show()
+
+
 
     """ Calculate distance_from_border """
     print(f"Calculating the distances using glacier geometries... ")
@@ -790,31 +824,33 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
 
     """ Cleaning the produced dataset """
     # At this stage any nan may be present in Millan features and Farinotti. I want to remove these points.
-    list_cols_for_nan_drop = ['ith_m', 'ith_f', 'vx','vy','vx_gf50', 'vx_gf100', 'vx_gf150', 'vx_gf300', 'vy_gf50',
-                              'vy_gf100', 'vy_gf150', 'vy_gf300', 'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy']
+    #list_cols_for_nan_drop = ['ith_m', 'ith_f', 'vx','vy','vx_gf50', 'vx_gf100', 'vx_gf150', 'vx_gf300', 'vy_gf50',
+    #                          'vy_gf100', 'vy_gf150', 'vy_gf300', 'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy']
+    list_cols_for_nan_drop = ['ith_f']
+
+    # Data imputation for any nan survived in Millan velocities. Set all to zero.
+    list_cols_for_nan_to_zero_replacement = ['vx', 'vy', 'vx_gf50', 'vx_gf100', 'vx_gf150',
+                                             'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300',
+                                             'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy']
+    points_df[list_cols_for_nan_to_zero_replacement] = points_df[list_cols_for_nan_to_zero_replacement].fillna(0)
+
     points_df = points_df.dropna(subset=list_cols_for_nan_drop)
+
     #print(points_df.T)
-    print(f"Generated dataset. Nan present: {points_df.isnull().any().any()}")
+    print(f"Important: we have generated {points_df['ith_m'].isna().sum()} points where Millan is nan.")
+
+    # The only survived nans should be only in ith_m
+    # Check for the presence of nans in the generated dataset.
+    assert points_df.drop('ith_m', axis=1).isnull().any().any() == False, \
+        "Nans in generated dataset other than in Millan! Something to check."
+
     print(f"*******FINISHED FETCHING FEATURES*******")
     return points_df
 
 
-RGI_burned = ['RGI60-11.00562', 'RGI60-11.00590', 'RGI60-11.00603', 'RGI60-11.00638', 'RGI60-11.00647',
-                  'RGI60-11.00689', 'RGI60-11.00695', 'RGI60-11.00846', 'RGI60-11.00950', 'RGI60-11.01024',
-                  'RGI60-11.01041', 'RGI60-11.01067', 'RGI60-11.01144', 'RGI60-11.01199', 'RGI60-11.01296',
-                  'RGI60-11.01344', 'RGI60-11.01367', 'RGI60-11.01376', 'RGI60-11.01473', 'RGI60-11.01509',
-                  'RGI60-11.01576', 'RGI60-11.01604', 'RGI60-11.01698', 'RGI60-11.01776', 'RGI60-11.01786',
-                  'RGI60-11.01790', 'RGI60-11.01791', 'RGI60-11.01806', 'RGI60-11.01813', 'RGI60-11.01840',
-                  'RGI60-11.01857', 'RGI60-11.01894', 'RGI60-11.01928', 'RGI60-11.01962', 'RGI60-11.01986',
-                  'RGI60-11.02006', 'RGI60-11.02024', 'RGI60-11.02027', 'RGI60-11.02244', 'RGI60-11.02249',
-                  'RGI60-11.02261', 'RGI60-11.02448', 'RGI60-11.02490', 'RGI60-11.02507', 'RGI60-11.02549',
-                  'RGI60-11.02558', 'RGI60-11.02583', 'RGI60-11.02584', 'RGI60-11.02596', 'RGI60-11.02600',
-                  'RGI60-11.02624', 'RGI60-11.02673', 'RGI60-11.02679', 'RGI60-11.02704', 'RGI60-11.02709',
-                  'RGI60-11.02715', 'RGI60-11.02740', 'RGI60-11.02745', 'RGI60-11.02755', 'RGI60-11.02774',
-                  'RGI60-11.02775', 'RGI60-11.02787', 'RGI60-11.02796', 'RGI60-11.02864', 'RGI60-11.02884',
-                  'RGI60-11.02890', 'RGI60-11.02909', 'RGI60-11.03249']
+if __name__ == "__main__":
 
-# generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-07.00832', n=2000)
+    generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-08.01641', n=5000, seed=None)
 
 # 'RGI60-07.00228' should be a multiplygon
 # RGI60-11.00781 has only 1 neighbor
