@@ -842,7 +842,7 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
     # The only survived nans should be only in ith_m
     # Check for the presence of nans in the generated dataset.
     assert points_df.drop('ith_m', axis=1).isnull().any().any() == False, \
-        "Nans in generated dataset other than in Millan! Something to check."
+        "Nans in generated dataset other than in Millan velocity! Something to check."
 
     print(f"*******FINISHED FETCHING FEATURES*******")
     return points_df
