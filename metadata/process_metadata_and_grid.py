@@ -30,16 +30,6 @@ parser.add_argument('--save', type=bool, default=False, help="Save final dataset
 
 args = parser.parse_args()
 
-run_compare = False
-if run_compare:
-    f1 = "/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final_grid_20.csv"
-    f2 = "/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final_grid_20_old.csv"
-    df1 = pd.read_csv(f1, low_memory=False)
-    df2 = pd.read_csv(f2, low_memory=False)
-    print(df1.equals(df2))
-    print(df1.compare(df2))
-    exit()
-
 
 """ Import ungridded dataset """
 glathida = pd.read_csv(args.input_metadata_file, low_memory=False)
