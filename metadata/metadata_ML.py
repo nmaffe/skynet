@@ -28,10 +28,6 @@ from fetch_glacier_metadata import populate_glacier_with_metadata
 import warnings
 warnings.filterwarnings('ignore')
 
-#todo: if I retrain I tipically get different value (e.g. for aletsch the total volume stdev is 5%). What to do ? This
-#todo: can be a measure of model uncertainty (read https://stats.stackexchange.com/questions/285334/deep-learning-wild-differences-after-model-is-retrained-on-the-same-data-what)
-
-
 parser = argparse.ArgumentParser()
 parser.add_argument('--metadata_file', type=str, default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/"
                         +"glathida-3.1.0/data/metadata_hmineq0.0_tmin20050000_mean_grid_20.csv", help="Training dataset.")
@@ -59,18 +55,21 @@ print(oggm_rgi_glaciers.loc[:30, ['Name', 'Area', 'RGIId']])
 
 
 class CFG:
-    features_not_used = ['RGI', 'dvx_dx', 'dvx_dy', 'dvy_dx','dvy_dy', 'dvx', 'dvy', 'v50', 'v150', 'v300', ]
-    features = ['Area', 'slope_lon_gf300', 'slope_lat_gf300', 'elevation_astergdem', 'vx_gf300', 'vy_gf300',
-                'dist_from_border_km_geom',  'slope50','slope150','slope300', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
+    features_not_used = ['RGI', 'dvx', 'dvy', ]
+    features = ['Area', 'slope_lon_gf50', 'slope_lat_gf50', 'elevation_astergdem', 'vx_gf300', 'vy_gf300',
+                'dist_from_border_km_geom',  'slope50','slope150','slope300', 'slope450', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
                 'elevation_from_zmin', 'Form', 'TermType', 'Aspect', 'curv_50', 'curv_300', 'aspect_50', 'aspect_300',
-                ]
+                'dvx_dx', 'dvx_dy', 'dvy_dx','dvy_dy',  'v50', 'v150', 'v300',]
     target = 'THICKNESS'
     millan = 'ith_m'
     farinotti = 'ith_f'
     model = lgb.LGBMRegressor(num_leaves=28, n_jobs=12)
-    # model = xgb.XGBRegressor()
+    #model = xgb.XGBRegressor()
     # model = RandomForestRegressor()
-    n_rounds = 100
+    n_rounds = 500
+    use_log_transform = False
+    run_feature_importance = False
+
 
 # Import the training dataset
 glathida_rgis = pd.read_csv(args.metadata_file, low_memory=False)
@@ -81,11 +80,12 @@ glathida_rgis = glathida_rgis.loc[glathida_rgis['THICKNESS']>=0]
 glathida_rgis['v50'] = np.sqrt(glathida_rgis['vx_gf50']**2 + glathida_rgis['vy_gf50']**2)
 glathida_rgis['v150'] = np.sqrt(glathida_rgis['vx_gf150']**2 + glathida_rgis['vy_gf150']**2)
 glathida_rgis['v300'] = np.sqrt(glathida_rgis['vx_gf300']**2 + glathida_rgis['vy_gf300']**2)
-glathida_rgis['dvx'] = np.sqrt(glathida_rgis['dvx_dx']**2 + glathida_rgis['dvx_dy']**2)
-glathida_rgis['dvy'] = np.sqrt(glathida_rgis['dvy_dx']**2 + glathida_rgis['dvy_dy']**2)
+glathida_rgis['dvx'] = np.sqrt(glathida_rgis['dvx_dx']**2 + glathida_rgis['dvx_dy']**2) #todo: wrong ! df = dfx/dx dx + dfy/dy dy
+glathida_rgis['dvy'] = np.sqrt(glathida_rgis['dvy_dx']**2 + glathida_rgis['dvy_dy']**2) #todo: wrong !
 glathida_rgis['slope50'] = np.sqrt(glathida_rgis['slope_lon_gf50']**2 + glathida_rgis['slope_lat_gf50']**2)
 glathida_rgis['slope150'] = np.sqrt(glathida_rgis['slope_lon_gf150']**2 + glathida_rgis['slope_lat_gf150']**2)
 glathida_rgis['slope300'] = np.sqrt(glathida_rgis['slope_lon_gf300']**2 + glathida_rgis['slope_lat_gf300']**2)
+glathida_rgis['slope450'] = np.sqrt(glathida_rgis['slope_lon_gf450']**2 + glathida_rgis['slope_lat_gf450']**2)
 glathida_rgis['elevation_from_zmin'] = glathida_rgis['elevation_astergdem'] - glathida_rgis['Zmin']
 #glathida_rgis['hbahrm'] = 0.03*(glathida_rgis['Area']**0.375)*1000 # Bahr's approximation: h in meters
 #glathida_rgis['hbahrm2'] = glathida_rgis['dist_from_border_km_geom']*np.sqrt(glathida_rgis['Area'])
@@ -235,11 +235,10 @@ for i in range(CFG.n_rounds):
     y_train_log = np.log1p(y_train)
     y_test_log = np.log1p(y_test)
 
-    use_log_transform = False
     ### LightGBM
     model = CFG.model
 
-    if use_log_transform:
+    if CFG.use_log_transform:
         model.fit(X_train, y_train_log)
         y_preds_log = model.predict(X_test)
         y_preds = np.expm1(y_preds_log)
@@ -248,9 +247,8 @@ for i in range(CFG.n_rounds):
         model.fit(X_train, y_train)
         y_preds = model.predict(X_test)
 
-    # Plot feature importance
-    run_feature_importance = False
-    if run_feature_importance:
+    # Run feature importance
+    if CFG.run_feature_importance:
         lgb.plot_importance(model, importance_type="auto", figsize=(7,6), title="LightGBM Feature Importance")
         plt.show()
 
@@ -393,7 +391,7 @@ if plot_spatial_test_predictions:
 # *********************************************
 # Model deploy
 # *********************************************
-def get_random_glacier_rgiid(name=None, rgi=11, seed=None):
+def get_random_glacier_rgiid(name=None, rgi=11, area=None, seed=None):
     """Provide a rgi number and seed. This method returns a
     random glacier rgiid name.
     If not rgi is passed, any rgi region is good.
@@ -404,11 +402,13 @@ def get_random_glacier_rgiid(name=None, rgi=11, seed=None):
     if rgi is not None:
         oggm_rgi_shp = utils.get_rgi_region_file(f"{rgi:02d}", version='62')
         oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)
+    if area is not None:
+        oggm_rgi_glaciers = oggm_rgi_glaciers[oggm_rgi_glaciers['Area'] > area]
     rgi_ids = oggm_rgi_glaciers['RGIId'].dropna().unique().tolist()
     rgiid = np.random.choice(rgi_ids)
     return rgiid
 
-glacier_name_for_generation = get_random_glacier_rgiid(name=None, rgi=3, seed=None)
+glacier_name_for_generation = get_random_glacier_rgiid(name='RGI60-11.01450', rgi=8, area=None, seed=None)
 #glacier_name_for_generation = 'RGI60-07.00228' #RGI60–07.00027 'RGI60-11.01450' RGI60-07.00552,'RGI60-07.00228'
 #glacier_name_for_generation = 'RGI60-07.00832' very nice
 #'RGI60-03.01632', 'RGI60-07.01482' ML simile agli altri 2 in termini di alte profondita
@@ -422,7 +422,9 @@ glacier_name_for_generation = get_random_glacier_rgiid(name=None, rgi=3, seed=No
 # in 'RGI60-08.01657' and RGI60-08.01641 I see Millan having gaps (in v hence in ith_m).
 # no Millan data: RGI60-08.03159, RGI60-08.03084 controlla questo
 # 'RGI60-03.01062' is so small that has negative predictions !
-# RGI60-03.00862 has issues with projections
+# RGI60-03.00862 has issues with projections,
+# fix bug for 'RGI60-03.04229' !!!!!
+# RGI60-03.02811 in interesting since on top Millan has no data, so what is the effect or modeling with/without v ?
 
 try:
     test_glacier_rgi = glacier_name_for_generation[6:8]
@@ -444,6 +446,7 @@ test_glacier['dvy'] = np.sqrt(test_glacier['dvy_dx']**2 + test_glacier['dvy_dy']
 test_glacier['slope50'] = np.sqrt(test_glacier['slope_lon_gf50']**2 + test_glacier['slope_lat_gf50']**2)
 test_glacier['slope150'] = np.sqrt(test_glacier['slope_lon_gf150']**2 + test_glacier['slope_lat_gf150']**2)
 test_glacier['slope300'] = np.sqrt(test_glacier['slope_lon_gf300']**2 + test_glacier['slope_lat_gf300']**2)
+test_glacier['slope450'] = np.sqrt(test_glacier['slope_lon_gf450']**2 + test_glacier['slope_lat_gf450']**2)
 test_glacier['elevation_from_zmin'] = test_glacier['elevation_astergdem'] - test_glacier['Zmin']
 #test_glacier['sia'] = ((0.3*test_glacier['v']*(3+1))/(2*A*(rho*g*test_glacier['v'])**3))**(1./4)
 
@@ -452,7 +455,7 @@ y_test_glacier_m = test_glacier[CFG.millan]  # Note that here nans are present i
 no_millan_data = np.isnan(y_test_glacier_m).all()
 y_test_glacier_f = test_glacier[CFG.farinotti]
 
-if use_log_transform:
+if CFG.use_log_transform:
     y_preds_glacier_log = best_model.predict(X_train_glacier)
     y_preds_glacier = np.expm1(y_preds_glacier_log)  # Inverse log transform
 else:
@@ -495,9 +498,9 @@ s3 = ax3.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_test_g
 #cntr3 = ax3.tricontourf(test_glacier['lons'], test_glacier['lats'], y_test_glacier_f, levels=5, cmap="Blues")
 #im4 = ice_farinotti.plot(ax=ax4, cmap='Blues', vmin=y_min,vmax=y_max)
 
-ax1.set_title('ML')
-ax2.set_title('Millan')
-ax3.set_title('Farinotti')
+ax1.set_title(f"ML {vol_ML:.3f} km3")
+ax2.set_title(f"Millan")
+ax3.set_title(f"Farinotti {vol_farinotti:.3f} km3")
 
 cbar1 = plt.colorbar(s1, ax=ax1)
 cbar1.mappable.set_clim(vmin=y_min,vmax=y_max)
