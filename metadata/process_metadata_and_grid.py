@@ -56,7 +56,7 @@ cols = ['RGI', 'RGIId', 'POINT_LAT', 'POINT_LON', 'THICKNESS', 'Area', 'elevatio
         'slope_lat', 'slope_lon', 'vx', 'vy', 'dist_from_border_km', 'dist_from_border_km_geom',
        'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'ith_m', 'ith_f',
         'slope_lon_gf50', 'slope_lat_gf50', 'slope_lon_gf100', 'slope_lat_gf100', 'slope_lon_gf150', 'slope_lat_gf150',
-        'slope_lon_gf300', 'slope_lat_gf300', 'Form', 'Aspect', 'TermType', 'vx_gf50', 'vx_gf100', 'vx_gf150',
+        'slope_lon_gf300', 'slope_lat_gf300', 'slope_lon_gf450', 'slope_lat_gf450', 'Form', 'Aspect', 'TermType', 'vx_gf50', 'vx_gf100', 'vx_gf150',
         'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300', 'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy',
         'curv_50', 'curv_300', 'aspect_50', 'aspect_300']
 
@@ -81,7 +81,7 @@ features_to_grid = ['THICKNESS', 'Area', 'elevation_astergdem',
         'slope_lat', 'slope_lon', 'vx', 'vy', 'dist_from_border_km', 'dist_from_border_km_geom',
        'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'ith_m', 'ith_f',
         'slope_lon_gf50', 'slope_lat_gf50', 'slope_lon_gf100', 'slope_lat_gf100', 'slope_lon_gf150', 'slope_lat_gf150',
-        'slope_lon_gf300', 'slope_lat_gf300', 'vx_gf50', 'vx_gf100', 'vx_gf150',
+        'slope_lon_gf300', 'slope_lat_gf300', 'slope_lon_gf450', 'slope_lat_gf450', 'vx_gf50', 'vx_gf100', 'vx_gf150',
         'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300', 'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy',
                     'curv_50', 'curv_300', 'aspect_50', 'aspect_300']
 
