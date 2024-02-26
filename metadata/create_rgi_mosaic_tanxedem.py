@@ -8,17 +8,10 @@ from rioxarray.merge import merge_arrays
 import matplotlib
 import matplotlib.pyplot as plt
 
-parser = argparse.ArgumentParser(description='Create DEM mosaic from TandemX-EDEM tiles')
-parser.add_argument("--input",  type=str, default="/media/nico/samsung_nvme/Tandem-X-EDEM",
-                    help="folder path to the TandemX-EDEM tiles")
-parser.add_argument("--region",  type=int, default=None, help="RGI region in x format")
-parser.add_argument("--save",  type=bool, default=False, help="Save mosaic")
 
-args = parser.parse_args()
+def create_mosaic_rgi_tandemx(rgi=None, path_rgi_tiles=None, save=0):
 
-
-def create_mosaic_rgi_tandemx(rgi=None, path_rgi_tiles=None, save=None):
-
+    print(f"Begin creation of mosaic for region {rgi}")
     folder_rgi = f"{path_rgi_tiles}/RGI_{rgi:02d}"
 
     src_files_to_mosaic = []
@@ -42,7 +35,7 @@ def create_mosaic_rgi_tandemx(rgi=None, path_rgi_tiles=None, save=None):
     res_out = min(np.abs(src.rio.resolution()))
     assert res_out == 1./3600, "Unexpected resolution for merging tiles."
 
-    print(f"Begin creation of mosaic..")
+
     mosaic_rgi = merge_arrays(src_files_to_mosaic, res=(res_out, res_out), nodata=np.nan)
     print(f"Mosaic for rgi {rgi} done.")
     #print('Resolution mosaic:', mosaic_rgi.rio.resolution())
@@ -62,11 +55,21 @@ def create_mosaic_rgi_tandemx(rgi=None, path_rgi_tiles=None, save=None):
 
     # Save
     if save:
-        mosaic_rgi.rio.to_raster(f"{args.input}/mosaic_RGI_{rgi:02d}.tif")
+        mosaic_rgi.rio.to_raster(f"{path_rgi_tiles}/mosaic_RGI_{rgi:02d}.tif")
         print(f"mosaic_RGI_{rgi:02d}.tif saved")
+
+    return mosaic_rgi
 
 
 if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description='Create DEM mosaic from TandemX-EDEM tiles')
+    parser.add_argument("--input", type=str, default="/media/nico/samsung_nvme/Tandem-X-EDEM",
+                        help="folder path to the TandemX-EDEM tiles")
+    parser.add_argument("--region", type=int, default=None, help="RGI region in x format")
+    parser.add_argument("--save", type=int, default=0, help="Save mosaic: 0/1")
+
+    args = parser.parse_args()
 
     mosaic_rgi = create_mosaic_rgi_tandemx(rgi=args.region, path_rgi_tiles=args.input, save=args.save)
 
