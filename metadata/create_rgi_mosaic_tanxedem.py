@@ -1,3 +1,5 @@
+import gc
+import sys
 import os, glob
 import argparse
 import numpy as np
@@ -12,7 +14,8 @@ import matplotlib.pyplot as plt
 def create_mosaic_rgi_tandemx(rgi=None, path_rgi_tiles=None, save=0):
 
     print(f"Begin creation of mosaic for region {rgi}")
-    folder_rgi = f"{path_rgi_tiles}/RGI_{rgi:02d}"
+    folder_rgi = f"{path_rgi_tiles}RGI_{rgi:02d}"
+    print(folder_rgi)
 
     src_files_to_mosaic = []
     list_rgi_w84tiles = glob.glob(f"{folder_rgi}/*/EDEM/*_W84.tif", recursive = False)
@@ -21,8 +24,7 @@ def create_mosaic_rgi_tandemx(rgi=None, path_rgi_tiles=None, save=0):
     for i, filename in enumerate(list_rgi_w84tiles):
 
         print(f"rgi:{rgi}, import tile {i+1}/{len(list_rgi_w84tiles)}")
-
-        src = rioxarray.open_rasterio(list_rgi_w84tiles[i])
+        src = rioxarray.open_rasterio(list_rgi_w84tiles[i], cache=False)
         src.rio.write_crs("EPSG:4326", inplace=True)
         src = src.where(src != src.rio.nodata) # replace nodata (-32767).0 with nans.
         src.rio.write_nodata(np.nan, inplace=True)  # set nodata as nan
@@ -55,7 +57,8 @@ def create_mosaic_rgi_tandemx(rgi=None, path_rgi_tiles=None, save=0):
 
     # Save
     if save:
-        mosaic_rgi.rio.to_raster(f"{path_rgi_tiles}/mosaic_RGI_{rgi:02d}.tif")
+        print(f"Saving mosaic ...")
+        mosaic_rgi.rio.to_raster(f"{path_rgi_tiles}mosaic_RGI_{rgi:02d}.tif") # I could compress='deflate'/...
         print(f"mosaic_RGI_{rgi:02d}.tif saved")
 
     return mosaic_rgi
@@ -64,7 +67,7 @@ def create_mosaic_rgi_tandemx(rgi=None, path_rgi_tiles=None, save=0):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Create DEM mosaic from TandemX-EDEM tiles')
-    parser.add_argument("--input", type=str, default="/media/nico/samsung_nvme/Tandem-X-EDEM",
+    parser.add_argument("--input", type=str, default="/media/nico/samsung_nvme/Tandem-X-EDEM/",
                         help="folder path to the TandemX-EDEM tiles")
     parser.add_argument("--region", type=int, default=None, help="RGI region in x format")
     parser.add_argument("--save", type=int, default=0, help="Save mosaic: 0/1")
