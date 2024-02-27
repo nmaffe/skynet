@@ -1,5 +1,4 @@
-import os
-import sys
+import os, sys
 sys.path.append("/home/nico/PycharmProjects/skynet/code") # to import haversine from utils.py
 from utils import haversine
 from glob import glob
@@ -16,16 +15,20 @@ from rioxarray import merge
 import geopandas as gpd
 import oggm
 from oggm import utils
-from shapely.geometry import Point, Polygon
+from shapely.geometry import Point, Polygon, LineString, MultiLineString
 from pyproj import Proj, Transformer
 from math import radians, cos, sin, asin, sqrt, floor
 import utm
+import time
+
+from create_rgi_mosaic_tanxedem import create_mosaic_rgi_tandemx
 
 """
 This program generates glacier metadata at some random locations inside the glacier geometry. 
 
 Input: glacier name (RGIId), how many points you want to generate. 
 Output: pandas dataframe with features calculated for each generated point. 
+Computational time scales linearly with no. generated points- Ca. 50% time is point generation, other 50% distances. 
 
 Note: the features slope, elevation_from_zmin and v are calculated in model.py, not here.
 
@@ -94,6 +97,7 @@ def gaussian_filter_with_nans(U, sigma):
 
 def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
     print(f"******* FETCHING FEATURES FOR GLACIER {glacier_name} *******")
+    t0=time.time()
 
     rgi = int(glacier_name[6:8]) # get rgi from the glacier code
     oggm_rgi_shp = utils.get_rgi_region_file(f"{rgi:02d}", version='62') # get rgi region shp
@@ -147,23 +151,48 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
     gl_geom_nunataks_list = [Polygon(nunatak) for nunatak in gl_geom.interiors] # list of nunataks Polygons
     llx, lly, urx, ury = gl_geom.bounds # geometry bounds
 
+    # Geodataframes of external boundary and all internal nunataks
+    gl_geom_nunataks_gdf = gpd.GeoDataFrame(geometry=gl_geom_nunataks_list, crs="EPSG:4326")
+    gl_geom_ext_gdf = gpd.GeoDataFrame(geometry=[gl_geom_ext], crs="EPSG:4326")
+
+    print(f"Generating {n} points...")
     # Generate points (no points can be generated inside nunataks)
     points = {'lons': [], 'lats': [], 'nunataks': []}
     if seed is not None: np.random.seed(seed)
+
     while (len(points['lons']) < n):
-        r_lon = np.random.uniform(llx, urx)
-        r_lat = np.random.uniform(lly, ury)
-        point = Point(r_lon, r_lat)
+        batch_size = min(n, n - len(points['lons']))  # Adjust batch size as needed
+        r_lons = np.random.uniform(llx, urx, batch_size)
+        r_lats = np.random.uniform(lly, ury, batch_size)
+        points_batch = [Point(lon, lat) for lon, lat in zip(r_lons, r_lats)]
+        points_batch_gdf = gpd.GeoDataFrame(geometry=points_batch, crs="EPSG:4326")
 
-        is_inside = gl_geom_ext.contains(point)
-        is_nunatak = any(nunatak.contains(point) for nunatak in gl_geom_nunataks_list)
+        # 1) First we select only those points generated inside the glacier
+        points_yes_no_ext_gdf = gpd.sjoin(points_batch_gdf, gl_geom_ext_gdf, how="left", op="within")
+        points_in_glacier_gdf = points_yes_no_ext_gdf[~points_yes_no_ext_gdf.index_right.isna()].drop(columns=['index_right'])
 
-        if (is_inside is False or is_nunatak is True): # if outside geometry or inside any nunatak discard the point
-            continue
+        indexes_of_points_inside = points_in_glacier_gdf.index
 
-        points['lons'].append(r_lon)
-        points['lats'].append(r_lat)
-        points['nunataks'].append(int(is_nunatak))
+        # 2) Then we get rid of all those generated inside nunataks
+        points_yes_no_nunataks_gdf = gpd.sjoin(points_batch_gdf.loc[indexes_of_points_inside], gl_geom_nunataks_gdf, how="left", op="within")
+        points_not_in_nunataks_gdf = points_yes_no_nunataks_gdf[points_yes_no_nunataks_gdf.index_right.isna()].drop(columns=['index_right'])
+
+        points['lons'].extend(points_not_in_nunataks_gdf['geometry'].x.tolist())
+        points['lats'].extend(points_not_in_nunataks_gdf['geometry'].y.tolist())
+        points['nunataks'].extend([0.0]*len(points_not_in_nunataks_gdf))
+
+
+        plot_gen_points = False
+        if plot_gen_points:
+            points_in_nunataks_gdf = points_yes_no_nunataks_gdf[~points_yes_no_nunataks_gdf.index_right.isna()].drop(
+                columns=['index_right'])
+            fig, ax = plt.subplots()
+            ax.plot(*gl_geom.exterior.xy, color='blue')
+            gl_geom_nunataks_gdf.plot(ax=ax, color='orange', alpha=0.5)
+            #points_in_glacier_gdf.plot(ax=ax, color='red', alpha=0.5, markersize=1, zorder=2)
+            points_not_in_nunataks_gdf.plot(ax=ax, color='blue', alpha=0.5, markersize=1, zorder=2)
+            points_in_nunataks_gdf.plot(ax=ax, color='red', alpha=0.5, markersize=1, zorder=2)
+            plt.show()
 
     # Feature dataframe
     points_df = pd.DataFrame(columns=['lons', 'lats', 'nunataks'])
@@ -189,7 +218,13 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
 
     """ Add Slopes and Elevation """
     print(f"Calculating slopes and elevations...")
-    dem_rgi = rioxarray.open_rasterio(args.mosaic + f'mosaic_RGI_{rgi:02d}.tif')
+
+    if os.path.exists(args.mosaic + f'mosaic_RGI_{rgi:02d}.tif'):
+        dem_rgi = rioxarray.open_rasterio(args.mosaic + f'mosaic_RGI_{rgi:02d}.tif')
+    else: # We have to create the mosaic
+        print(f"Mosaic {rgi} not present. We now create it...")
+        dem_rgi = create_mosaic_rgi_tandemx(rgi=rgi, path_rgi_tiles=args.mosaic, save=0)
+
     ris_ang = dem_rgi.rio.resolution()[0]
 
     cenLon, cenLat = gl_df['CenLon'].item(), gl_df['CenLat'].item()
@@ -272,6 +307,12 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
     dz_dlat_filter_xar_150, dz_dlon_filter_xar_150 = focus_filter_xarray_150_utm.differentiate(coord='y'), focus_filter_xarray_150_utm.differentiate(coord='x')
     dz_dlat_filter_xar_300, dz_dlon_filter_xar_300  = focus_filter_xarray_300_utm.differentiate(coord='y'), focus_filter_xarray_300_utm.differentiate(coord='x')
     dz_dlat_filter_xar_450, dz_dlon_filter_xar_450  = focus_filter_xarray_450_utm.differentiate(coord='y'), focus_filter_xarray_450_utm.differentiate(coord='x')
+
+    # todo: work in progress here
+    #print(focus_utm.rio.resolution())
+    #sth = scipy.signal.convolve2d(focus_utm, [[1,0,-1], [1,0,-1], [1,0,-1]], mode='same') / 2.0
+    #print(focus_utm.shape, sth.shape, np.nanmean(sth))
+    #input('wait')
 
     # Calculate curvature and aspect using xrspatial
     curv_50 = xrspatial.curvature(focus_filter_xarray_50_utm)
@@ -431,7 +472,7 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
         mosaic_vx_dict['list_vx'].append(xds)
         mosaic_vx_dict['epsg_utm_vx'].append(xds.rio.crs)
 
-    # check
+    # todo: check this - it is triggered for e.g. in rgi 1
     if len(mosaic_vx_dict['epsg_utm_vx']) > 1:
         all_same_epsg = all(x == mosaic_vx_dict['epsg_utm_vx'][0] for x in mosaic_vx_dict['epsg_utm_vx'])
         if not all_same_epsg:
@@ -675,106 +716,118 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
         else: raise ValueError("Unexpected geometry type. Please check.")
 
         # Create a geoseries of all external and internal geometries
-        geoseries_geometries_epsg = gpd.GeoSeries(cluster_exterior_ring + cluster_interior_rings)
-
+        geoseries_geometries_epsg = gpd.GeoSeries(cluster_exterior_ring + cluster_interior_rings, crs=glacier_epsg)
 
     # Get all generated points and create Geopandas geoseries and convert to UTM
     list_points = [Point(lon, lat) for (lon, lat) in zip(points_df['lons'], points_df['lats'])]
     geoseries_points_4326 = gpd.GeoSeries(list_points, crs="EPSG:4326")
     geoseries_points_epsg = geoseries_points_4326.to_crs(epsg=glacier_epsg)
 
-    # Loop over generated points
-    for (i, lon, lat, nunatak) in zip(points_df.index, points_df['lons'], points_df['lats'], points_df['nunataks']):
+    # Method 1: Fast vectorized version
+    multiline_geometries_epsg = MultiLineString(list(geoseries_geometries_epsg))
 
-        # Make a check.
-        easting, nothing, zonenum, zonelett, epsg = from_lat_lon_to_utm_and_epsg(lat, lon)
-        if epsg != glacier_epsg:
-            print(f"Note differet UTM zones. Point espg {epsg} and glacier center epsg {glacier_epsg}.")
+    def calc_min_distance_to_multi_line(point, multi_line):
+        return point.distance(multi_line)
 
-        # Get shapely Point
-        point_epsg = geoseries_points_epsg.iloc[i]
+    min_distances = geoseries_points_epsg.apply(lambda point: calc_min_distance_to_multi_line(point, multiline_geometries_epsg))
+    min_distances /= 1000. # km
 
-        # Calculate the distances between such point and all glacier geometries
-        min_distances_point_geometries = geoseries_geometries_epsg.distance(point_epsg)
-        min_dist = np.min(min_distances_point_geometries) # unit UTM: m
+    points_df['dist_from_border_km_geom'] = min_distances
 
-        # To debug we want to check what point corresponds to the minimum distance.
-        debug_distance = True
-        if debug_distance:
-            min_distance_index = min_distances_point_geometries.idxmin()
-            nearest_line = geoseries_geometries_epsg.loc[min_distance_index]
-            nearest_point_on_line = nearest_line.interpolate(nearest_line.project(point_epsg))
-            # print(f"{i} Minimum distance: {min_dist:.2f} meters.")
+    # Method 2: Slow-not verctorized version - loop over generated points
+    run_distance_not_vectorized = False
+    if run_distance_not_vectorized:
+        for (i, lon, lat, nunatak) in zip(points_df.index, points_df['lons'], points_df['lats'], points_df['nunataks']):
 
-        # Fill dataset
-        # note that the generated points cannot be in nunataks so distances are well defined
-        points_df.loc[i, 'dist_from_border_km_geom'] = min_dist/1000.
+            # Make a check.
+            easting, nothing, zonenum, zonelett, epsg = from_lat_lon_to_utm_and_epsg(lat, lon)
+            if epsg != glacier_epsg:
+                print(f"Note differet UTM zones. Point espg {epsg} and glacier center epsg {glacier_epsg}.")
 
-        # Plot
-        plot_calculate_distance = False
-        if plot_calculate_distance:
-            fig, (ax1, ax2) = plt.subplots(1,2)
-            ax1.plot(*gl_geom_ext.exterior.xy, lw=1, c='red')
-            for interior in gl_geom.interiors:
-                ax1.plot(*interior.xy, lw=1, c='blue')
+            # Get shapely Point
+            point_epsg = geoseries_points_epsg.iloc[i]
 
-            # Plot boundaries (only external periphery) of all glaciers in the cluster
-            if list_cluster_RGIIds is not None:
-                for gl_neighbor_id in list_cluster_RGIIds:
-                    gl_neighbor_df = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId'] == gl_neighbor_id]
-                    gl_neighbor_geom = gl_neighbor_df['geometry'].item()  # glacier geometry Polygon
-                    ax1.plot(*gl_neighbor_geom.exterior.xy, lw=1, c='orange', zorder=0)
+            # Calculate the distances between such point and all glacier geometries
+            min_distances_point_geometries = geoseries_geometries_epsg.distance(point_epsg)
+            min_dist = np.min(min_distances_point_geometries) # unit UTM: m
 
-            # Plot intersections of central glacier with its neighbors
-            for k, intersect in enumerate(gl_intersects['geometry']):  # Linestring gl_intersects
-                ax1.plot(*intersect.xy, lw=1, color='k')
+            # To debug we want to check what point corresponds to the minimum distance.
+            debug_distance = True
+            if debug_distance:
+                min_distance_index = min_distances_point_geometries.idxmin()
+                nearest_line = geoseries_geometries_epsg.loc[min_distance_index]
+                nearest_point_on_line = nearest_line.interpolate(nearest_line.project(point_epsg))
+                # print(f"{i} Minimum distance: {min_dist:.2f} meters.")
 
-            # Plot intersections of all glaciers in the cluster
-            if cluster_intersects is not None:
-                for k, intersect in enumerate(cluster_intersects['geometry']):
-                    ax1.plot(*intersect.xy, lw=1, color='k') #np.random.rand(3)
+            # Fill dataset
+            # note that the generated points cannot be in nunataks so distances are well defined
+            points_df.loc[i, 'dist_from_border_km_geom'] = min_dist/1000.
 
-                # Plot cluster ice divides removed
+            # Plot
+            plot_calculate_distance = False
+            if plot_calculate_distance:
+                fig, (ax1, ax2) = plt.subplots(1,2)
+                ax1.plot(*gl_geom_ext.exterior.xy, lw=1, c='red')
+                for interior in gl_geom.interiors:
+                    ax1.plot(*interior.xy, lw=1, c='blue')
+
+                # Plot boundaries (only external periphery) of all glaciers in the cluster
+                if list_cluster_RGIIds is not None:
+                    for gl_neighbor_id in list_cluster_RGIIds:
+                        gl_neighbor_df = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId'] == gl_neighbor_id]
+                        gl_neighbor_geom = gl_neighbor_df['geometry'].item()  # glacier geometry Polygon
+                        ax1.plot(*gl_neighbor_geom.exterior.xy, lw=1, c='orange', zorder=0)
+
+                # Plot intersections of central glacier with its neighbors
+                for k, intersect in enumerate(gl_intersects['geometry']):  # Linestring gl_intersects
+                    ax1.plot(*intersect.xy, lw=1, color='k')
+
+                # Plot intersections of all glaciers in the cluster
+                if cluster_intersects is not None:
+                    for k, intersect in enumerate(cluster_intersects['geometry']):
+                        ax1.plot(*intersect.xy, lw=1, color='k') #np.random.rand(3)
+
+                    # Plot cluster ice divides removed
+                    if multipolygon:
+                        polygons = list(cluster_geometry_no_divides_4326.item().geoms)
+                        cluster_exterior_ring = [polygon.exterior for polygon in polygons]  # list of shapely.geometry.polygon.LinearRing
+                        cluster_interior_ringSequences = [polygon.interiors for polygon in polygons]  # list of shapely.geometry.polygon.InteriorRingSequence
+                        cluster_interior_rings = [ring for sequence in cluster_interior_ringSequences for ring in sequence]  # list of shapely.geometry.polygon.LinearRing
+                        for exterior in cluster_exterior_ring:
+                            ax1.plot(*exterior.xy, lw=1, c='red', zorder=3)
+                        for interior in cluster_interior_rings:
+                            ax1.plot(*interior.xy, lw=1, c='blue', zorder=3)
+
+                    else:
+                        ax1.plot(*cluster_geometry_no_divides_4326.item().exterior.xy, lw=1, c='red', zorder=3)
+                        for interior in cluster_geometry_no_divides_4326.item().interiors:
+                            ax1.plot(*interior.xy, lw=1, c='blue', zorder=3)
+
+                if nunatak: ax1.scatter(lon, lat, s=50, lw=2, c='b')
+                else: ax1.scatter(lon, lat, s=50, lw=2, c='r', ec='r')
+
                 if multipolygon:
-                    polygons = list(cluster_geometry_no_divides_4326.item().geoms)
-                    cluster_exterior_ring = [polygon.exterior for polygon in polygons]  # list of shapely.geometry.polygon.LinearRing
-                    cluster_interior_ringSequences = [polygon.interiors for polygon in polygons]  # list of shapely.geometry.polygon.InteriorRingSequence
-                    cluster_interior_rings = [ring for sequence in cluster_interior_ringSequences for ring in sequence]  # list of shapely.geometry.polygon.LinearRing
-                    for exterior in cluster_exterior_ring:
-                        ax1.plot(*exterior.xy, lw=1, c='red', zorder=3)
-                    for interior in cluster_interior_rings:
-                        ax1.plot(*interior.xy, lw=1, c='blue', zorder=3)
+                    for i_poly in range(num_multipoly):
+                        ax2.plot(*geoseries_geometries_epsg.loc[i_poly].xy, lw=1, c='red')  # first num_multipoly are outside borders
+                    for inter in geoseries_geometries_epsg.loc[num_multipoly:]:  # all interiors if present
+                        ax2.plot(*inter.xy, lw=1, c='blue')
 
                 else:
-                    ax1.plot(*cluster_geometry_no_divides_4326.item().exterior.xy, lw=1, c='red', zorder=3)
-                    for interior in cluster_geometry_no_divides_4326.item().interiors:
-                        ax1.plot(*interior.xy, lw=1, c='blue', zorder=3)
-
-            if nunatak: ax1.scatter(lon, lat, s=50, lw=2, c='b')
-            else: ax1.scatter(lon, lat, s=50, lw=2, c='r', ec='r')
-
-            if multipolygon:
-                for i_poly in range(num_multipoly):
-                    ax2.plot(*geoseries_geometries_epsg.loc[i_poly].xy, lw=1, c='red')  # first num_multipoly are outside borders
-                for inter in geoseries_geometries_epsg.loc[num_multipoly:]:  # all interiors if present
-                    ax2.plot(*inter.xy, lw=1, c='blue')
-
-            else:
-                ax2.plot(*geoseries_geometries_epsg.loc[0].xy, lw=1, c='red')  # first entry is outside border
-                for inter in geoseries_geometries_epsg.loc[1:]:  # all interiors if present
-                    ax2.plot(*inter.xy, lw=1, c='blue')
+                    ax2.plot(*geoseries_geometries_epsg.loc[0].xy, lw=1, c='red')  # first entry is outside border
+                    for inter in geoseries_geometries_epsg.loc[1:]:  # all interiors if present
+                        ax2.plot(*inter.xy, lw=1, c='blue')
 
 
-            if nunatak: ax2.scatter(*point_epsg.xy, s=50, lw=2, c='b')
-            else: ax2.scatter(*point_epsg.xy, s=50, lw=2, c='r', ec='r')
-            if debug_distance: ax2.scatter(*nearest_point_on_line.xy, s=50, lw=2, c='g')
+                if nunatak: ax2.scatter(*point_epsg.xy, s=50, lw=2, c='b')
+                else: ax2.scatter(*point_epsg.xy, s=50, lw=2, c='r', ec='r')
+                if debug_distance: ax2.scatter(*nearest_point_on_line.xy, s=50, lw=2, c='g')
 
-            ax1.set_title('EPSG 4326')
-            ax2.set_title(f'EPSG {glacier_epsg}')
-            plt.show()
+                ax1.set_title('EPSG 4326')
+                ax2.set_title(f'EPSG {glacier_epsg}')
+                plt.show()
 
-    # convert this column to float (misteriously it was an object type)
-    points_df['dist_from_border_km_geom'] = pd.to_numeric(points_df['dist_from_border_km_geom'], errors='coerce')
+        # convert this column to float (misteriously it was an object type)
+        # points_df['dist_from_border_km_geom'] = pd.to_numeric(points_df['dist_from_border_km_geom'], errors='coerce')
 
     print(f"Finished distance calculations.")
 
@@ -792,7 +845,7 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
                 else: ax.scatter(lon, lat, s=50, lw=2, c='r', ec='r', zorder=1)
 
         # slope_lat
-        im1 = dz_dlat_xarray.plot(ax=ax1, cmap='gist_gray', vmin=np.nanmin(slope_lat_data),
+        im1 = dz_dlat_xar.plot(ax=ax1, cmap='gist_gray', vmin=np.nanmin(slope_lat_data),
                                   vmax=np.nanmax(slope_lat_data), zorder=0)
         s1 = ax1.scatter(x=lons_xar, y=lats_xar, s=50, c=slope_lat_data, ec=None, cmap='gist_gray',
                          vmin=np.nanmin(slope_lat_data), vmax=np.nanmax(slope_lat_data), zorder=1)
@@ -865,13 +918,14 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
     assert points_df.drop('ith_m', axis=1).isnull().any().any() == False, \
         "Nans in generated dataset other than in Millan velocity! Something to check."
 
-    print(f"*******FINISHED FETCHING FEATURES*******")
+    t5 = time.time()
+    print(f"*******FINISHED FETCHING FEATURES in {t5 - t0:.1f} sec *******")
     return points_df
 
 
 if __name__ == "__main__":
 
-    generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-03.04229', n=5000, seed=None)
+    generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-11.01450', n=10000, seed=42)
 
 # 'RGI60-07.00228' should be a multiplygon
 # RGI60-11.00781 has only 1 neighbor
