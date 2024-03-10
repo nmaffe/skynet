@@ -42,7 +42,7 @@ glathida = glathida[cond]
 print(f'Original columns: {list(glathida)} \n')
 
 # A.2 Keep only these columns
-cols = ['RGI', 'RGIId', 'POINT_LAT', 'POINT_LON', 'THICKNESS', 'Area', 'elevation_astergdem',
+cols = ['RGI', 'RGIId', 'POINT_LAT', 'POINT_LON', 'THICKNESS', 'Area', 'elevation',
         'slope_lat', 'slope_lon', 'vx', 'vy', 'dist_from_border_km', 'dist_from_border_km_geom',
        'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'ith_m', 'ith_f',
         'slope_lon_gf50', 'slope_lat_gf50', 'slope_lon_gf100', 'slope_lat_gf100', 'slope_lon_gf150', 'slope_lat_gf150',
@@ -67,7 +67,7 @@ print(f'We have {len(rgi_ids)} unique glaciers and {len(glathida)} rows')
 
 glathida_gridded = pd.DataFrame(columns=glathida.columns)
 
-features_to_grid = ['THICKNESS', 'Area', 'elevation_astergdem',
+features_to_grid = ['THICKNESS', 'Area', 'elevation',
         'slope_lat', 'slope_lon', 'vx', 'vy', 'dist_from_border_km', 'dist_from_border_km_geom',
        'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'ith_m', 'ith_f',
         'slope_lon_gf50', 'slope_lat_gf50', 'slope_lon_gf100', 'slope_lat_gf100', 'slope_lon_gf150', 'slope_lat_gf150',
