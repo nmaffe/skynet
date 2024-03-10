@@ -1,5 +1,6 @@
 import gc
 import sys
+from tqdm import tqdm
 import os, glob
 import argparse
 import numpy as np
@@ -10,20 +11,29 @@ from rioxarray.merge import merge_arrays
 import matplotlib
 import matplotlib.pyplot as plt
 
+def fetch_dem(folder_mosaic=None, rgi=None):
+    if os.path.exists(folder_mosaic + f'mosaic_RGI_{rgi}.tif'):
+        dem_rgi = rioxarray.open_rasterio(folder_mosaic + f'mosaic_RGI_{rgi}.tif')
+    else:  # We have to create the mosaic
+        print(f"Mosaic {rgi} not present. Let's create it on the fly.")
+        dem_rgi = create_mosaic_rgi_tandemx(rgi=rgi, path_rgi_tiles=folder_mosaic, save=0)
+    return dem_rgi
+
 
 def create_mosaic_rgi_tandemx(rgi=None, path_rgi_tiles=None, save=0):
 
-    print(f"Begin creation of mosaic for region {rgi}")
-    folder_rgi = f"{path_rgi_tiles}RGI_{rgi:02d}"
-    print(folder_rgi)
+    rgi = f"{rgi:02d}"
+
+    tqdm.write(f"Begin creation of mosaic for region {rgi}...")
+    folder_rgi = f"{path_rgi_tiles}RGI_{rgi}"
 
     src_files_to_mosaic = []
     list_rgi_w84tiles = glob.glob(f"{folder_rgi}/*/EDEM/*_W84.tif", recursive = False)
-    print(f"In rgi {rgi} we have {len(list_rgi_w84tiles)} tiles to be merged")
+    tqdm.write(f"In rgi {rgi} we have {len(list_rgi_w84tiles)} tiles to be merged")
 
-    for i, filename in enumerate(list_rgi_w84tiles):
+    for i, filename in tqdm(enumerate(list_rgi_w84tiles), total=len(list_rgi_w84tiles), desc=f"rgi {rgi} importing tiles", leave=False):
 
-        print(f"rgi:{rgi}, import tile {i+1}/{len(list_rgi_w84tiles)}")
+        #tqdm.write(f"rgi:{rgi}, import tile {i+1}/{len(list_rgi_w84tiles)}")
         src = rioxarray.open_rasterio(list_rgi_w84tiles[i], cache=False)
         src.rio.write_crs("EPSG:4326", inplace=True)
         src = src.where(src != src.rio.nodata) # replace nodata (-32767).0 with nans.
@@ -39,7 +49,7 @@ def create_mosaic_rgi_tandemx(rgi=None, path_rgi_tiles=None, save=0):
 
 
     mosaic_rgi = merge_arrays(src_files_to_mosaic, res=(res_out, res_out), nodata=np.nan)
-    print(f"Mosaic for rgi {rgi} done.")
+    tqdm.write(f"Mosaic for rgi {rgi} created.")
     #print('Resolution mosaic:', mosaic_rgi.rio.resolution())
 
     plot_mosaic = False
@@ -57,9 +67,9 @@ def create_mosaic_rgi_tandemx(rgi=None, path_rgi_tiles=None, save=0):
 
     # Save
     if save:
-        print(f"Saving mosaic ...")
-        mosaic_rgi.rio.to_raster(f"{path_rgi_tiles}mosaic_RGI_{rgi:02d}.tif") # I could compress='deflate'/...
-        print(f"mosaic_RGI_{rgi:02d}.tif saved")
+        tqdm.write(f"Saving mosaic ...")
+        mosaic_rgi.rio.to_raster(f"{path_rgi_tiles}mosaic_RGI_{rgi}.tif") # I could compress='deflate'/...
+        tqdm.write(f"mosaic_RGI_{rgi}.tif saved")
 
     return mosaic_rgi
 
