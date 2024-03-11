@@ -21,24 +21,26 @@ from shapely.geometry import Point
 from matplotlib.colors import Normalize, LogNorm
 from shapely.geometry import Polygon, Point, box
 from shapely.ops import unary_union
-from math import radians, cos, sin, asin, sqrt
 from pyproj import Transformer, CRS, Geod
 import utm
+from create_rgi_mosaic_tanxedem import create_mosaic_rgi_tandemx
+from utils_metadata import from_lat_lon_to_utm_and_epsg, gaussian_filter_with_nans, haversine
+
 """
 This program creates a dataframe of metadata for the points in glathida.
 
-Run time evaluated on on rgi = [3,7,8,11,18]
+Run time evaluated on on rgi = [1,3,4,7,8,11,18]: 18h
+Note: rgi 6 has no glathida data.
 
 1. add_rgi. Time: 2min.
-2. add_RGIId_and_OGGM_stats. Time: 30 min.
-3. add_slopes_elevation. Time: 60 min.
-    - No nan can be produced here
-4. add_millan_vx_vy_ith. Time: 7 min
+2. add_RGIId_and_OGGM_stats. Time: 60 min.
+3. add_slopes_elevation. Time: 80 min.
+    - No nan can be produced here. 
+4. add_millan_vx_vy_ith. Time: 4.5 h
     - Points inside the glacier but close to the borders can be interpolated as nan.
     - Note: method to interpolate is chosen as "nearest" to reduce as much as possible these nans.
-5. add_dist_from_border_in_out. Time: 6.5 h
-6. add_dist_from_boder_using_geometries. Time: 6 h
-7. add_farinotti_ith. Time: 45 min
+5. add_dist_from_boder_using_geometries. Time: 9h (rgi1 2.5h, rgi3 3h, rgi4 0.5h, rgi7 3h)
+6. add_farinotti_ith. Time: 2h (rgi1 1h, rgi3 0.5h, rgi4 10m, rgi7 8m, rgi8 3m, rgi11 10m, rgi18 3m)
     - Points inside the glacier but close to the borders can be interpolated as nan.
     - Note: method to interpolate is chosen as "nearest" to reduce as much as possible these nans.
 """
@@ -59,46 +61,25 @@ parser.add_argument('--millan_icethickness_folder', type=str,default="/home/nico
 parser.add_argument('--farinotti_icethickness_folder', type=str,default="/home/nico/PycharmProjects/skynet/Extra_Data/Farinotti/",
                     help="Path to Farinotti ice thickness data")
 parser.add_argument('--OGGM_folder', type=str,default="/home/nico/OGGM", help="Path to OGGM main folder")
-parser.add_argument('--save', type=bool, default=False, help="Save final dataset or not.")
+parser.add_argument('--save', type=int, default=0, help="Save final dataset or not.")
 parser.add_argument('--save_outname', type=str,
-            default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata.csv",
+            default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata2.csv",
             help="Saved dataframe name.")
 
 #todo: Smoothing vx, vy, slopes, before interpolating ? A gaussian filter adapted to glacier area ?
 #todo: whenever i call clip_box i need to check if there is only 1 measurement !
-#todo: change all reprojecting method from nearest to something else, like bisampling
+#todo: change all reprojecting method from nearest to something else, like bisampling. Also in all .to_crs(...)
 # todo: Slope from oggm has some strangely high values (or is it expressed in %?). Worth thicking of calculating it myself ?
-#  Tandem-X-EDEM looks great, and those features had been probably extracted from a worse dem.
+# todo: add_slopes_elevation: per ora creo il mosaico. Questo consuma RAM;
+#  Invece sarebbe piu intelligente importare solo le tiles necessarie - pensa se devo fare il mosaico di tutta la groenlandia !!
+
+# todo> NEXT RUN. Add rgi 5
+
 
 utils.get_rgi_dir(version='62')
 utils.get_rgi_intersects_dir(version='62')
 
 args = parser.parse_args()
-
-def haversine(lon1, lat1, lon2, lat2):
-    """
-    Calculate the great circle distance in kilometers between two points
-    on the earth (specified in decimal degrees)
-    """
-    # convert decimal degrees to radians
-    lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
-
-    # haversine formula
-    dlon = lon2 - lon1
-    dlat = lat2 - lat1
-    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-    c = 2 * asin(sqrt(a))
-    r = 6371 # Radius of earth in kilometers. Use 3956 for miles. Determines return value units.
-    return c * r
-
-def from_lat_lon_to_utm_and_epsg(lat, lon):
-    """https://github.com/Turbo87/utm"""
-    # Note lat lon can be also NumPy arrays.
-    # In this case zone letter and number will be calculate from first entry.
-    easting, northing, zone_number, zone_letter = utm.from_latlon(lat, lon)
-    southern_hemisphere_TrueFalse = True if zone_letter < 'N' else False
-    epsg_code = 32600 + zone_number + southern_hemisphere_TrueFalse * 100
-    return (easting, northing, zone_number, zone_letter, epsg_code)
 
 """ Add rgi values """
 def add_rgi(glathida, path_O1_shp):
@@ -141,7 +122,7 @@ def add_rgi(glathida, path_O1_shp):
 
     all_regions = [region1, region2, region3, region4, region5, region6, region7, region8, region9, region10,
                    region11, region12, region13, region14, region15, region16, region17, region18, region19]
-    #all_regions = [region1, region2, region4]
+
     # loop over the region geometries
     for n, region in tqdm(enumerate(all_regions), total=len(all_regions), leave=True):
 
@@ -190,25 +171,13 @@ def add_rgi(glathida, path_O1_shp):
 """ Add Slopes and Elevation """
 def add_slopes_elevation(glathida, path_mosaic):
     print('Running slope and elevation method...')
+    ts = time.time()
 
-    if (any(ele in list(glathida) for ele in ['slope_lat', 'slope_lon', 'elevation_astergdem'])):
-        print('Variables slope_lat, slope_lon or elevation_astergdem already in dataframe.')
+    if (any(ele in list(glathida) for ele in ['slope_lat', 'slope_lon', 'elevation'])):
+        print('Variables slope_lat, slope_lon or elevation already in dataframe.')
         return glathida
 
-    def gaussian_filter_with_nans(U, sigma):
-        # Since the reprojection into utm leads to distortions (=nans) we need to take care of this during filtering
-        # From David in https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
-        V = U.copy()
-        V[np.isnan(U)] = 0
-        VV = scipy.ndimage.gaussian_filter(V, sigma=[sigma, sigma], mode='nearest')
-        W = np.ones_like(U)
-        W[np.isnan(U)] = 0
-        WW = scipy.ndimage.gaussian_filter(W, sigma=[sigma, sigma], mode='nearest')
-        WW[WW == 0] = np.nan
-        filtered_U = VV / WW
-        return filtered_U
-
-    glathida['elevation_astergdem'] = [np.nan] * len(glathida)
+    glathida['elevation'] = [np.nan] * len(glathida)
     glathida['slope_lat'] = [np.nan] * len(glathida)
     glathida['slope_lon'] = [np.nan] * len(glathida)
     glathida['slope_lat_gf50'] = [np.nan] * len(glathida)
@@ -228,11 +197,17 @@ def add_slopes_elevation(glathida, path_mosaic):
     datax = []  # just to analyse the results
     datay = []  # just to analyse the results
 
-    for rgi in [3,7,8,11,18]:
+    for rgi in [1,3,4,7,8,11,18]:
 
         print(f'rgi: {rgi}')
-        # get dem
-        dem_rgi = rioxarray.open_rasterio(path_mosaic + f'mosaic_RGI_{rgi:02d}.tif')
+        # get dem o create it
+        if os.path.exists(path_mosaic + f'mosaic_RGI_{rgi:02d}.tif'):
+            dem_rgi = rioxarray.open_rasterio(path_mosaic + f'mosaic_RGI_{rgi:02d}.tif')
+            print(f"mosaic_RGI_{rgi:02d}.tif found")
+        else:  # We have to create the mosaic
+            print(f"Mosaic {rgi} not present. Let's create it on the fly...")
+            dem_rgi = create_mosaic_rgi_tandemx(rgi=rgi, path_rgi_tiles=path_mosaic, save=0)
+
         ris_ang = dem_rgi.rio.resolution()[0]
 
         glathida_rgi = glathida.loc[glathida['RGI'] == rgi] # collapse glathida to specific rgi
@@ -412,7 +387,7 @@ def add_slopes_elevation(glathida, path_mosaic):
                 assert aspect_data_50.shape == aspect_data_300.shape, "Different shapes, something wrong!"
 
                 # write to dataframe
-                glathida.loc[indexes_all_epsg, 'elevation_astergdem'] = elevation_data
+                glathida.loc[indexes_all_epsg, 'elevation'] = elevation_data
                 glathida.loc[indexes_all_epsg, 'slope_lat'] = slope_lat_data
                 glathida.loc[indexes_all_epsg, 'slope_lon'] = slope_lon_data
                 glathida.loc[indexes_all_epsg, 'slope_lat_gf50'] = slope_lat_data_filter_50
@@ -570,7 +545,7 @@ def add_slopes_elevation(glathida, path_mosaic):
             # write to dataframe
             glathida.loc[indexes_all, 'slope_lat'] = slope_lat_data
             glathida.loc[indexes_all, 'slope_lon'] = slope_lon_data
-            glathida.loc[indexes_all, 'elevation_astergdem'] = elevation_data
+            glathida.loc[indexes_all, 'elevation'] = elevation_data
             glathida.loc[indexes_all, 'slope_lat_gf50'] = slope_lat_data_filter_50
             glathida.loc[indexes_all, 'slope_lon_gf50'] = slope_lon_data_filter_50
             glathida.loc[indexes_all, 'slope_lat_gf100'] = slope_lat_data_filter_100
@@ -580,6 +555,7 @@ def add_slopes_elevation(glathida, path_mosaic):
             glathida.loc[indexes_all, 'slope_lat_gf300'] = slope_lat_data_filter_300
             glathida.loc[indexes_all, 'slope_lon_gf300'] = slope_lon_data_filter_300
             """
+    print(f"Slopes and elevation done in {(time.time()-ts)/60} min")
     return glathida
 
 """Add Millan's velocity vx, vy, ith"""
@@ -587,28 +563,16 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
     """
     :param glathida: input csv. dataframe to which I want to add velocity
     :param path_millan_velocity: path to folder with millan velocity data
+    :param path_millan_icethickness: path to folder with millan ice thickness data
     :return: dataframe with velocity added
     See https://www.sedoo.fr/theia-publication-products/?uuid=55acbdd5-3982-4eac-89b2-46703557938c for info.
     """
     print('Adding Millan velocity and ice thickness method...')
+    tm = time.time()
 
     if (any(ele in list(glathida) for ele in ['vx', 'vy', 'ith_m'])):
         print('Variable already in dataframe.')
-        #return glathida
-        pass
-
-    def gaussian_filter_with_nans(U, sigma):
-        # Since the reprojection into utm leads to distortions (=nans) we need to take care of this during filtering
-        # From David in https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
-        V = U.copy()
-        V[np.isnan(U)] = 0
-        VV = scipy.ndimage.gaussian_filter(V, sigma=[sigma, sigma], mode='nearest')
-        W = np.ones_like(U)
-        W[np.isnan(U)] = 0
-        WW = scipy.ndimage.gaussian_filter(W, sigma=[sigma, sigma], mode='nearest')
-        WW[WW == 0] = np.nan
-        filtered_U = VV / WW
-        return filtered_U
+        return glathida
 
     glathida['ith_m'] = [np.nan] * len(glathida)
     glathida['vx'] = [np.nan] * len(glathida)
@@ -626,120 +590,119 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
     glathida['dvy_dx'] = [np.nan] * len(glathida)
     glathida['dvy_dy'] = [np.nan] * len(glathida)
 
-    for rgi in [3, 7, 8, 11, 18]:
+    for rgi in [1,3,4,7,8,11,18]:
+        glathida_rgi = glathida.loc[glathida['RGI'] == rgi]  # glathida to specific rgi
+        tqdm.write(f'rgi: {rgi}, Total points: {len(glathida_rgi)}')
 
-        glathida_rgi = glathida.loc[glathida['RGI'] == rgi] # glathida to specific rgi
-        print(f'rgi: {rgi}, Total: {len(glathida_rgi)}')
-        ids_rgi = glathida_rgi['GlaThiDa_ID'].unique().tolist()  # unique IDs
+        files_vx = sorted(glob(f"{path_millan_velocity}RGI-{rgi}/VX_RGI-{rgi}*"))
+        files_vy = sorted(glob(f"{path_millan_velocity}RGI-{rgi}/VY_RGI-{rgi}*"))
+        files_ith = sorted(glob(f"{path_millan_icethickness}RGI-{rgi}/THICKNESS_RGI-{rgi}*"))
+        n_rgi_tiles = len(files_vx)
 
-        # get Millan vx files for specific rgi and create vx mosaic
-        files_vx = glob(path_millan_velocity+'RGI-{}/VX_RGI-{}*'.format(rgi, rgi))
-        mosaic_vx_dict = {'list_vx': [], 'epsg_utm_vx': []}
-        for tiffile in files_vx:
-            xds = rioxarray.open_rasterio(tiffile, masked=False)
-            xds.rio.write_nodata(np.nan, inplace=True)
-            mosaic_vx_dict['list_vx'].append(xds)
-            mosaic_vx_dict['epsg_utm_vx'].append(xds.rio.crs)
+        for i, (file_vx, file_vy, file_ith) in enumerate(zip(files_vx, files_vy, files_ith)):
 
-        # check
-        if len(mosaic_vx_dict['epsg_utm_vx'])>1:
-            all_same_epsg = all(x == mosaic_vx_dict['epsg_utm_vx'][0] for x in mosaic_vx_dict['epsg_utm_vx'])
-            if not all_same_epsg:
-                raise ValueError ("In Millan you are trying to mosaic files with different epsgs.")
+            tile_vx = rioxarray.open_rasterio(file_vx, masked=False)
+            tile_vy = rioxarray.open_rasterio(file_vy, masked=False)
+            tile_ith = rioxarray.open_rasterio(file_ith, masked=False)
 
-        # get Millan vy files for specific rgi and create vy mosaic
-        files_vy = glob(args.millan_velocity_folder+'RGI-{}/VY_RGI-{}*'.format(rgi, rgi))
-        mosaic_vy_dict = {'list_vy': [], 'epsg_utm_vy': []}
-        for tiffile in files_vy:
-            xds = rioxarray.open_rasterio(tiffile, masked=False)
-            xds.rio.write_nodata(np.nan, inplace=True)
-            mosaic_vy_dict['list_vy'].append(xds)
+            tile_vx.rio.write_nodata(np.nan, inplace=True)
+            tile_vy.rio.write_nodata(np.nan, inplace=True)
+            tile_ith.rio.write_nodata(np.nan, inplace=True)
 
-        # get Millan ice thickness files for specific rgi and create ith mosaic
-        files_ith = glob(path_millan_icethickness+'RGI-{}/THICKNESS_RGI-{}*'.format(rgi, rgi))
-        mosaic_ith_dict = {'list_ith': [], 'epsg_utm_ith': []}
-        for tiffile in files_ith:
-            xds = rioxarray.open_rasterio(tiffile, masked=False)
-            xds.rio.write_nodata(np.nan, inplace=True)
-            mosaic_ith_dict['list_ith'].append(xds)
+            assert tile_vx.rio.crs == tile_vy.rio.crs == tile_ith.rio.crs, "Tiles vx, vy, ith with different epsg."
+            assert tile_vx.rio.bounds() == tile_vy.rio.bounds(), "Tiles vx, vy bounds not the same. Super strange."
+            assert tile_vx.rio.resolution() == tile_vy.rio.resolution() == tile_ith.rio.resolution(), \
+                "Tiles vx, vy, ith have different resolution."
 
-        mosaic_vx = merge.merge_arrays(mosaic_vx_dict['list_vx'])
-        mosaic_vy = merge.merge_arrays(mosaic_vy_dict['list_vy'])
-        mosaic_ith = merge.merge_arrays(mosaic_ith_dict['list_ith'])
+            # vx (and vy) and ith may have a bound difference for some reason (ask Millan).
+            # In such cases we reindex the ith tile to match the vx tile coordinates
+            if not tile_vx.rio.bounds() == tile_ith.rio.bounds():
+                tile_ith = tile_ith.reindex_like(tile_vx, method="nearest", tolerance=50., fill_value=np.nan)
+            assert tile_vx.rio.bounds() == tile_vy.rio.bounds() == tile_vx.rio.bounds(), "All tiles bounds not the same"
 
-        # check
-        assert mosaic_vx.rio.crs == mosaic_vy.rio.crs == mosaic_ith.rio.crs, 'Millan - sth wrong in espg of mosaics'
+            # Mask ice thickness based on velocity map
+            tile_ith = tile_ith.where(tile_vx.notnull())
 
-        bounds_ith = mosaic_ith.rio.bounds()
-        bounds_vx = mosaic_vx.rio.bounds()
-        bounds_vy = mosaic_vy.rio.bounds()
+            # Convert tile boundaries to lat lon
+            tran_to_4326 = Transformer.from_crs(tile_vx.rio.crs, "EPSG:4326")
+            lat0, lon0 = tran_to_4326.transform(tile_vx.rio.bounds()[0], tile_vx.rio.bounds()[1])
+            lat1, lon1 = tran_to_4326.transform(tile_vx.rio.bounds()[2], tile_vx.rio.bounds()[3])
+            #print(f"Tile {i, file_vx} bounds {lat0, lon0, lat1, lon1}")
 
-        # Reshape the 3 mosaic if different shapes
-        if (bounds_ith != bounds_vx or bounds_ith != bounds_vy or bounds_vx != bounds_vy):
-            new_llx = max(bounds_ith[0], bounds_vx[0], bounds_vy[0])
-            new_lly = max(bounds_ith[1], bounds_vx[1], bounds_vy[1])
-            new_urx = min(bounds_ith[2], bounds_vx[2], bounds_vy[2])
-            new_ury = min(bounds_ith[3], bounds_vx[3], bounds_vy[3])
-            #print(new_llx, new_lly, new_urx, new_ury)
-            mosaic_ith = mosaic_ith.rio.clip_box(minx=new_llx, miny=new_lly, maxx=new_urx, maxy=new_ury)
-            mosaic_vx = mosaic_vx.rio.clip_box(minx=new_llx, miny=new_lly, maxx=new_urx, maxy=new_ury)
-            mosaic_vy = mosaic_vy.rio.clip_box(minx=new_llx, miny=new_lly, maxx=new_urx, maxy=new_ury)
-            #for i in [mosaic_ith, mosaic_vx, mosaic_vy]:
-            #    print(i.rio.width, i.rio.height, i.rio.bounds(), i.rio.crs, i.rio.resolution()[0])
+            # Select data inside the tile
+            condition1 = glathida_rgi['POINT_LAT']>lat0
+            condition2 = glathida_rgi['POINT_LAT']<lat1
+            condition3 = glathida_rgi['POINT_LON']>lon0
+            condition4 = glathida_rgi['POINT_LON']<lon1
 
-        # IMPORTANT
-        # velocity maps contains nans, while the ice thickness map does not. This may result in nans in the
-        # velocity interpolation, while non-nans in the ice thickness interpolation.
-        # I decide therefore to mask the ice thickness data based-on velocity so that if nan results for
-        # interpolating the velocity, also nan results when interpolating the ice thickness
-        mosaic_ith = mosaic_ith.where(mosaic_vx.notnull())
+            tile_condition = condition1 & condition2 & condition3 & condition4
+            glathida_rgi_tile = glathida_rgi[tile_condition]
 
-        res_utm_metres = mosaic_vx.rio.resolution()[0] # Millan resolution is 50 meters
-        crs = mosaic_vx.rio.crs
-        eps = 5 * res_utm_metres
-        transformer = Transformer.from_crs("EPSG:4326", crs)
+            tqdm.write(f"\t No. points found in tile: {len(glathida_rgi_tile)}/{len(glathida_rgi)}")
 
-        # loop over the unique IDs
-        for id_rgi in tqdm(ids_rgi, total=len(ids_rgi), leave=True):
+            # If no point in tile go to next tile
+            if len(glathida_rgi_tile)==0:
+                continue
 
-            glathida_id = glathida_rgi.loc[glathida_rgi['GlaThiDa_ID'] == id_rgi] #  glathida_rgi to specific id
-            indexes_rgi_id = glathida_id.index.tolist()
+            ids_rgi = glathida_rgi_tile['GlaThiDa_ID'].unique().tolist()  # unique IDs in rgi tile
 
-            lats = np.array(glathida_id['POINT_LAT'])
-            lons = np.array(glathida_id['POINT_LON'])
+            trans_to_crs = Transformer.from_crs("EPSG:4326", tile_vx.rio.crs)
+            ris_metre_millan = tile_vx.rio.resolution()[0]
+            eps_millan = 10 * ris_metre_millan
 
-            lons, lats = transformer.transform(lats, lons)
+            # loop over the unique IDs
+            for id_rgi in tqdm(ids_rgi, total=len(ids_rgi), desc=f"rgi {rgi} tile {i+1}/{n_rgi_tiles} Glathida ID", leave=True):
+                glathida_rgi_tile_id = glathida_rgi_tile.loc[glathida_rgi_tile['GlaThiDa_ID'] == id_rgi]
+                indexes_rgi_tile_id = glathida_rgi_tile_id.index.tolist()
 
-            swlat = np.amin(lats)
-            swlon = np.amin(lons)
-            nelat = np.amax(lats)
-            nelon = np.amax(lons)
+                lats = np.array(glathida_rgi_tile_id['POINT_LAT'])
+                lons = np.array(glathida_rgi_tile_id['POINT_LON'])
 
-            deltalat = np.abs(swlat - nelat)
-            deltalon = np.abs(swlon - nelon)
-            lats_xar = xarray.DataArray(lats)
-            lons_xar = xarray.DataArray(lons)
+                lons_crs, lats_crs = trans_to_crs.transform(lats, lons)
+                swlat = np.amin(lats_crs)
+                swlon = np.amin(lons_crs)
+                nelat = np.amax(lats_crs)
+                nelon = np.amax(lons_crs)
+                deltalat = np.abs(swlat - nelat)
+                deltalon = np.abs(swlon - nelon)
 
-            # clip millan mosaic
-            try:
-                focus_vx = mosaic_vx.rio.clip_box(minx=swlon - deltalon - eps, miny=swlat - deltalat - eps,
-                                                    maxx=nelon + deltalon + eps, maxy=nelat + deltalat + eps)
+                # clip millan mosaic
+                try:
+                    focus_vx0 = tile_vx.rio.clip_box(minx=swlon-deltalon-eps_millan, miny=swlat-deltalat-eps_millan,
+                                                          maxx=nelon+deltalon+eps_millan, maxy=nelat+deltalat+eps_millan)
 
-                focus_vy = mosaic_vy.rio.clip_box(minx=swlon - deltalon - eps, miny=swlat - deltalat - eps,
-                                                    maxx=nelon + deltalon + eps, maxy=nelat + deltalat + eps)
+                    focus_vy0 = tile_vy.rio.clip_box(minx=swlon-deltalon-eps_millan, miny=swlat-deltalat-eps_millan,
+                                                          maxx=nelon+deltalon+eps_millan, maxy=nelat+deltalat+eps_millan)
 
-                focus_ith = mosaic_ith.rio.clip_box(minx=swlon - deltalon - eps, miny=swlat - deltalat - eps,
-                                                    maxx=nelon + deltalon + eps, maxy=nelat + deltalat + eps)
+                    focus_ith = tile_ith.rio.clip_box(minx=swlon-deltalon-eps_millan, miny=swlat-deltalat-eps_millan,
+                                                          maxx=nelon+deltalon+eps_millan, maxy=nelat+deltalat+eps_millan)
+                except:
+                    tqdm.write(f'No millan data for rgi {rgi} GlaThiDa_ID {id_rgi} ')
+                    # print(swlon - deltalon - eps, nelon + deltalon + eps, swlat - deltalat - eps, nelat + deltalat + eps)
+                    continue
 
-                focus_vx = focus_vx.squeeze()
-                focus_vy = focus_vy.squeeze()
+                # Interpolate vx, vy to remove nans (as much as possible). On the other hand we keep the nans
+                # in the ice thickness ith.
+                focus_vx = focus_vx0.rio.interpolate_na(method='linear').squeeze()
+                focus_vy = focus_vy0.rio.interpolate_na(method='linear').squeeze()
                 focus_ith = focus_ith.squeeze()
 
+                plot_Millan_interpolated_tiles = False
+                if plot_Millan_interpolated_tiles:
+                    fig, axes = plt.subplots(1, 3)
+                    ax1, ax2, ax3 = axes.flatten()
+                    im1 = focus_vx0.plot(ax=ax1, cmap='viridis')
+                    im2 = focus_vx.plot(ax=ax2, cmap='viridis')
+                    s2 = ax2.scatter(x=lons_crs, y=lats_crs, s=20, c='k', alpha=.1, zorder=1)
+                    im3 = focus_ith.plot(ax=ax3, cmap='viridis')
+                    plt.show()
+
+
                 # Calculate how many pixels I need for a resolution of 50, 100, 150, 300 meters
-                num_px_sigma_50 = max(1, round(50 / res_utm_metres)) #1
-                num_px_sigma_100 = max(1, round(100 / res_utm_metres)) #2
-                num_px_sigma_150 = max(1, round(150 / res_utm_metres)) #3
-                num_px_sigma_300 = max(1, round(300 / res_utm_metres)) #6
+                num_px_sigma_50 = max(1, round(50 / ris_metre_millan))  # 1
+                num_px_sigma_100 = max(1, round(100 / ris_metre_millan))  # 2
+                num_px_sigma_150 = max(1, round(150 / ris_metre_millan))  # 3
+                num_px_sigma_300 = max(1, round(300 / ris_metre_millan))  # 6
 
                 # Apply filter to velocities
                 focus_filter_vx_50 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_50)
@@ -762,124 +725,134 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
                 focus_filter_vy_300 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_300)
 
                 # create xarrays of filtered velocities
-                focus_filter_vx_50_ar = focus_vx.copy(data=focus_filter_vx_50)
-                focus_filter_vx_100_ar = focus_vx.copy(data=focus_filter_vx_100)
-                focus_filter_vx_150_ar = focus_vx.copy(data=focus_filter_vx_150)
-                focus_filter_vx_300_ar = focus_vx.copy(data=focus_filter_vx_300)
-                focus_filter_vy_50_ar = focus_vy.copy(data=focus_filter_vy_50)
-                focus_filter_vy_100_ar = focus_vy.copy(data=focus_filter_vy_100)
-                focus_filter_vy_150_ar = focus_vy.copy(data=focus_filter_vy_150)
-                focus_filter_vy_300_ar = focus_vy.copy(data=focus_filter_vy_300)
+                focus_filter_vx_50_ar = focus_vx.copy(deep=True, data=focus_filter_vx_50)
+                focus_filter_vx_100_ar = focus_vx.copy(deep=True, data=focus_filter_vx_100)
+                focus_filter_vx_150_ar = focus_vx.copy(deep=True, data=focus_filter_vx_150)
+                focus_filter_vx_300_ar = focus_vx.copy(deep=True, data=focus_filter_vx_300)
+                focus_filter_vy_50_ar = focus_vy.copy(deep=True, data=focus_filter_vy_50)
+                focus_filter_vy_100_ar = focus_vy.copy(deep=True, data=focus_filter_vy_100)
+                focus_filter_vy_150_ar = focus_vy.copy(deep=True, data=focus_filter_vy_150)
+                focus_filter_vy_300_ar = focus_vy.copy(deep=True, data=focus_filter_vy_300)
 
                 # Calculate the velocity gradients
                 dvx_dx_ar, dvx_dy_ar = focus_filter_vx_300_ar.differentiate(coord='x'), focus_filter_vx_300_ar.differentiate(coord='y')
                 dvy_dx_ar, dvy_dy_ar = focus_filter_vy_300_ar.differentiate(coord='x'), focus_filter_vy_300_ar.differentiate(coord='y')
 
-            except:
-                tqdm.write(f'No millan data for rgi {rgi} GlaThiDa_ID {id_rgi} ')
-                #print(swlon - deltalon - eps, nelon + deltalon + eps, swlat - deltalat - eps, nelat + deltalat + eps)
-                continue
+                # Interpolate (note: nans can be produced near boundaries). This should be removed at the end.
+                lons_crs = xarray.DataArray(lons_crs)
+                lats_crs = xarray.DataArray(lats_crs)
 
-            # interpolate (note: nans can be produced near boundaries)
-            ith_data = focus_ith.interp(y=lats_xar, x=lons_xar, method="nearest").data
-            vx_data = focus_vx.interp(y=lats_xar, x=lons_xar, method="nearest").data
-            vy_data = focus_vy.interp(y=lats_xar, x=lons_xar, method="nearest").data
-            vx_filter_50_data = focus_filter_vx_50_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
-            vx_filter_100_data = focus_filter_vx_100_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
-            vx_filter_150_data = focus_filter_vx_150_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
-            vx_filter_300_data = focus_filter_vx_300_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
-            vy_filter_50_data = focus_filter_vy_50_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
-            vy_filter_100_data = focus_filter_vy_100_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
-            vy_filter_150_data = focus_filter_vy_150_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
-            vy_filter_300_data = focus_filter_vy_300_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
+                ith_data = focus_ith.interp(y=lats_crs, x=lons_crs, method="nearest").data
+                vx_data = focus_vx.interp(y=lats_crs, x=lons_crs, method="nearest").data
+                vy_data = focus_vy.interp(y=lats_crs, x=lons_crs, method="nearest").data
+                vx_filter_50_data = focus_filter_vx_50_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+                vx_filter_100_data = focus_filter_vx_100_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+                vx_filter_150_data = focus_filter_vx_150_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+                vx_filter_300_data = focus_filter_vx_300_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+                vy_filter_50_data = focus_filter_vy_50_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+                vy_filter_100_data = focus_filter_vy_100_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+                vy_filter_150_data = focus_filter_vy_150_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+                vy_filter_300_data = focus_filter_vy_300_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
 
-            dvx_dx_data = dvx_dx_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
-            dvx_dy_data = dvx_dy_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
-            dvy_dx_data = dvy_dx_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
-            dvy_dy_data = dvy_dy_ar.interp(y=lats_xar, x=lons_xar, method='nearest').data
+                dvx_dx_data = dvx_dx_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+                dvx_dy_data = dvx_dy_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+                dvy_dx_data = dvy_dx_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+                dvy_dy_data = dvy_dy_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
 
-            # some checks
-            assert ith_data.shape == vx_data.shape == vy_data.shape, "Millan interp something wrong!"
-            assert vx_filter_150_data.shape == vy_filter_150_data.shape, "Millan interp something wrong!"
+                # some checks
+                assert ith_data.shape == vx_data.shape == vy_data.shape, "Millan interp something wrong!"
+                assert vx_filter_150_data.shape == vy_filter_150_data.shape, "Millan interp something wrong!"
+                assert vx_filter_150_data.shape == vy_filter_300_data.shape, "Millan interp something wrong!"
+                assert vx_filter_300_data.shape == vy_filter_150_data.shape, "Millan interp something wrong!"
+                assert dvx_dx_data.shape == dvx_dy_data.shape, "Millan interp something wrong!"
+                assert dvy_dx_data.shape == dvy_dy_data.shape, "Millan interp something wrong!"
 
-            # plot
-            ifplot = False
-            if ifplot and np.any(np.isnan(vx_data)): ifplot = True
-            if ifplot:
-                fig, axes = plt.subplots(3,3, figsize=(10,5))
-                ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9 = axes.flatten()
+                # Fill dataframe
+                # add ith_m, vx, vy data to dataframe
+                glathida.loc[indexes_rgi_tile_id, 'ith_m'] = ith_data
+                glathida.loc[indexes_rgi_tile_id, 'vx'] = vx_data
+                glathida.loc[indexes_rgi_tile_id, 'vy'] = vy_data
+                glathida.loc[indexes_rgi_tile_id, 'vx_gf50'] = vx_filter_50_data
+                glathida.loc[indexes_rgi_tile_id, 'vx_gf100'] = vx_filter_100_data
+                glathida.loc[indexes_rgi_tile_id, 'vx_gf150'] = vx_filter_150_data
+                glathida.loc[indexes_rgi_tile_id, 'vx_gf300'] = vx_filter_300_data
+                glathida.loc[indexes_rgi_tile_id, 'vy_gf50'] = vy_filter_50_data
+                glathida.loc[indexes_rgi_tile_id, 'vy_gf100'] = vy_filter_100_data
+                glathida.loc[indexes_rgi_tile_id, 'vy_gf150'] = vy_filter_150_data
+                glathida.loc[indexes_rgi_tile_id, 'vy_gf300'] = vy_filter_300_data
+                glathida.loc[indexes_rgi_tile_id, 'dvx_dx'] = dvx_dx_data
+                glathida.loc[indexes_rgi_tile_id, 'dvx_dy'] = dvx_dy_data
+                glathida.loc[indexes_rgi_tile_id, 'dvy_dx'] = dvy_dx_data
+                glathida.loc[indexes_rgi_tile_id, 'dvy_dy'] = dvy_dy_data
 
-                im1 = focus_vx.plot(ax=ax1, cmap='viridis', vmin=np.nanmin(focus_vx), vmax=np.nanmax(focus_vx))
-                s1 = ax1.scatter(x=lons, y=lats, s=15, c=vx_data, ec=(0,0,0,0.1), cmap='viridis',
-                                 vmin=np.nanmin(focus_vx), vmax=np.nanmax(focus_vx), zorder=1)
-                s1_1 = ax1.scatter(x=lons[np.argwhere(np.isnan(vx_data))], y=lats[np.argwhere(np.isnan(vx_data))], s=15,
-                                   c='magenta', zorder=1)
+                # Plot
+                ifplot_millan = False
+                if ifplot_millan and np.any(np.isnan(vx_data)): ifplot_millan = True
+                else: ifplot_millan = False
+                if ifplot_millan:
+                    lons_crs, lats_crs = lons_crs.to_numpy(), lats_crs.to_numpy()
+                    fig, axes = plt.subplots(3, 3, figsize=(10, 5))
+                    ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9 = axes.flatten()
 
-                im2 = focus_vy.plot(ax=ax2, cmap='viridis', vmin=np.nanmin(focus_vy), vmax=np.nanmax(focus_vy))
-                s2 = ax2.scatter(x=lons, y=lats, s=15, c=vy_data, ec=(0, 0, 0, 0.1), cmap='viridis',
-                                 vmin=np.nanmin(focus_vy), vmax=np.nanmax(focus_vy), zorder=1)
-                s2_1 = ax2.scatter(x=lons[np.argwhere(np.isnan(vy_data))], y=lats[np.argwhere(np.isnan(vy_data))], s=15,
-                                   c='magenta', zorder=1)
+                    im1 = focus_vx.plot(ax=ax1, cmap='viridis', vmin=np.nanmin(focus_vx), vmax=np.nanmax(focus_vx))
 
-                im3 = focus_ith.plot(ax=ax3, cmap='viridis', vmin=0, vmax=np.nanmax(ith_data))
-                s3 = ax3.scatter(x=lons, y=lats, s=15, c=ith_data, ec=(0, 0, 0, 0.1), cmap='viridis',
-                                 vmin=0, vmax=np.nanmax(ith_data), zorder=1)
-                s3_1 = ax3.scatter(x=lons[np.argwhere(np.isnan(ith_data))], y=lats[np.argwhere(np.isnan(ith_data))], s=15,
-                                   c='magenta', zorder=1)
+                    s1 = ax1.scatter(x=lons_crs, y=lats_crs, s=15, c=vx_data, ec=(0, 0, 0, 0.3), cmap='viridis',
+                                     vmin=np.nanmin(focus_vx), vmax=np.nanmax(focus_vx), zorder=1)
 
-                im4 = focus_filter_vx_150_ar.plot(ax=ax4, cmap='viridis', vmin=np.nanmin(focus_vx),
-                                                  vmax=np.nanmax(focus_vx))
-                s4 = ax4.scatter(x=lons, y=lats, s=15, c=vx_filter_150_data, ec=(0, 0, 0, 0.1), cmap='viridis',
-                                 vmin=np.nanmin(focus_vx), vmax=np.nanmax(focus_vx), zorder=1)
-                s4_1 = ax4.scatter(x=lons[np.argwhere(np.isnan(vx_filter_150_data))],
-                                   y=lats[np.argwhere(np.isnan(vx_filter_150_data))], s=15,
-                                   c='magenta', zorder=1)
+                    s1_1 = ax1.scatter(x=lons_crs[np.argwhere(np.isnan(vx_data))], y=lats_crs[np.argwhere(np.isnan(vx_data))],
+                                       s=15, c='magenta', zorder=1)
 
-                im5 = focus_filter_vy_150_ar.plot(ax=ax5, cmap='viridis', vmin=np.nanmin(focus_vy),
-                                                  vmax=np.nanmax(focus_vy))
-                s5 = ax5.scatter(x=lons, y=lats, s=15, c=vy_filter_150_data, ec=(0, 0, 0, 0.1), cmap='viridis',
-                                 vmin=np.nanmin(focus_vy), vmax=np.nanmax(focus_vy), zorder=1)
-                s5_1 = ax5.scatter(x=lons[np.argwhere(np.isnan(vy_filter_150_data))],
-                                   y=lats[np.argwhere(np.isnan(vy_filter_150_data))], s=15,
-                                   c='magenta', zorder=1)
+                    im2 = focus_vy.plot(ax=ax2, cmap='viridis', vmin=np.nanmin(focus_vy), vmax=np.nanmax(focus_vy))
+                    s2 = ax2.scatter(x=lons_crs, y=lats_crs, s=15, c=vy_data, ec=(0, 0, 0, 0.3), cmap='viridis',
+                                     vmin=np.nanmin(focus_vy), vmax=np.nanmax(focus_vy), zorder=1)
+                    s2_1 = ax2.scatter(x=lons_crs[np.argwhere(np.isnan(vy_data))], y=lats_crs[np.argwhere(np.isnan(vy_data))],
+                                       s=15, c='magenta', zorder=1)
 
-                ax6.axis("off")
+                    im3 = focus_ith.plot(ax=ax3, cmap='viridis', vmin=0, vmax=np.nanmax(ith_data))
+                    s3 = ax3.scatter(x=lons_crs, y=lats_crs, s=15, c=ith_data, ec=(0, 0, 0, 0.3), cmap='viridis',
+                                     vmin=0, vmax=np.nanmax(ith_data), zorder=1)
+                    s3_1 = ax3.scatter(x=lons_crs[np.argwhere(np.isnan(ith_data))], y=lats_crs[np.argwhere(np.isnan(ith_data))],
+                                       s=15, c='magenta', zorder=1)
 
-                im7 = dvx_dx.plot(ax=ax7, cmap='viridis',)
-                im8 = dvx_dy.plot(ax=ax8, cmap='viridis',)
+                    im4 = focus_filter_vx_150_ar.plot(ax=ax4, cmap='viridis', vmin=np.nanmin(focus_vx), vmax=np.nanmax(focus_vx))
+                    s4 = ax4.scatter(x=lons_crs, y=lats_crs, s=15, c=vx_filter_150_data, ec=(0, 0, 0, 0.3), cmap='viridis',
+                                     vmin=np.nanmin(focus_vx), vmax=np.nanmax(focus_vx), zorder=1)
+                    s4_1 = ax4.scatter(x=lons_crs[np.argwhere(np.isnan(vx_filter_150_data))],
+                                       y=lats_crs[np.argwhere(np.isnan(vx_filter_150_data))], s=15, c='magenta', zorder=1)
 
-                ax1.title.set_text('vx')
-                ax2.title.set_text('vy')
-                ax3.title.set_text('ice thickness')
-                for ax in (ax1, ax2, ax3):
-                    ax.set(xlabel='', ylabel='')
-                plt.tight_layout()
-                plt.show()
+                    im5 = focus_filter_vy_150_ar.plot(ax=ax5, cmap='viridis', vmin=np.nanmin(focus_vy),
+                                                      vmax=np.nanmax(focus_vy))
+                    s5 = ax5.scatter(x=lons_crs, y=lats_crs, s=15, c=vy_filter_150_data, ec=(0, 0, 0, 0.3), cmap='viridis',
+                                     vmin=np.nanmin(focus_vy), vmax=np.nanmax(focus_vy), zorder=1)
+                    s5_1 = ax5.scatter(x=lons_crs[np.argwhere(np.isnan(vy_filter_150_data))],
+                                       y=lats_crs[np.argwhere(np.isnan(vy_filter_150_data))], s=15,
+                                       c='magenta', zorder=1)
 
-            # add ith_m, vx, vy data to dataframe
-            glathida.loc[indexes_rgi_id, 'ith_m'] = ith_data
-            glathida.loc[indexes_rgi_id, 'vx'] = vx_data
-            glathida.loc[indexes_rgi_id, 'vy'] = vy_data
-            glathida.loc[indexes_rgi_id, 'vx_gf50'] = vx_filter_50_data
-            glathida.loc[indexes_rgi_id, 'vx_gf100'] = vx_filter_100_data
-            glathida.loc[indexes_rgi_id, 'vx_gf150'] = vx_filter_150_data
-            glathida.loc[indexes_rgi_id, 'vx_gf300'] = vx_filter_300_data
-            glathida.loc[indexes_rgi_id, 'vy_gf50'] = vy_filter_50_data
-            glathida.loc[indexes_rgi_id, 'vy_gf100'] = vy_filter_100_data
-            glathida.loc[indexes_rgi_id, 'vy_gf150'] = vy_filter_150_data
-            glathida.loc[indexes_rgi_id, 'vy_gf300'] = vy_filter_300_data
-            glathida.loc[indexes_rgi_id, 'dvx_dx'] = dvx_dx_data
-            glathida.loc[indexes_rgi_id, 'dvx_dy'] = dvx_dy_data
-            glathida.loc[indexes_rgi_id, 'dvy_dx'] = dvy_dx_data
-            glathida.loc[indexes_rgi_id, 'dvy_dy'] = dvy_dy_data
+                    ax6.axis("off")
+                    ax9.axis("off")
+
+                    im7 = dvx_dx_ar.plot(ax=ax7, cmap='viridis', )
+                    im8 = dvy_dy_ar.plot(ax=ax8, cmap='viridis', )
+
+                    ax1.title.set_text('vx')
+                    ax2.title.set_text('vy')
+                    ax3.title.set_text('ice thickness')
+                    for ax in (ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9):
+                        ax.set(xlabel='', ylabel='')
+                    plt.tight_layout()
+                    plt.show()
+
 
         # How many nans we have produced from the interpolation
-        glathida_rgi = glathida.loc[glathida['RGI'] == rgi]
-        print(f"From rgi {rgi} the no. nans in vx/vy/ith/vx300/vy300: {np.sum(np.isnan(glathida_rgi['vx']))}/{np.sum(np.isnan(glathida_rgi['vy']))}"
-              f"/{np.sum(np.isnan(glathida_rgi['ith_m']))}/{np.sum(np.isnan(glathida_rgi['vx_gf300']))}/{np.sum(np.isnan(glathida_rgi['vy_gf300']))}/"
-              f"{np.sum(np.isnan(glathida_rgi['dvx_dx']))}/{np.sum(np.isnan(glathida_rgi['dvx_dy']))}/{np.sum(np.isnan(glathida_rgi['dvy_dx']))}/"
-              f"{np.sum(np.isnan(glathida_rgi['dvy_dy']))}")
+        glathida_rgi_ = glathida.loc[glathida['RGI'] == rgi]
+        tqdm.write(
+            f"\t From rgi {rgi} the no. nans in vx/vy/ith/vx300/vy300/etc: {np.sum(np.isnan(glathida_rgi_['vx']))}/{np.sum(np.isnan(glathida_rgi_['vy']))}"
+            f"/{np.sum(np.isnan(glathida_rgi_['ith_m']))}/{np.sum(np.isnan(glathida_rgi_['vx_gf300']))}/{np.sum(np.isnan(glathida_rgi_['vy_gf300']))}/"
+            f"{np.sum(np.isnan(glathida_rgi_['dvx_dx']))}/{np.sum(np.isnan(glathida_rgi_['dvx_dy']))}/{np.sum(np.isnan(glathida_rgi_['dvy_dx']))}/"
+            f"{np.sum(np.isnan(glathida_rgi_['dvy_dy']))}")
 
+
+    print(f"Millan done in {(time.time()-tm)/60} min.")
     return glathida
 
 """Add distance from border using Millan's velocity"""
@@ -995,9 +968,7 @@ def add_dist_from_border_in_out(glathida, path_millan_velocity):
 """Add distance from border using glacier geometries"""
 def add_dist_from_boder_using_geometries(glathida):
     print("Adding distance to border using a geometrical approach...")
-    # Compared to the Millan method these distances are lower, at times much lower. Geometries contain nunataks,
-    # while probably the resolution of Millan product does not see small nunataks. This algorithm consider nunataks.
-    # I suspect this algorithm is more accurate than the method that uses Millan's product.
+
     # Note that if the point is inside a nunatak the distance will be set to nan.
 
     if ('dist_from_border_km_geom' in list(glathida)):
@@ -1026,7 +997,7 @@ def add_dist_from_boder_using_geometries(glathida):
         if (len(neighbors1)) ==1: return None
         else: return neighbors1
 
-    regions = [3, 7, 8, 11, 18]
+    regions = [1,3,4,7,8,11,18]
 
     # loop over regions
     for rgi in tqdm(regions, total=len(regions), desc='RGI',  leave=True):
@@ -1173,6 +1144,7 @@ def add_dist_from_boder_using_geometries(glathida):
                         min_distance_index = min_distances_point_geometries.idxmin()
                         nearest_line = geoseries_geometries_epsg.loc[min_distance_index]
                         nearest_point_on_line = nearest_line.interpolate(nearest_line.project(point_epsg))
+                        # todo: would be useful to add the slope calculated at this location
                         # print(f"{i} Minimum distance: {min_dist:.2f} meters.")
 
                 # Fill distance list for glacier id of point
@@ -1282,9 +1254,9 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
     glathida['TermType'] = [np.nan] * len(glathida) # 9 Not assigned
     glathida['Aspect'] = [np.nan] * len(glathida) # -9 bad values
 
-    regions = [3,7,8,11,18]
+    regions = [1,3,4,7,8,11,18]
 
-    for rgi in tqdm(regions, total=len(regions), leave=True):
+    for rgi in regions:
         # get OGGM's dataframe of rgi glaciers
         oggm_rgi_shp = glob(f'{path_OGGM_folder}/rgi/RGIV62/{rgi:02d}*/{rgi:02d}*.shp')[0]
         oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)
@@ -1299,13 +1271,14 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
         #print(oggm_rgi_glaciers['Surging'].value_counts())
         #input('wait')
         #print(oggm_rgi_glaciers.head(5))
-        print(f'rgi: {rgi}. Imported OGGMs {oggm_rgi_shp} dataframe of {len(oggm_rgi_glaciers)} glaciers')
+
+        #print(f'rgi: {rgi}. Imported OGGMs {oggm_rgi_shp} dataframe of {len(oggm_rgi_glaciers)} glaciers')
 
         # Glathida
         glathida_rgi = glathida.loc[glathida['RGI'] == rgi]
 
         # loop sui ghiacciai di oggm
-        for ind in tqdm(oggm_rgi_glaciers.index, total=len(oggm_rgi_glaciers)):
+        for i, ind in tqdm(enumerate(oggm_rgi_glaciers.index), total=len(oggm_rgi_glaciers), desc=f"glaciers in rgi {rgi}", leave=True, position=0):
 
             glacier_geometry = oggm_rgi_glaciers.loc[ind, 'geometry']
             glacier_RGIId = oggm_rgi_glaciers.loc[ind, 'RGIId']
@@ -1396,7 +1369,7 @@ def add_farinotti_ith(glathida, path_farinotti_icethickness):
 
     glathida['ith_f'] = [np.nan] * len(glathida)
 
-    regions = [3,7,8,11,18]
+    regions = [1,3,4,7,8,11,18]
 
     for rgi in tqdm(regions, total=len(regions), leave=True):
 
@@ -1417,13 +1390,19 @@ def add_farinotti_ith(glathida, path_farinotti_icethickness):
         tqdm.write(f'rgi: {rgi}. Glathida: {len(lats)} points')
 
         # Import farinotti ice thickness files
-        files_names_farinotti = glob(path_farinotti_icethickness + f'composite_thickness_RGI60-{rgi:02d}/RGI60-{rgi:02d}/*')
+        files_names_farinotti = sorted(glob(path_farinotti_icethickness + f'composite_thickness_RGI60-{rgi:02d}/RGI60-{rgi:02d}/*'))
         list_glaciers_farinotti_4326 = []
 
         for n, tiffile in tqdm(enumerate(files_names_farinotti), total=len(files_names_farinotti), leave=True):
 
             glacier_name = tiffile.split('/')[-1].replace('_thickness.tif', '')
-            glacier_geometry = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name, 'geometry'].item()
+            try:
+                # Farinotti has solutions for glaciers that no longer exist in rgi/oggm (especially some in rgi 4)
+                # See page 28 of https://www.glims.org/RGI/00_rgi60_TechnicalNote.pdf
+                glacier_geometry = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name, 'geometry'].item()
+            except ValueError:
+                tqdm.write(f"{glacier_name} not present in RGI v6.")
+                continue
 
             file_glacier_farinotti = rioxarray.open_rasterio(tiffile, masked=False)
             file_glacier_farinotti = file_glacier_farinotti.where(file_glacier_farinotti != 0.0) # set to nan outside glacier
@@ -1527,12 +1506,14 @@ if __name__ == '__main__':
         glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
         glathida = add_slopes_elevation(glathida, args.mosaic)
         glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
-        glathida = add_dist_from_border_in_out(glathida, args.millan_velocity_folder)
         glathida = add_dist_from_boder_using_geometries(glathida)
         glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
 
-        #glathida = pd.read_csv(args.path_ttt_csv.replace('.csv', '_final_sv_dv.csv'), low_memory=False)
+        #glathida = pd.read_csv(args.path_ttt_rgi_csv.replace('TTT_rgi.csv', 'metadata.csv'), low_memory=False)
+        #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
+        #glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
         #glathida = add_slopes_elevation(glathida, args.mosaic)
+        #glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
 
         if args.save:
             glathida.to_csv(args.save_outname, index=False)
@@ -1571,109 +1552,3 @@ if __name__ == '__main__':
         # print(glathida_i.corr(method='pearson', numeric_only=True)['THICKNESS'].abs().sort_values(ascending=False))
 
     exit()
-
-
-    """ Distributions of all variables"""
-    #min_ = min(glathida_i['vx'].min(), glathida_i['vx'].min())
-    #max_ = max(glathida_i['vx'].max(), glathida_i['vy'].max())
-    #min_ = glathida_i['elevation_astergdem'].min()
-    #max_ = glathida_i['elevation_astergdem'].max()
-    #print(min_, max_)
-    #v = max(abs(min_), abs(max_))+1
-    #fig, ax = plt.subplots()
-    #h1 = plt.hist(glathida_i['elevation_astergdem'], color='r', alpha=0.5, bins=np.arange(0, v, 10), log=False, label='elevation_astergdem')
-    #h1 = plt.hist(glathida_i['vx'], color='r', alpha=0.5, bins=np.arange(-v, v, 1), log=True, label='vx')
-    #h2 = plt.hist(glathida_i['vy'], color='b', alpha=0.5, bins=np.arange(-v, v, 1), log=True, label='vy')
-    #plt.legend(title=f'elevation_astergdem - rgi{rgi}')
-    #plt.show()
-
-
-    """
-    Visualize scatter plot between 2 variables + 1 as color 
-    """
-    """
-    glathida_i.sort_values('THICKNESS', inplace=True)
-
-    fig, ax1  = plt.subplots(1,1, figsize=(8,8))
-    #s1 = ax1.scatter(x=glathida_i['slope_lon'], y=glathida_i['vx'], c=glathida_i['THICKNESS'],
-    #                 s=1, alpha=1, norm=None, cmap='plasma', label=f'rgi: {rgi}')
-    #s2 = ax2.scatter(x=glathida_i['slope_lat'], y=glathida_i['vy'], c=glathida_i['THICKNESS'],
-    #                 s=1, alpha=1, norm=None, cmap='plasma', label=f'rgi: {rgi}')
-
-    s1 = ax1.scatter(x=glathida_i['dist_from_border_km'], y=glathida_i['elevation_astergdem'], c=glathida_i['THICKNESS'],
-                     s=1, alpha=1, norm=None, cmap='plasma', label=f'rgi: {rgi}')
-
-    for ax in (ax1, ):
-        ax.axhline(y=0, color='grey', alpha=.3)
-        ax.axvline(x=0, color='grey', alpha=.3)
-        ax.legend()
-    ax1.set_xlabel('dist_from_border_km')
-    ax1.set_ylabel('elevation_astergdem')
-    #ax2.set_xlabel('slope_lat')
-    #ax2.set_ylabel('vy (m/yr)')
-    cbar1 = plt.colorbar(s1, ax=ax1, alpha=1)
-    #cbar2 = plt.colorbar(s2, ax=ax2, alpha=1)
-    for cbar in (cbar1, ): cbar.set_label('THICKNESS (m)', labelpad=15, rotation=270)
-    plt.tight_layout()
-    plt.show()"""
-
-    """
-    Glathida Ice thickness vs all variables
-    """
-    """
-    fig, (ax1, ax2, ax3, ax4, ax5) = plt.subplots(1, 5, figsize=(19, 5))
-    s1 = ax1.scatter(x=glathida_i['slope_lon'], y=glathida_i['THICKNESS'], s=1)
-    s2 = ax2.scatter(x=glathida_i['slope_lat'], y=glathida_i['THICKNESS'], s=1)
-    s3 = ax3.scatter(x=glathida_i['vx'], y=glathida_i['THICKNESS'], s=1)
-    s4 = ax4.scatter(x=glathida_i['vy'], y=glathida_i['THICKNESS'], s=1)
-    s5 = ax5.scatter(x=glathida_i['dist_from_border_km'], y=glathida_i['THICKNESS'], s=1)
-
-    xtitles = ['slope_lon', 'slope_lat', 'vx', 'vy', 'dist_from_border']
-    for i in range(len(fig.axes)):
-        fig.axes[i].set_xlabel(xtitles[i])
-        fig.axes[i].set_ylabel('Ice thickness (m)')
-
-    fig.suptitle(f'rgi {rgi}', fontsize=16)
-    fig.tight_layout(pad=1.0)
-    plt.show()"""
-    """
-    fig, ax = plt.subplots(1, 1, figsize=(5, 5))
-    s1 = ax.scatter(x=glathida_i['elevation_astergdem'], y=glathida_i['THICKNESS'], s=1)
-    ax.set_xlabel('elevation_astergdem')
-    ax.set_ylabel('Ice thickness (m)')
-    fig.suptitle(f'rgi {rgi}', fontsize=16)
-    fig.tight_layout(pad=1.0)
-    plt.show()"""
-
-    """
-    Glathida Ice thickness vs Millan ice thickness
-    """
-    """
-    diff = glathida_i['THICKNESS'] - glathida_i['ith_m']
-
-    fig, (ax1, ax2) = plt.subplots(1,2, figsize=(10,4))
-    s1 = ax1.scatter(x=glathida_i['THICKNESS'], y=glathida_i['ith_m'], s=1)
-    lims = [np.min([ax1.get_xlim(), ax1.get_ylim()]), np.max([ax1.get_xlim(), ax1.get_ylim()])]
-    ax1.plot(lims, lims, 'k-', alpha=0.75, zorder=1)
-    h1 = ax2.hist(diff, bins=np.arange(diff.min(), diff.max(), 1))
-
-    ax2.text(0.6, 0.9, f'rgi: {rgi}', transform=ax2.transAxes)
-    ax2.text(0.6, 0.85, f'mean = {diff.mean():.1f} m', transform=ax2.transAxes)
-    ax2.text(0.6, 0.8, f'median = {diff.median():.1f} m', transform=ax2.transAxes)
-    ax2.text(0.6, 0.75, f'std = {diff.std():.1f} m', transform=ax2.transAxes)
-
-    ax1.set_xlabel('Glathida ice thickness (m)')
-    ax1.set_ylabel('Millan ice thickness (m)')
-    ax2.set_xlabel('Glathida - Millan ice thick (m)')
-    ax2.set_ylabel('Counts')
-
-    plt.tight_layout()
-    plt.show()"""
-
-
-
-
-
-
-
-
