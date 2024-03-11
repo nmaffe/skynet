@@ -1,6 +1,4 @@
 import os, sys
-sys.path.append("/home/nico/PycharmProjects/skynet/code") # to import haversine from utils.py
-from utils import haversine
 from glob import glob
 import argparse
 import numpy as np
@@ -21,7 +19,8 @@ from math import radians, cos, sin, asin, sqrt, floor
 import utm
 import time
 
-from create_rgi_mosaic_tanxedem import create_mosaic_rgi_tandemx
+from create_rgi_mosaic_tanxedem import fetch_dem
+from utils_metadata import haversine, from_lat_lon_to_utm_and_epsg, gaussian_filter_with_nans
 
 """
 This program generates glacier metadata at some random locations inside the glacier geometry. 
@@ -51,8 +50,6 @@ Note the following policy for Millan special cases to produce vx, vy, v, ith_m:
 # todo: smooth millan, farinotti and slope fiels before interpolation
 # todo: Data imputation: Millan and other features
 # todo: inserire anche un ulteriore feature che è la velocità media di tutto il ghiacciao ? sia vxm, vym, vm ?
-# todo: inserire dvx/dx, dvx/dy, dvy/dx, dvy/vy ?
-# todo: inserire anche la curvatura ? Vedi la tesi di farinotti, pare la curvatura sia importante
 # todo: a proposito di come smussare i campi di slope e velocita, guardare questo articolo:
 #  Slope estimation influences on ice thickness inversion models: a case study for Monte Tronador glaciers, North Patagonian Andes
 
@@ -72,30 +69,7 @@ utils.get_rgi_dir(version='62')  # setup oggm version
 utils.get_rgi_intersects_dir(version='62')
 
 
-def from_lat_lon_to_utm_and_epsg(lat, lon):
-    """https://github.com/Turbo87/utm"""
-    # Note lat lon can be also NumPy arrays.
-    # In this case zone letter and number will be calculate from first entry.
-    easting, northing, zone_number, zone_letter = utm.from_latlon(lat, lon)
-    southern_hemisphere_TrueFalse = True if zone_letter < 'N' else False
-    epsg_code = 32600 + zone_number + southern_hemisphere_TrueFalse * 100
-    return (easting, northing, zone_number, zone_letter, epsg_code)
-
-def gaussian_filter_with_nans(U, sigma):
-    # Since the reprojection into utm leads to distortions (=nans) we need to take care of this during filtering
-    # From David in https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
-    V = U.copy()
-    V[np.isnan(U)] = 0
-    VV = scipy.ndimage.gaussian_filter(V, sigma=[sigma, sigma], mode='nearest')
-    W = np.ones_like(U)
-    W[np.isnan(U)] = 0
-    WW = scipy.ndimage.gaussian_filter(W, sigma=[sigma, sigma], mode='nearest')
-    WW[WW == 0] = np.nan
-    filtered_U = VV / WW
-    return filtered_U
-
-
-def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
+def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
     print(f"******* FETCHING FEATURES FOR GLACIER {glacier_name} *******")
     t0=time.time()
 
@@ -126,10 +100,13 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
         if (len(neighbors1)) ==1: return None
         else: return neighbors1
 
-    # Get glacier dataset
     try:
+        # Get glacier dataset
         gl_df = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name]
-        print(f"Glacier {glacier_name} found.")
+        # Get the UTM EPSG code from glacier center coordinates
+        cenLon, cenLat = gl_df['CenLon'].item(), gl_df['CenLat'].item()
+        _, _, _, _, glacier_epsg = from_lat_lon_to_utm_and_epsg(cenLat, cenLon)
+        print(f"Glacier {glacier_name} found. Lat: {cenLat}, Lon: {cenLon}")
         assert len(gl_df) == 1, "Check this please."
         # print(gl_df.T)
     except Exception as e:
@@ -216,19 +193,254 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
     points_df['TermType'] = gl_df['TermType'].item()
     points_df['Aspect'] = gl_df['Aspect'].item()
 
+    """ Calculate Millan vx, vy, v """
+    print(f"Calculating vx, vy, v, ith_m...")
+
+    # get Millan files
+    files_vx = sorted(glob(f"{args.millan_velocity_folder}RGI-{rgi}/VX_RGI-{rgi}*"))
+    files_vy = sorted(glob(f"{args.millan_velocity_folder}RGI-{rgi}/VY_RGI-{rgi}*"))
+    files_ith = sorted(glob(f"{args.millan_icethickness_folder}RGI-{rgi}/THICKNESS_RGI-{rgi}*"))
+
+
+    mosaic_vx, mosaic_vy, mosaic_ith = None, None, None
+
+    for i, (file_vx, file_vy, file_ith) in enumerate(zip(files_vx, files_vy, files_ith)):
+
+        tile_vx = rioxarray.open_rasterio(file_vx, masked=False)
+        tile_vy = rioxarray.open_rasterio(file_vy, masked=False)
+        tile_ith = rioxarray.open_rasterio(file_ith, masked=False)
+
+        tile_vx.rio.write_nodata(np.nan, inplace=True)
+        tile_vy.rio.write_nodata(np.nan, inplace=True)
+        tile_ith.rio.write_nodata(np.nan, inplace=True)
+
+        assert tile_vx.rio.crs == tile_vy.rio.crs == tile_ith.rio.crs, "Tiles vx, vy, ith with different epsg."
+        assert tile_vx.rio.bounds() == tile_vy.rio.bounds(), "Tiles vx, vy bounds not the same. Super strange."
+        assert tile_vx.rio.resolution() == tile_vy.rio.resolution() == tile_ith.rio.resolution(), \
+            "Tiles vx, vy, ith have different resolution."
+
+
+        # vx (and vy) and ith may have a bound difference for some reason (ask Millan).
+        # In such cases we reindex the ith tile to match the vx tile coordinates
+        if not tile_vx.rio.bounds() == tile_ith.rio.bounds():
+
+            #print(f'{i} Vx and ith bounds are different! Re-aligning them.')
+            #print(tile_vx.rio.bounds(), tile_vx.shape)
+            #print(tile_ith.rio.bounds(), tile_ith.shape)
+
+            #tile_vx_aligned, tile_ith_aligned = xarray.align(tile_vx, tile_ith, join="outer")
+            tile_ith = tile_ith.reindex_like(tile_vx, method="nearest", tolerance=50., fill_value=np.nan)
+            #print(tile_ith.rio.bounds(), tile_ith.shape)
+
+            #fig, (ax1, ax2) = plt.subplots(1,2)
+            #tile_vx.plot(ax=ax1, cmap='viridis')
+            #tile_ith.plot(ax=ax2, cmap='viridis')
+            #plt.show()
+
+        assert tile_vx.rio.bounds() == tile_vy.rio.bounds() == tile_vx.rio.bounds(), "All tiles bounds not the same"
+
+        # Convert tile boundaries to lat lon
+        tran = Transformer.from_crs(tile_vx.rio.crs, "EPSG:4326")
+        lat0, lon0 = tran.transform(tile_vx.rio.bounds()[0], tile_vx.rio.bounds()[1])
+        lat1, lon1 = tran.transform(tile_vx.rio.bounds()[2], tile_vx.rio.bounds()[3])
+        #print(f"Glacier bounds: {llx, lly, urx, ury}, tile bounds: {lon0, lat0, lon1, lat1}")
+
+        # Check if tile contains glacier. If yes, we have found our guy (no point in investigating the other tiles)
+        is_glacier_inside_tile = lon0 < llx < urx < lon1 and lat0 < lly < ury < lat1
+        if is_glacier_inside_tile:
+            #print(f'Tile {i}: glacier included: {is_glacier_inside_tile}')
+            mosaic_vx = tile_vx
+            mosaic_vy = tile_vy
+            mosaic_ith = tile_ith
+            break
+
+    if mosaic_vx is None and mosaic_vy is None and mosaic_ith is None:
+        no_millan_data = True
+
+    else:
+        # Mask ice thickness based on velocity map
+        mosaic_ith = mosaic_ith.where(mosaic_vx.notnull())
+
+        # Covert lat lon coordinates of the points to Millan's projection
+        ris_metre_millan = mosaic_vx.rio.resolution()[0]
+        eps_millan = 10 * ris_metre_millan
+        #print(f"Ris metre millan: {ris_metre_millan}, eps: {eps_millan}")
+        crs = mosaic_vx.rio.crs
+
+        transformer = Transformer.from_crs("EPSG:4326", crs)
+        lons_crs, lats_crs = transformer.transform(points_df['lats'].to_numpy(), points_df['lons'].to_numpy())
+
+        plot_millan_glacier_data = False
+        if plot_millan_glacier_data:
+            fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
+            mosaic_vx.rio.clip_box(minx=np.min(lons_crs) - eps_millan, miny=np.min(lats_crs) - eps_millan,
+                                   maxx=np.max(lons_crs) + eps_millan, maxy=np.max(lats_crs) + eps_millan).plot(ax=ax1,
+                                                                                                                cmap='viridis')
+            mosaic_vy.rio.clip_box(minx=np.min(lons_crs) - eps_millan, miny=np.min(lats_crs) - eps_millan,
+                                   maxx=np.max(lons_crs) + eps_millan, maxy=np.max(lats_crs) + eps_millan).plot(ax=ax2,
+                                                                                                                cmap='viridis')
+            mosaic_ith.rio.clip_box(minx=np.min(lons_crs) - eps_millan, miny=np.min(lats_crs) - eps_millan,
+                                    maxx=np.max(lons_crs) + eps_millan, maxy=np.max(lats_crs) + eps_millan).plot(ax=ax3,
+                                                                                                                 cmap='viridis')
+            plt.show()
+
+        # clip millan mosaic around the generated points
+        try:
+            focus_vx0 = mosaic_vx.rio.clip_box(minx=np.min(lons_crs) - eps_millan,
+                                               miny=np.min(lats_crs) - eps_millan,
+                                               maxx=np.max(lons_crs) + eps_millan,
+                                               maxy=np.max(lats_crs) + eps_millan)
+            focus_vy0 = mosaic_vy.rio.clip_box(minx=np.min(lons_crs) - eps_millan,
+                                               miny=np.min(lats_crs) - eps_millan,
+                                               maxx=np.max(lons_crs) + eps_millan,
+                                               maxy=np.max(lats_crs) + eps_millan)
+            focus_ith = mosaic_ith.rio.clip_box(minx=np.min(lons_crs) - eps_millan,
+                                                miny=np.min(lats_crs) - eps_millan,
+                                                maxx=np.max(lons_crs) + eps_millan,
+                                                maxy=np.max(lats_crs) + eps_millan)
+
+            no_millan_data = focus_vx0.isnull().all().item()  # If vx is empty we have no Millan data
+
+        except:
+            print("ATTENTION: no_millan_data = True")
+            no_millan_data = True
+
+
+    if no_millan_data is False:
+
+        # Crucial here. I interpolate vx, vy to remove nans (as much as possible).
+        # This is because velocity fields often have holes. On the other hand we keep the nans in the ice thickness ith
+        focus_vx = focus_vx0.rio.interpolate_na(method='linear').squeeze()
+        focus_vy = focus_vy0.rio.interpolate_na(method='linear').squeeze()
+        focus_ith = focus_ith.squeeze()
+
+        plot_Millan_interpolated = False
+        if plot_Millan_interpolated:
+            fig, axes = plt.subplots(1, 3)
+            ax1, ax2, ax3 = axes.flatten()
+            im1 = focus_vx0.plot(ax=ax1, cmap='viridis')
+            im2 = focus_vx.plot(ax=ax2, cmap='viridis')
+            im3 = focus_ith.plot(ax=ax3, cmap='viridis')
+            plt.show()
+
+        # Calculate how many pixels I need for a resolution of 50, 100, 150, 300 meters
+        num_px_sigma_50 = max(1, round(50 / ris_metre_millan))  # 1
+        num_px_sigma_100 = max(1, round(100 / ris_metre_millan))  # 2
+        num_px_sigma_150 = max(1, round(150 / ris_metre_millan))  # 3
+        num_px_sigma_300 = max(1, round(300 / ris_metre_millan))  # 6
+
+        # Apply filter to velocities
+        focus_filter_vx_50 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_50)
+        focus_filter_vx_100 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_100)
+        focus_filter_vx_150 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_150)
+        focus_filter_vx_300 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_300)
+        focus_filter_vy_50 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_50)
+        focus_filter_vy_100 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_100)
+        focus_filter_vy_150 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_150)
+        focus_filter_vy_300 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_300)
+
+        # Mask back the filtered arrays
+        focus_filter_vx_50 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_50)
+        focus_filter_vx_100 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_100)
+        focus_filter_vx_150 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_150)
+        focus_filter_vx_300 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_300)
+        focus_filter_vy_50 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_50)
+        focus_filter_vy_100 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_100)
+        focus_filter_vy_150 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_150)
+        focus_filter_vy_300 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_300)
+
+        # create xarrays of filtered velocities
+        focus_filter_vx_50_ar = focus_vx.copy(deep=True, data=focus_filter_vx_50)
+        focus_filter_vx_100_ar = focus_vx.copy(deep=True,data=focus_filter_vx_100)
+        focus_filter_vx_150_ar = focus_vx.copy(deep=True,data=focus_filter_vx_150)
+        focus_filter_vx_300_ar = focus_vx.copy(deep=True,data=focus_filter_vx_300)
+        focus_filter_vy_50_ar = focus_vy.copy(deep=True,data=focus_filter_vy_50)
+        focus_filter_vy_100_ar = focus_vy.copy(deep=True,data=focus_filter_vy_100)
+        focus_filter_vy_150_ar = focus_vy.copy(deep=True,data=focus_filter_vy_150)
+        focus_filter_vy_300_ar = focus_vy.copy(deep=True,data=focus_filter_vy_300)
+
+        # Calculate the velocity gradients
+        dvx_dx_ar, dvx_dy_ar = focus_filter_vx_300_ar.differentiate(coord='x'), focus_filter_vx_300_ar.differentiate(coord='y')
+        dvy_dx_ar, dvy_dy_ar = focus_filter_vy_300_ar.differentiate(coord='x'), focus_filter_vy_300_ar.differentiate(coord='y')
+
+        # Interpolate (note: nans can be produced near boundaries). This should be removed at the end.
+        lons_crs = xarray.DataArray(lons_crs)
+        lats_crs = xarray.DataArray(lats_crs)
+
+        ith_data = focus_ith.interp(y=lats_crs, x=lons_crs, method="nearest").data
+        vx_data = focus_vx.interp(y=lats_crs, x=lons_crs, method="nearest").data
+        vy_data = focus_vy.interp(y=lats_crs, x=lons_crs, method="nearest").data
+        vx_filter_50_data = focus_filter_vx_50_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        vx_filter_100_data = focus_filter_vx_100_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        vx_filter_150_data = focus_filter_vx_150_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        vx_filter_300_data = focus_filter_vx_300_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        vy_filter_50_data = focus_filter_vy_50_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        vy_filter_100_data = focus_filter_vy_100_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        vy_filter_150_data = focus_filter_vy_150_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        vy_filter_300_data = focus_filter_vy_300_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+
+        dvx_dx_data = dvx_dx_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        dvx_dy_data = dvx_dy_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        dvy_dx_data = dvy_dx_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        dvy_dy_data = dvy_dy_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+
+        print(f"From Millan vx, vy, ith interpolations we have generated "
+              f"{np.isnan(vx_data).sum()}/{np.isnan(vy_data).sum()}/{np.isnan(ith_data).sum()}/"
+              f"{np.isnan(vx_filter_300_data).sum()}/{np.isnan(vy_filter_300_data).sum()}/"
+              f"{np.isnan(dvx_dx_data).sum()}/{np.isnan(dvx_dy_data).sum()}/"
+              f"{np.isnan(dvy_dx_data).sum()}/{np.isnan(dvy_dy_data).sum()} nans.")
+
+
+        # Fill dataframe with vx, vy, ith_m etc
+        # Note this vectors may contain nans from interpolation close to margin/nunatak
+        points_df['ith_m'] = ith_data
+        points_df['vx'] = vx_data
+        points_df['vy'] = vy_data
+        points_df['vx_gf50'] = vx_filter_50_data
+        points_df['vx_gf100'] = vx_filter_100_data
+        points_df['vx_gf150'] = vx_filter_150_data
+        points_df['vx_gf300'] = vx_filter_300_data
+        points_df['vy_gf50'] = vy_filter_50_data
+        points_df['vy_gf100'] = vy_filter_100_data
+        points_df['vy_gf150'] = vy_filter_150_data
+        points_df['vy_gf300'] = vy_filter_300_data
+        points_df['dvx_dx'] = dvx_dx_data
+        points_df['dvx_dy'] = dvx_dy_data
+        points_df['dvy_dx'] = dvy_dx_data
+        points_df['dvy_dy'] = dvy_dy_data
+
+    elif no_millan_data is True:
+        print(f"No Millan data can be found for rgi {rgi} glacier {glacier_name}. Data imputation needed !")
+        points_df['ith_m'] = np.nan
+        # Data imputation: set Millan velocities as zero (keep ith_m as nan)
+        for col in ['vx','vy','vx_gf50', 'vx_gf100', 'vx_gf150', 'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300',
+                    'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy']:
+            points_df[col] = 0.0
+
+    ifplot_millan = False
+    if ifplot_millan:
+        fig, axes = plt.subplots(1, 6, figsize=(10,4))
+        ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
+
+        im1 = focus_vx0.plot(ax=ax1, cmap='viridis')
+
+        im2 = focus_vx.plot(ax=ax2, cmap='viridis')
+
+        im3 = focus_filter_vx_50_ar.plot(ax=ax3, cmap='viridis')
+        im4 = focus_filter_vy_300_ar.plot(ax=ax4, cmap='viridis')
+        im5 = dvx_dx_ar.plot(ax=ax5, cmap='viridis')
+        im6 = focus_ith.plot(ax=ax6, cmap='viridis')
+
+        for ax in axes.flatten():
+            ax.scatter(x=lons_crs, y=lats_crs, s=20, c='k', alpha=.1, zorder=1)
+
+        plt.tight_layout()
+        plt.show()
+
     """ Add Slopes and Elevation """
     print(f"Calculating slopes and elevations...")
 
-    if os.path.exists(args.mosaic + f'mosaic_RGI_{rgi:02d}.tif'):
-        dem_rgi = rioxarray.open_rasterio(args.mosaic + f'mosaic_RGI_{rgi:02d}.tif')
-    else: # We have to create the mosaic
-        print(f"Mosaic {rgi} not present. We now create it...")
-        dem_rgi = create_mosaic_rgi_tandemx(rgi=rgi, path_rgi_tiles=args.mosaic, save=0)
-
     ris_ang = dem_rgi.rio.resolution()[0]
-
-    cenLon, cenLat = gl_df['CenLon'].item(), gl_df['CenLat'].item()
-    _, _, _, _, glacier_epsg = from_lat_lon_to_utm_and_epsg(cenLat, cenLon)
 
     swlat = points_df['lats'].min()
     swlon = points_df['lons'].min()
@@ -308,12 +520,6 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
     dz_dlat_filter_xar_300, dz_dlon_filter_xar_300  = focus_filter_xarray_300_utm.differentiate(coord='y'), focus_filter_xarray_300_utm.differentiate(coord='x')
     dz_dlat_filter_xar_450, dz_dlon_filter_xar_450  = focus_filter_xarray_450_utm.differentiate(coord='y'), focus_filter_xarray_450_utm.differentiate(coord='x')
 
-    # todo: work in progress here
-    #print(focus_utm.rio.resolution())
-    #sth = scipy.signal.convolve2d(focus_utm, [[1,0,-1], [1,0,-1], [1,0,-1]], mode='same') / 2.0
-    #print(focus_utm.shape, sth.shape, np.nanmean(sth))
-    #input('wait')
-
     # Calculate curvature and aspect using xrspatial
     curv_50 = xrspatial.curvature(focus_filter_xarray_50_utm)
     curv_300 = xrspatial.curvature(focus_filter_xarray_300_utm)
@@ -351,7 +557,7 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
         raise ValueError(f"Nan detected in elevation/slope calc. Check")
 
     # Fill dataframe with elevation and slopes
-    points_df['elevation_astergdem'] = elevation_data
+    points_df['elevation'] = elevation_data
     points_df['slope_lat'] = slope_lat_data
     points_df['slope_lon'] = slope_lon_data
     points_df['slope_lat_gf50'] = slope_lat_data_filter_50
@@ -460,225 +666,9 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
         no_farinotti_data = True
 
 
-    """ Calculate Millan vx, vy, v """
-    print(f"Calculating vx, vy, v, ith_m...")
-
-    # get Millan vx files for specific rgi and create vx mosaic
-    files_vx = glob(args.millan_velocity_folder + 'RGI-{}/VX_RGI-{}*'.format(rgi, rgi))
-    mosaic_vx_dict = {'list_vx': [], 'epsg_utm_vx': []}
-    for tiffile in files_vx:
-        xds = rioxarray.open_rasterio(tiffile, masked=False)
-        xds.rio.write_nodata(np.nan, inplace=True)
-        mosaic_vx_dict['list_vx'].append(xds)
-        mosaic_vx_dict['epsg_utm_vx'].append(xds.rio.crs)
-
-    # todo: check this - it is triggered for e.g. in rgi 1
-    if len(mosaic_vx_dict['epsg_utm_vx']) > 1:
-        all_same_epsg = all(x == mosaic_vx_dict['epsg_utm_vx'][0] for x in mosaic_vx_dict['epsg_utm_vx'])
-        if not all_same_epsg:
-            raise ValueError("In Millan you are trying to mosaic files with different epsgs.")
-
-    # get Millan vy files for specific rgi and create vy mosaic
-    files_vy = glob(args.millan_velocity_folder + 'RGI-{}/VY_RGI-{}*'.format(rgi, rgi))
-    mosaic_vy_dict = {'list_vy': [], 'epsg_utm_vy': []}
-    for tiffile in files_vy:
-        xds = rioxarray.open_rasterio(tiffile, masked=False)
-        xds.rio.write_nodata(np.nan, inplace=True)
-        mosaic_vy_dict['list_vy'].append(xds)
-
-    # get Millan ice thickness files for specific rgi and create ith mosaic
-    files_ith = glob(args.millan_icethickness_folder + 'RGI-{}/THICKNESS_RGI-{}*'.format(rgi, rgi))
-    mosaic_ith_dict = {'list_ith': [], 'epsg_utm_ith': []}
-    for tiffile in files_ith:
-        xds = rioxarray.open_rasterio(tiffile, masked=False)
-        xds.rio.write_nodata(np.nan, inplace=True)
-        mosaic_ith_dict['list_ith'].append(xds)
-
-    mosaic_vx = merge.merge_arrays(mosaic_vx_dict['list_vx'])
-    mosaic_vy = merge.merge_arrays(mosaic_vy_dict['list_vy'])
-    mosaic_ith = merge.merge_arrays(mosaic_ith_dict['list_ith'])
-
-    # check
-    assert mosaic_vx.rio.crs == mosaic_vy.rio.crs == mosaic_ith.rio.crs, 'Millan - sth wrong in espg of mosaics'
-
-    bounds_ith = mosaic_ith.rio.bounds()
-    bounds_vx = mosaic_vx.rio.bounds()
-    bounds_vy = mosaic_vy.rio.bounds()
-
-    # Reshape the 3 mosaic if different shapes
-    if (bounds_ith != bounds_vx or bounds_ith != bounds_vy or bounds_vx != bounds_vy):
-        new_llx = max(bounds_ith[0], bounds_vx[0], bounds_vy[0])
-        new_lly = max(bounds_ith[1], bounds_vx[1], bounds_vy[1])
-        new_urx = min(bounds_ith[2], bounds_vx[2], bounds_vy[2])
-        new_ury = min(bounds_ith[3], bounds_vx[3], bounds_vy[3])
-        mosaic_ith = mosaic_ith.rio.clip_box(minx=new_llx, miny=new_lly, maxx=new_urx, maxy=new_ury)
-        mosaic_vx = mosaic_vx.rio.clip_box(minx=new_llx, miny=new_lly, maxx=new_urx, maxy=new_ury)
-        mosaic_vy = mosaic_vy.rio.clip_box(minx=new_llx, miny=new_lly, maxx=new_urx, maxy=new_ury)
-        print(f"Reshaped Millan bounds.")
-
-    # Mask ice thickness based on velocity map
-    mosaic_ith = mosaic_ith.where(mosaic_vx.notnull())
-
-    ris_metre_millan = mosaic_vx.rio.resolution()[0]
-    crs = mosaic_vx.rio.crs
-    eps_millan = 10 * ris_metre_millan
-    transformer = Transformer.from_crs("EPSG:4326", crs)
-
-    # Covert lat lon coordinates to Millan projection
-    lons_crs, lats_crs = transformer.transform(points_df['lats'].to_numpy(), points_df['lons'].to_numpy())
-
-    lons_crs = xarray.DataArray(lons_crs)
-    lats_crs = xarray.DataArray(lats_crs)
-
-    # clip millan mosaic around the generated points
-    try:
-        focus_vx0 = mosaic_vx.rio.clip_box(minx=np.min(lons_crs) - eps_millan, miny=np.min(lats_crs) - eps_millan,
-                                           maxx=np.max(lons_crs) + eps_millan, maxy=np.max(lats_crs) + eps_millan)
-        focus_vy0 = mosaic_vy.rio.clip_box(minx=np.min(lons_crs) - eps_millan, miny=np.min(lats_crs) - eps_millan,
-                                           maxx=np.max(lons_crs) + eps_millan, maxy=np.max(lats_crs) + eps_millan)
-        focus_ith = mosaic_ith.rio.clip_box(minx=np.min(lons_crs) - eps_millan, miny=np.min(lats_crs) - eps_millan,
-                                            maxx=np.max(lons_crs) + eps_millan, maxy=np.max(lats_crs) + eps_millan)
-
-        no_millan_data = focus_vx0.isnull().all().item() # If vx is empty we have no Millan data.
-    except:
-        no_millan_data = True
-
-    if no_millan_data is False:
-
-        # Crucial here. I interpolate vx, vy to remove nans (as much as possible). This is because velocity fields often have holes
-        focus_vx = focus_vx0.rio.interpolate_na(method='linear').squeeze()
-        focus_vy = focus_vy0.rio.interpolate_na(method='linear').squeeze()
-        #focus_vx = focus_vx.squeeze()
-        #focus_vy = focus_vy.squeeze()
-        focus_ith = focus_ith.squeeze() # I keep the nans in the ice thickness field
-
-        #fig, axes = plt.subplots(1, 3)
-        #ax1, ax2, ax3 = axes.flatten()
-        #im1 = focus_vx0.plot(ax=ax1, cmap='viridis')
-        #im2 = focus_vx.plot(ax=ax2, cmap='viridis')
-        #im3 = focus_ith.plot(ax=ax3, cmap='viridis')
-        #plt.show()
-
-        # Calculate how many pixels I need for a resolution of 50, 100, 150, 300 meters
-        num_px_sigma_50 = max(1, round(50 / ris_metre_millan))  # 1
-        num_px_sigma_100 = max(1, round(100 / ris_metre_millan))  # 2
-        num_px_sigma_150 = max(1, round(150 / ris_metre_millan))  # 3
-        num_px_sigma_300 = max(1, round(300 / ris_metre_millan))  # 6
-
-        # Apply filter to velocities
-        focus_filter_vx_50 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_50)
-        focus_filter_vx_100 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_100)
-        focus_filter_vx_150 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_150)
-        focus_filter_vx_300 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_300)
-        focus_filter_vy_50 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_50)
-        focus_filter_vy_100 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_100)
-        focus_filter_vy_150 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_150)
-        focus_filter_vy_300 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_300)
-
-        # Mask back the filtered arrays
-        focus_filter_vx_50 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_50)
-        focus_filter_vx_100 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_100)
-        focus_filter_vx_150 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_150)
-        focus_filter_vx_300 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_300)
-        focus_filter_vy_50 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_50)
-        focus_filter_vy_100 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_100)
-        focus_filter_vy_150 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_150)
-        focus_filter_vy_300 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_300)
-
-        # create xarrays of filtered velocities
-        focus_filter_vx_50_ar = focus_vx.copy(deep=True, data=focus_filter_vx_50)
-        focus_filter_vx_100_ar = focus_vx.copy(deep=True,data=focus_filter_vx_100)
-        focus_filter_vx_150_ar = focus_vx.copy(deep=True,data=focus_filter_vx_150)
-        focus_filter_vx_300_ar = focus_vx.copy(deep=True,data=focus_filter_vx_300)
-        focus_filter_vy_50_ar = focus_vy.copy(deep=True,data=focus_filter_vy_50)
-        focus_filter_vy_100_ar = focus_vy.copy(deep=True,data=focus_filter_vy_100)
-        focus_filter_vy_150_ar = focus_vy.copy(deep=True,data=focus_filter_vy_150)
-        focus_filter_vy_300_ar = focus_vy.copy(deep=True,data=focus_filter_vy_300)
-
-        # Calculate the velocity gradients
-        dvx_dx_ar, dvx_dy_ar = focus_filter_vx_300_ar.differentiate(coord='x'), focus_filter_vx_300_ar.differentiate(coord='y')
-        dvy_dx_ar, dvy_dy_ar = focus_filter_vy_300_ar.differentiate(coord='x'), focus_filter_vy_300_ar.differentiate(coord='y')
-
-        # Interpolate (note: nans can be produced near boundaries). This should be removed at the end.
-        ith_data = focus_ith.interp(y=lats_crs, x=lons_crs, method="nearest").data
-        vx_data = focus_vx.interp(y=lats_crs, x=lons_crs, method="nearest").data
-        vy_data = focus_vy.interp(y=lats_crs, x=lons_crs, method="nearest").data
-        vx_filter_50_data = focus_filter_vx_50_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-        vx_filter_100_data = focus_filter_vx_100_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-        vx_filter_150_data = focus_filter_vx_150_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-        vx_filter_300_data = focus_filter_vx_300_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-        vy_filter_50_data = focus_filter_vy_50_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-        vy_filter_100_data = focus_filter_vy_100_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-        vy_filter_150_data = focus_filter_vy_150_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-        vy_filter_300_data = focus_filter_vy_300_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-
-        dvx_dx_data = dvx_dx_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-        dvx_dy_data = dvx_dy_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-        dvy_dx_data = dvy_dx_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-        dvy_dy_data = dvy_dy_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-
-        print(f"From Millan vx, vy, ith interpolations we have generated "
-              f"{np.isnan(vx_data).sum()}/{np.isnan(vy_data).sum()}/{np.isnan(ith_data).sum()}/"
-              f"{np.isnan(vx_filter_300_data).sum()}/{np.isnan(vy_filter_300_data).sum()}/"
-              f"{np.isnan(dvx_dx_data).sum()}/{np.isnan(dvx_dy_data).sum()}/"
-              f"{np.isnan(dvy_dx_data).sum()}/{np.isnan(dvy_dy_data).sum()} nans.")
-
-
-
-        # Fill dataframe with vx, vy, ith_m etc
-        # Note this vectors may contain nans from interpolation at the margin/inside nunatak
-        points_df['ith_m'] = ith_data
-        points_df['vx'] = vx_data
-        points_df['vy'] = vy_data
-        points_df['vx_gf50'] = vx_filter_50_data
-        points_df['vx_gf100'] = vx_filter_100_data
-        points_df['vx_gf150'] = vx_filter_150_data
-        points_df['vx_gf300'] = vx_filter_300_data
-        points_df['vy_gf50'] = vy_filter_50_data
-        points_df['vy_gf100'] = vy_filter_100_data
-        points_df['vy_gf150'] = vy_filter_150_data
-        points_df['vy_gf300'] = vy_filter_300_data
-        points_df['dvx_dx'] = dvx_dx_data
-        points_df['dvx_dy'] = dvx_dy_data
-        points_df['dvy_dx'] = dvy_dx_data
-        points_df['dvy_dy'] = dvy_dy_data
-
-    else: #no_millan_data = True
-        print(f"No Millan data can be found for rgi {rgi} glacier {glacier_name}. Data imputation needed !")
-        points_df['ith_m'] = np.nan
-        # Data imputation: set Millan velocities as zero (keep ith_m as nan)
-        for col in ['vx','vy','vx_gf50', 'vx_gf100', 'vx_gf150', 'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300',
-                    'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy']:
-            points_df[col] = 0.0
-
-    ifplot_millan = False
-    if ifplot_millan:
-        fig, axes = plt.subplots(1, 6, figsize=(10,4))
-        ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
-
-        im1 = focus_vx0.plot(ax=ax1, cmap='viridis')
-
-        im2 = focus_vx.plot(ax=ax2, cmap='viridis')
-
-        im3 = focus_filter_vx_300_ar.plot(ax=ax3, cmap='viridis')
-        im4 = focus_filter_vy_300_ar.plot(ax=ax4, cmap='viridis')
-        im5 = dvx_dx_ar.plot(ax=ax5, cmap='viridis')
-        im6 = dvx_dy_ar.plot(ax=ax6, cmap='viridis')
-
-        for ax in axes.flatten():
-            ax.scatter(x=lons_crs, y=lats_crs, s=20, c='k', alpha=.1, zorder=1)
-
-        plt.tight_layout()
-        plt.show()
-
-
-
     """ Calculate distance_from_border """
     print(f"Calculating the distances using glacier geometries... ")
 
-    # Get the UTM EPSG code from glacier center coordinates
-    cenLon, cenLat = gl_df['CenLon'].item(), gl_df['CenLat'].item()
-    _, _, _, _, glacier_epsg = from_lat_lon_to_utm_and_epsg(cenLat, cenLon)
 
     # Create Geopandas geoseries objects of glacier geometries (boundary and nunataks) and convert to UTM
     if list_cluster_RGIIds is None: # Case 1: isolated glacier
@@ -727,10 +717,25 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
     multiline_geometries_epsg = MultiLineString(list(geoseries_geometries_epsg))
 
     def calc_min_distance_to_multi_line(point, multi_line):
-        return point.distance(multi_line)
+
+        min_dist = point.distance(multi_line)
+
+        #todo: WORKING HERE TO GET THE CLOSEST POINT ON THE MULTI WITH MIN DISTANCE TO THE POINT
+        #circle = point.buffer(min_dist)
+        #intersection = multi_line.intersection(circle)# THAT IS TOO SLOW
+
+        return min_dist
+
 
     min_distances = geoseries_points_epsg.apply(lambda point: calc_min_distance_to_multi_line(point, multiline_geometries_epsg))
     min_distances /= 1000. # km
+
+    plot_minimum_distances = False
+    if plot_minimum_distances:
+        fig, ax = plt.subplots()
+        ax.plot(*gl_geom.exterior.xy, color='blue')
+        ax.scatter(x=points_df['lons'], y=points_df['lats'], s=10, c=min_distances, alpha=0.5, zorder=2)
+        plt.show()
 
     points_df['dist_from_border_km_geom'] = min_distances
 
@@ -764,7 +769,7 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
             points_df.loc[i, 'dist_from_border_km_geom'] = min_dist/1000.
 
             # Plot
-            plot_calculate_distance = False
+            plot_calculate_distance = True
             if plot_calculate_distance:
                 fig, (ax1, ax2) = plt.subplots(1,2)
                 ax1.plot(*gl_geom_ext.exterior.xy, lw=1, c='red')
@@ -924,8 +929,10 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None):
 
 
 if __name__ == "__main__":
-
-    generated_points_dataframe = populate_glacier_with_metadata(glacier_name='RGI60-11.01450', n=10000, seed=42)
+    glacier_name = 'RGI60-11.01450'
+    rgi = glacier_name[6:8]
+    dem_rgi = fetch_dem(folder_mosaic=args.mosaic, rgi=rgi)
+    generated_points_dataframe = populate_glacier_with_metadata(glacier_name=glacier_name, dem_rgi=dem_rgi, n=300, seed=42)
 
 # 'RGI60-07.00228' should be a multiplygon
 # RGI60-11.00781 has only 1 neighbor
@@ -936,3 +943,4 @@ if __name__ == "__main__":
 #'RGI60-11.01450' Aletsch # RGI60-11.02774
 #RGI60-11.00590, RGI60-11.01894 no Millan data ?
 #glacier_name = np.random.choice(RGI_burned)
+#'RGI60-01.01701'
