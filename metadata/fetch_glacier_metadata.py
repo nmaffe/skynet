@@ -18,8 +18,10 @@ from pyproj import Proj, Transformer
 from math import radians, cos, sin, asin, sqrt, floor
 import utm
 import time
+from rtree import index
+from joblib import Parallel, delayed
 
-from create_rgi_mosaic_tanxedem import fetch_dem
+from create_rgi_mosaic_tanxedem import fetch_dem, find_tandemx_tiles
 from utils_metadata import haversine, from_lat_lon_to_utm_and_epsg, gaussian_filter_with_nans
 
 """
@@ -52,6 +54,9 @@ Note the following policy for Millan special cases to produce vx, vy, v, ith_m:
 # todo: inserire anche un ulteriore feature che è la velocità media di tutto il ghiacciao ? sia vxm, vym, vm ?
 # todo: a proposito di come smussare i campi di slope e velocita, guardare questo articolo:
 #  Slope estimation influences on ice thickness inversion models: a case study for Monte Tronador glaciers, North Patagonian Andes
+
+# todo: 1. implement parallelization i did in add_RGIId_and_OGGM_stats
+# todo: 2. implement faster version of distance calculation
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--mosaic', type=str,default="/media/nico/samsung_nvme/Tandem-X-EDEM/",
@@ -110,7 +115,7 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
         assert len(gl_df) == 1, "Check this please."
         # print(gl_df.T)
     except Exception as e:
-        print(f"Error {e}")
+        print(f"Error. {glacier_name} not present in OGGM's RGI v6.")
         exit()
 
     # intersects of glacier (need only for plotting purposes)
@@ -453,6 +458,15 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
 
     eps = 5 * ris_ang
 
+    # WORK IN PROGRESS
+    #sth = find_tandemx_tiles(minx=swlon - (deltalon + eps),
+    #                        miny=swlat - (deltalat + eps),
+    #                        maxx=nelon + (deltalon + eps),
+    #                        maxy=nelat + (deltalat + eps),
+    #                         rgi=rgi, path_tandemx=args.mosaic)
+
+    #input('wait')
+
     # clip
     try:
         focus = dem_rgi.rio.clip_box(
@@ -668,7 +682,7 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
 
     """ Calculate distance_from_border """
     print(f"Calculating the distances using glacier geometries... ")
-
+    td00 = time.time()
 
     # Create Geopandas geoseries objects of glacier geometries (boundary and nunataks) and convert to UTM
     if list_cluster_RGIIds is None: # Case 1: isolated glacier
@@ -713,22 +727,44 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
     geoseries_points_4326 = gpd.GeoSeries(list_points, crs="EPSG:4326")
     geoseries_points_epsg = geoseries_points_4326.to_crs(epsg=glacier_epsg)
 
-    # Method 1: Fast vectorized version
     multiline_geometries_epsg = MultiLineString(list(geoseries_geometries_epsg))
 
+    # Method 1: Fast vectorized version
     def calc_min_distance_to_multi_line(point, multi_line):
-
         min_dist = point.distance(multi_line)
-
-        #todo: WORKING HERE TO GET THE CLOSEST POINT ON THE MULTI WITH MIN DISTANCE TO THE POINT
-        #circle = point.buffer(min_dist)
-        #intersection = multi_line.intersection(circle)# THAT IS TOO SLOW
-
         return min_dist
 
+    # Method with CPU
+    args_list = [(point, multiline_geometries_epsg) for point in geoseries_points_epsg]
+    min_distances = Parallel(n_jobs=-1)(delayed(calc_min_distance_to_multi_line)(*args) for args in args_list)
+    min_distances = np.array(min_distances)
+    # Method with no CPU
+    #min_distances = geoseries_points_epsg.apply(lambda point: calc_min_distance_to_multi_line(point, multiline_geometries_epsg))
+    min_distances /= 1000.  # km
 
-    min_distances = geoseries_points_epsg.apply(lambda point: calc_min_distance_to_multi_line(point, multiline_geometries_epsg))
-    min_distances /= 1000. # km
+    # Method that uses spatial index (14 march 2024) -- problem is that spatial index uses rectangular boxes
+    run_method_spatial_index = False
+    if run_method_spatial_index:
+        td3 = time.time()
+        min_distances2_list = []
+        # Create an empty RTree index
+        rtree_index = index.Index()
+        # Insert each LineString from the MultiLineString into the RTree index
+        for i, line_string in enumerate(geoseries_geometries_epsg):
+            bounds = line_string.bounds  # Get the bounding box of the LineString
+            rtree_index.insert(i, bounds)  # Insert the LineString index and its bounding box into the index
+        for i, point_epsg in enumerate(geoseries_points_epsg):
+            min_dist2 = float('inf')
+            nearest_geometry = None
+            for j in rtree_index.nearest(point_epsg.bounds, num_results=1):
+                geometry = geoseries_geometries_epsg.iloc[j]
+                distance = geometry.distance(point_epsg)
+                if distance < min_dist2:
+                    min_dist2 = distance
+                    nearest_geometry = geometry
+            min_distances2_list.append(min_dist2/1000.)
+        td4 = time.time()
+        print(f"Distances using index in {td4 - td3}")
 
     plot_minimum_distances = False
     if plot_minimum_distances:
@@ -831,8 +867,6 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
                 ax2.set_title(f'EPSG {glacier_epsg}')
                 plt.show()
 
-        # convert this column to float (misteriously it was an object type)
-        # points_df['dist_from_border_km_geom'] = pd.to_numeric(points_df['dist_from_border_km_geom'], errors='coerce')
 
     print(f"Finished distance calculations.")
 
@@ -932,7 +966,11 @@ if __name__ == "__main__":
     glacier_name = 'RGI60-11.01450'
     rgi = glacier_name[6:8]
     dem_rgi = fetch_dem(folder_mosaic=args.mosaic, rgi=rgi)
-    generated_points_dataframe = populate_glacier_with_metadata(glacier_name=glacier_name, dem_rgi=dem_rgi, n=300, seed=42)
+    generated_points_dataframe = populate_glacier_with_metadata(
+                                            glacier_name='RGI60-11.01450',
+                                            dem_rgi=dem_rgi,
+                                            n=10000,
+                                            seed=42)
 
 # 'RGI60-07.00228' should be a multiplygon
 # RGI60-11.00781 has only 1 neighbor
