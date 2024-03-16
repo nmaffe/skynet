@@ -19,10 +19,52 @@ def fetch_dem(folder_mosaic=None, rgi=None):
         dem_rgi = create_mosaic_rgi_tandemx(rgi=rgi, path_rgi_tiles=folder_mosaic, save=0)
     return dem_rgi
 
+def find_tandemx_tiles(minx, miny, maxx, maxy, rgi, path_tandemx):
+    """Find either the tile or the tandemx tiles that contain the glacier
+    See https://geoservice.dlr.de/web/dataguide/tdm30/"""
+    if isinstance(rgi, int):
+        rgi = f"{rgi:02d}"
+
+    folder_rgi_tiles = f"{path_tandemx}RGI_{rgi}"
+    print(folder_rgi_tiles)
+
+    # Calculate the latitude and longitude values needed for tandemx lookup
+    tile_minx, tile_miny = int(minx), int(miny)
+    tile_maxx, tile_maxy = int(maxx), int(maxy)
+    print(minx, miny, maxx, maxy)
+    print((tile_minx, tile_miny), (tile_maxx, tile_maxy))
+
+    def get_NS(x):
+        if x>=0: return 'N'
+        else: return 'S'
+    def get_EW(x):
+        if x>=0: return 'E'
+        else: return 'W'
+
+    # Now I have to look for the tile(s) that contain (tile_minx, tile_miny) and (tile_maxx, tile_maxy)
+    #all_files = sorted(glob.glob(f"{folder_rgi_tiles}/*", recursive = False))
+    code1 = f"{get_NS(tile_miny)}{tile_miny:02d}{get_EW(tile_minx)}{tile_minx:03d}"
+    code2 = f"{get_NS(tile_maxy)}{tile_maxy:02d}{get_EW(tile_maxx)}{tile_maxx:03d}"
+    dif_lat = maxy - miny
+    dif_lon = maxx - minx
+
+    list_tiles = []
+    tile1 = sorted(glob.glob(f"{folder_rgi_tiles}/TDM1_EDEM_*_{code1}_V01_C", recursive = False))
+    tile2 = sorted(glob.glob(f"{folder_rgi_tiles}/TDM1_EDEM_10_{code2}_V01_C", recursive = False))
+    list_tiles.extend(tile1)
+    list_tiles.extend(tile2)
+
+    print(code1, 'Tile:', tile1)
+    print(code2, 'Tile:', tile2)
+    print(f"List of tiles I need to import: {list_tiles}")
+
+    mosaic = None
+    return mosaic
 
 def create_mosaic_rgi_tandemx(rgi=None, path_rgi_tiles=None, save=0):
 
-    rgi = f"{rgi:02d}"
+    if isinstance(rgi, int):
+        rgi = f"{rgi:02d}"
 
     tqdm.write(f"Begin creation of mosaic for region {rgi}...")
     folder_rgi = f"{path_rgi_tiles}RGI_{rgi}"
