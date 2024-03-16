@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import scipy
 from scipy.interpolate import griddata
+from sklearn.neighbors import KDTree
 import matplotlib.pyplot as plt
 import xarray, rioxarray, rasterio
 import xrspatial.curvature
@@ -76,7 +77,7 @@ utils.get_rgi_intersects_dir(version='62')
 
 def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
     print(f"******* FETCHING FEATURES FOR GLACIER {glacier_name} *******")
-    t0=time.time()
+    tin=time.time()
 
     rgi = int(glacier_name[6:8]) # get rgi from the glacier code
     oggm_rgi_shp = utils.get_rgi_region_file(f"{rgi:02d}", version='62') # get rgi region shp
@@ -137,7 +138,9 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
     gl_geom_nunataks_gdf = gpd.GeoDataFrame(geometry=gl_geom_nunataks_list, crs="EPSG:4326")
     gl_geom_ext_gdf = gpd.GeoDataFrame(geometry=[gl_geom_ext], crs="EPSG:4326")
 
+    tgeometries = time.time() - tin
     print(f"Generating {n} points...")
+    tp0 = time.time()
     # Generate points (no points can be generated inside nunataks)
     points = {'lons': [], 'lats': [], 'nunataks': []}
     if seed is not None: np.random.seed(seed)
@@ -146,7 +149,7 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
         batch_size = min(n, n - len(points['lons']))  # Adjust batch size as needed
         r_lons = np.random.uniform(llx, urx, batch_size)
         r_lats = np.random.uniform(lly, ury, batch_size)
-        points_batch = [Point(lon, lat) for lon, lat in zip(r_lons, r_lats)]
+        points_batch = list(map(Point, r_lons, r_lats))
         points_batch_gdf = gpd.GeoDataFrame(geometry=points_batch, crs="EPSG:4326")
 
         # 1) First we select only those points generated inside the glacier
@@ -176,6 +179,7 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
             points_in_nunataks_gdf.plot(ax=ax, color='red', alpha=0.5, markersize=1, zorder=2)
             plt.show()
 
+    print(f"We have generated {len(points['lats'])} points.")
     # Feature dataframe
     points_df = pd.DataFrame(columns=['lons', 'lats', 'nunataks'])
     # Fill lats, lons and nunataks
@@ -185,6 +189,9 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
     if (points_df['nunataks'].sum() != 0):
         print(f"The generation pipeline has produced n. {points_df['nunataks'].sum()} points inside nunataks")
         raise ValueError
+
+    tp1 = time.time()
+    tgenpoints = tp1-tp0
 
     # Fill these features
     points_df['RGI'] = rgi
@@ -200,6 +207,7 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
 
     """ Calculate Millan vx, vy, v """
     print(f"Calculating vx, vy, v, ith_m...")
+    tmillan1 = time.time()
 
     # get Millan files
     files_vx = sorted(glob(f"{args.millan_velocity_folder}RGI-{rgi}/VX_RGI-{rgi}*"))
@@ -442,9 +450,12 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
         plt.tight_layout()
         plt.show()
 
+    tmillan2 = time.time()
+    tmillan = tmillan2-tmillan1
+
     """ Add Slopes and Elevation """
     print(f"Calculating slopes and elevations...")
-
+    tslope1 = time.time()
     ris_ang = dem_rgi.rio.resolution()[0]
 
     swlat = points_df['lats'].min()
@@ -653,9 +664,12 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
         l3 = ax3.plot([-2, 2], [-2, 2], color='red', linestyle='--')
         plt.show()
 
+    tslope2 = time.time()
+    tslope = tslope2-tslope1
 
     """ Calculate Farinotti ith_f """
     print(f"Calculating ith_f...")
+    tfar1 = time.time()
     # Set farinotti ice thickness folder
     folder_rgi_farinotti = args.farinotti_icethickness_folder + f'composite_thickness_RGI60-{rgi:02d}/RGI60-{rgi:02d}/'
     try: # Import farinotti ice thickness file. Note that it contains zero where ice not present.
@@ -679,10 +693,12 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
         print(f"Farinotti interpolation rgi {rgi} glacier {glacier_name} is problematic. Check")
         no_farinotti_data = True
 
+    tfar2 = time.time()
+    tfar = tfar2-tfar1
 
     """ Calculate distance_from_border """
     print(f"Calculating the distances using glacier geometries... ")
-    td00 = time.time()
+    tdist0 = time.time()
 
     # Create Geopandas geoseries objects of glacier geometries (boundary and nunataks) and convert to UTM
     if list_cluster_RGIIds is None: # Case 1: isolated glacier
@@ -727,57 +743,77 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
     geoseries_points_4326 = gpd.GeoSeries(list_points, crs="EPSG:4326")
     geoseries_points_epsg = geoseries_points_4326.to_crs(epsg=glacier_epsg)
 
-    multiline_geometries_epsg = MultiLineString(list(geoseries_geometries_epsg))
+    print(f"We have {len(geoseries_geometries_epsg)} geometries in the cluster")
 
-    # Method 1: Fast vectorized version
-    def calc_min_distance_to_multi_line(point, multi_line):
-        min_dist = point.distance(multi_line)
-        return min_dist
+    # Method that uses KDTree index (best method: found to be same as exact method and ultra fast)
+    run_method_KDTree_index = True
+    if run_method_KDTree_index:
 
-    # Method with CPU
-    args_list = [(point, multiline_geometries_epsg) for point in geoseries_points_epsg]
-    min_distances = Parallel(n_jobs=-1)(delayed(calc_min_distance_to_multi_line)(*args) for args in args_list)
-    min_distances = np.array(min_distances)
-    # Method with no CPU
-    #min_distances = geoseries_points_epsg.apply(lambda point: calc_min_distance_to_multi_line(point, multiline_geometries_epsg))
-    min_distances /= 1000.  # km
+        td1 = time.time()
 
-    # Method that uses spatial index (14 march 2024) -- problem is that spatial index uses rectangular boxes
-    run_method_spatial_index = False
-    if run_method_spatial_index:
-        td3 = time.time()
-        min_distances2_list = []
-        # Create an empty RTree index
-        rtree_index = index.Index()
-        # Insert each LineString from the MultiLineString into the RTree index
-        for i, line_string in enumerate(geoseries_geometries_epsg):
-            bounds = line_string.bounds  # Get the bounding box of the LineString
-            rtree_index.insert(i, bounds)  # Insert the LineString index and its bounding box into the index
-        for i, point_epsg in enumerate(geoseries_points_epsg):
-            min_dist2 = float('inf')
-            nearest_geometry = None
-            for j in rtree_index.nearest(point_epsg.bounds, num_results=1):
-                geometry = geoseries_geometries_epsg.iloc[j]
-                distance = geometry.distance(point_epsg)
-                if distance < min_dist2:
-                    min_dist2 = distance
-                    nearest_geometry = geometry
-            min_distances2_list.append(min_dist2/1000.)
-        td4 = time.time()
-        print(f"Distances using index in {td4 - td3}")
+        # Extract all coordinates of GeoSeries points
+        points_coords_array = np.column_stack((geoseries_points_epsg.geometry.x, geoseries_points_epsg.geometry.y)) #(10000,2)
+
+        # Extract all coordinates from the GeoSeries geometries
+        geoms_coords_array = np.concatenate([np.array(geom.coords) for geom in geoseries_geometries_epsg.geometry])
+
+        kdtree = KDTree(geoms_coords_array)
+
+        # Perform nearest neighbor search for each point and calculate minimum distances
+        distances, indices = kdtree.query(points_coords_array, k=len(geoseries_geometries_epsg))
+        min_distances = np.min(distances, axis=1)
+
+        min_distances /= 1000.
+
+        # Retrieve the geometries corresponding to the indices
+
+        td2 = time.time()
+        print(f"Distances calculated with KDTree in {td2 - td1}")
 
     plot_minimum_distances = False
     if plot_minimum_distances:
         fig, ax = plt.subplots()
-        ax.plot(*gl_geom.exterior.xy, color='blue')
-        ax.scatter(x=points_df['lons'], y=points_df['lats'], s=10, c=min_distances, alpha=0.5, zorder=2)
+        #ax.plot(*gl_geom.exterior.xy, color='blue')
+        ax.plot(*geoseries_geometries_epsg.loc[0].xy, lw=1, c='blue')  # first entry is outside border
+        for geom in geoseries_geometries_epsg.loc[1:]:
+            ax.plot(*geom.xy, lw=1, c='red')
+        s1 = ax.scatter(x=points_coords_array[:,0], y=points_coords_array[:,1], s=10, c=min_distances, alpha=0.5, zorder=2)
+        #s1 = ax.scatter(x=points_df['lons'], y=points_df['lats'], s=10, c=min_distances3, alpha=0.5, zorder=2)
+        plt.colorbar(s1, ax=ax, label='Minimum Distance (km)')
         plt.show()
 
-    points_df['dist_from_border_km_geom'] = min_distances
+    # Method 3: geopandas spatial indexes (bad method and slow)
+    run_method_geopandas_index = False
+    if run_method_geopandas_index:
+        min_distances = []
+        sindex_id = geoseries_geometries_epsg.sindex
+        for i, point_epsg in enumerate(geoseries_points_epsg):
+            nearest_idx = sindex_id.nearest(point_epsg.bounds)
+            nearest_geometries = geoseries_geometries_epsg.iloc[nearest_idx]
+            min_distances_ = nearest_geometries.distance(point_epsg)
+            min_idx = min_distances_.idxmin()
+            min_dist = min_distances_.loc[min_idx]
+            min_distances.append(min_dist / 1000.)
 
-    # Method 2: Slow-not verctorized version - loop over generated points
-    run_distance_not_vectorized = False
-    if run_distance_not_vectorized:
+    # Method 3: vectorized version with CPU (exact method but slow)
+    run_distances_with_geopandas_multicpu = False
+    if run_distances_with_geopandas_multicpu:
+        def calc_min_distance_to_multi_line(point, multi_line):
+            min_dist = point.distance(multi_line)
+            return min_dist
+
+        td1 = time.time()
+        multiline_geometries_epsg = MultiLineString(list(geoseries_geometries_epsg))
+        args_list = [(point, multiline_geometries_epsg) for point in geoseries_points_epsg]
+        min_distances = Parallel(n_jobs=-1)(delayed(calc_min_distance_to_multi_line)(*args) for args in args_list)
+        min_distances = np.array(min_distances)
+        min_distances /= 1000.  # km
+        td2 = time.time()
+        print(f"Distances using pandas distance and multicpu {td2 - td1}")
+
+    # Method 4: not verctorized version (exact method but very slow)
+    run_method_not_vectorized = False
+    if run_method_not_vectorized:
         for (i, lon, lat, nunatak) in zip(points_df.index, points_df['lons'], points_df['lats'], points_df['nunataks']):
 
             # Make a check.
@@ -867,7 +903,9 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
                 ax2.set_title(f'EPSG {glacier_epsg}')
                 plt.show()
 
-
+    points_df['dist_from_border_km_geom'] = min_distances
+    tdist1 = time.time()
+    tdist = tdist1 - tdist0
     print(f"Finished distance calculations.")
 
     # Show the result
@@ -957,17 +995,25 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
     assert points_df.drop('ith_m', axis=1).isnull().any().any() == False, \
         "Nans in generated dataset other than in Millan velocity! Something to check."
 
-    t5 = time.time()
-    print(f"*******FINISHED FETCHING FEATURES in {t5 - t0:.1f} sec *******")
+    tend = time.time()
+
+    print(f"************** TIMES **************")
+    print(f"Geometries generation: {tgeometries:.2f}")
+    print(f"Points generation: {tgenpoints:.2f}")
+    print(f"Millan: {tmillan:.2f}")
+    print(f"Slope: {tslope:.2f}")
+    print(f"Farinotti: {tfar:.2f}")
+    print(f"Distances: {tdist:.2f}")
+    print(f"*******TOTAL FETCHING FEATURES in {tend - tin:.1f} sec *******")
     return points_df
 
 
 if __name__ == "__main__":
-    glacier_name = 'RGI60-11.01450'
+    glacier_name = 'RGI60-11.00846'
     rgi = glacier_name[6:8]
     dem_rgi = fetch_dem(folder_mosaic=args.mosaic, rgi=rgi)
     generated_points_dataframe = populate_glacier_with_metadata(
-                                            glacier_name='RGI60-11.01450',
+                                            glacier_name=glacier_name,
                                             dem_rgi=dem_rgi,
                                             n=10000,
                                             seed=42)
@@ -982,3 +1028,4 @@ if __name__ == "__main__":
 #RGI60-11.00590, RGI60-11.01894 no Millan data ?
 #glacier_name = np.random.choice(RGI_burned)
 #'RGI60-01.01701'
+# RGI60-07.00832
