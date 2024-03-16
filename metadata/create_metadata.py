@@ -16,30 +16,31 @@ import geopandas as gpd
 from tqdm import tqdm
 import scipy
 from scipy import spatial
+from sklearn.neighbors import KDTree
 import shapely
-from shapely.geometry import Point
+from shapely.geometry import box, Point, Polygon, LinearRing, LineString, MultiLineString
 from matplotlib.colors import Normalize, LogNorm
-from shapely.geometry import Polygon, Point, box
-from shapely.ops import unary_union
+from shapely.ops import unary_union, nearest_points
 from pyproj import Transformer, CRS, Geod
 import utm
+from joblib import Parallel, delayed
 from create_rgi_mosaic_tanxedem import create_mosaic_rgi_tandemx
 from utils_metadata import from_lat_lon_to_utm_and_epsg, gaussian_filter_with_nans, haversine
 
 """
 This program creates a dataframe of metadata for the points in glathida.
 
-Run time evaluated on on rgi = [1,3,4,7,8,11,18]: 18h
+Run time evaluated on on rgi = [1,3,4,7,8,11,18]: 9.6h
 Note: rgi 6 has no glathida data.
 
 1. add_rgi. Time: 2min.
-2. add_RGIId_and_OGGM_stats. Time: 60 min.
+2. add_RGIId_and_OGGM_stats. Time: 10 min (+rgi 5 in 14min)
 3. add_slopes_elevation. Time: 80 min.
     - No nan can be produced here. 
 4. add_millan_vx_vy_ith. Time: 4.5 h
     - Points inside the glacier but close to the borders can be interpolated as nan.
     - Note: method to interpolate is chosen as "nearest" to reduce as much as possible these nans.
-5. add_dist_from_boder_using_geometries. Time: 9h (rgi1 2.5h, rgi3 3h, rgi4 0.5h, rgi7 3h)
+5. add_dist_from_boder_using_geometries. 1.5h (rgi1 30m, rgi3 30m, rgi4 13m, rgi7 17m)
 6. add_farinotti_ith. Time: 2h (rgi1 1h, rgi3 0.5h, rgi4 10m, rgi7 8m, rgi8 3m, rgi11 10m, rgi18 3m)
     - Points inside the glacier but close to the borders can be interpolated as nan.
     - Note: method to interpolate is chosen as "nearest" to reduce as much as possible these nans.
@@ -63,17 +64,22 @@ parser.add_argument('--farinotti_icethickness_folder', type=str,default="/home/n
 parser.add_argument('--OGGM_folder', type=str,default="/home/nico/OGGM", help="Path to OGGM main folder")
 parser.add_argument('--save', type=int, default=0, help="Save final dataset or not.")
 parser.add_argument('--save_outname', type=str,
-            default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata2.csv",
+            default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata4.csv",
             help="Saved dataframe name.")
 
-#todo: Smoothing vx, vy, slopes, before interpolating ? A gaussian filter adapted to glacier area ?
+#todo: Smoothing: think or a more intelligent filter, e.g. gaussian filter adapted to glacier area ?
 #todo: whenever i call clip_box i need to check if there is only 1 measurement !
 #todo: change all reprojecting method from nearest to something else, like bisampling. Also in all .to_crs(...)
 # todo: Slope from oggm has some strangely high values (or is it expressed in %?). Worth thicking of calculating it myself ?
-# todo: add_slopes_elevation: per ora creo il mosaico. Questo consuma RAM;
-#  Invece sarebbe piu intelligente importare solo le tiles necessarie - pensa se devo fare il mosaico di tutta la groenlandia !!
 
-# todo> NEXT RUN. Add rgi 5
+# todo for possible speedup:
+#  in distance from border dovrei speedup il calcolo delle geometries del cluster
+
+# todo:
+#  0) Slope/elevation function: avoid the mosaic thing and only collect the necessary tiles
+#  1) Add rgi 5. Why in rgi 5 glaciers should be 19306 and instead oggm lists them as 20261 ?
+#  I believe OGGM glaciers are slightly different from the official RGI, they have their V62 version.
+#  2) Add slope interpolation at closest point
 
 
 utils.get_rgi_dir(version='62')
@@ -331,22 +337,6 @@ def add_slopes_elevation(glathida, path_mosaic):
                 curv_300 = xrspatial.curvature(focus_filter_xarray_300_utm)
                 aspect_50 = xrspatial.aspect(focus_filter_xarray_50_utm)
                 aspect_300 = xrspatial.aspect(focus_filter_xarray_300_utm)
-
-                # Calculate second-order derivatives for curvature
-                #d2z_dx2_300 = dz_dlon_filter_xar_300.differentiate(coord='x')
-                #d2z_dy2_300 = dz_dlat_filter_xar_300.differentiate(coord='y')
-                #d2z_dxdy_300 = dz_dlat_filter_xar_300.differentiate(coord='x')
-                #p_300 = d2z_dx2_300**2 + d2z_dy2_300**2
-                #q_300 = 1 + p_300
-                # Profile curvature kpr
-                #kpr_300 = (d2z_dx2_300*(dz_dlon_filter_xar_300**2) +
-                #          2*d2z_dxdy_300*dz_dlat_filter_xar_300*dz_dlon_filter_xar_300 +
-                #          d2z_dy2_300*(dz_dlat_filter_xar_300**2))/(p_300*(q_300**3./2))
-                # Plan curvature kpl
-                #kpl_300 = (d2z_dx2_300*(dz_dlon_filter_xar_300**2) -
-                #          2*d2z_dxdy_300*dz_dlat_filter_xar_300*dz_dlon_filter_xar_300 +
-                #          d2z_dy2_300*(dz_dlat_filter_xar_300**2))/(p_300**3./2)
-
 
                 # interpolate slope and dem
                 elevation_data = focus_utm_clipped.interp(y=northings_xar, x=eastings_xar, method='linear').data
@@ -638,7 +628,7 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
             tile_condition = condition1 & condition2 & condition3 & condition4
             glathida_rgi_tile = glathida_rgi[tile_condition]
 
-            tqdm.write(f"\t No. points found in tile: {len(glathida_rgi_tile)}/{len(glathida_rgi)}")
+            tqdm.write(f"\t No. points found in tile {i+1}/{n_rgi_tiles}: {len(glathida_rgi_tile)}/{len(glathida_rgi)}")
 
             # If no point in tile go to next tile
             if len(glathida_rgi_tile)==0:
@@ -968,7 +958,6 @@ def add_dist_from_border_in_out(glathida, path_millan_velocity):
 """Add distance from border using glacier geometries"""
 def add_dist_from_boder_using_geometries(glathida):
     print("Adding distance to border using a geometrical approach...")
-
     # Note that if the point is inside a nunatak the distance will be set to nan.
 
     if ('dist_from_border_km_geom' in list(glathida)):
@@ -1088,8 +1077,8 @@ def add_dist_from_boder_using_geometries(glathida):
                     multipolygon = True
                 else: raise ValueError("Unexpected geometry type. Please check.")
 
-                # Create a geoseries of all external and internal geometries
-                geoseries_geometries_epsg = gpd.GeoSeries(cluster_exterior_ring + cluster_interior_rings)
+                # Create a geoseries of all external and internal geometries (NB I set here the glacier_epsg)
+                geoseries_geometries_epsg = gpd.GeoSeries(cluster_exterior_ring + cluster_interior_rings).set_crs(epsg=glacier_epsg)
 
             # Get all points and create Geopandas geoseries and convert to glacier center UTM
             # Note: a delicate issue is that technically each point may have its own UTM zone.
@@ -1100,17 +1089,34 @@ def add_dist_from_boder_using_geometries(glathida):
             geoseries_points_4326 = gpd.GeoSeries(list_points, crs="EPSG:4326")
             geoseries_points_epsg = geoseries_points_4326.to_crs(epsg=glacier_epsg)
 
-            # Finally ready to loop over the points inside glacier_id
+            # List of distances for glacier_id
             glacier_id_dist = []
+
+            # Decide which method to use (default should be method_KDTree_spatial_index)
+            method_geopandas_spatial_index = False
+            method_KDTree_spatial_index = True
+            method_geopandas_distances = False
+
+            if method_geopandas_spatial_index:
+                # Create spatial index for the geometries
+                sindex_id = geoseries_geometries_epsg.sindex
+
+            if method_KDTree_spatial_index:
+                # 1. Extract all coordinates from the GeoSeries geometries for the current glacier
+                geoms_coords_array = np.concatenate([np.array(geom.coords) for geom in geoseries_geometries_epsg.geometry])
+                # 2. instantiate kdtree
+                kdtree = KDTree(geoms_coords_array)
+
             for i, (idx, lon, lat) in tqdm(enumerate(zip(glathida_id.index, lons, lats)), total=len(lons), desc='Points', leave=False):
 
+                # Make check 0.
                 make_check0 = False
                 if make_check0 and i==0:
                     lat_check = glathida_id.loc[idx, 'POINT_LAT']
                     lon_check = glathida_id.loc[idx, 'POINT_LON']
                     #print(lon_check, lat_check, lon, lat)
 
-                # Make two checks.
+                # Make check 1.
                 make_check1 = True
                 if make_check1:
                     is_inside = gl_geom_ext.contains(Point(lon, lat))
@@ -1122,8 +1128,8 @@ def add_dist_from_boder_using_geometries(glathida):
                 if make_check2:
                     easting, nothing, zonenum, zonelett, epsg = from_lat_lon_to_utm_and_epsg(lat, lon)
                     if epsg != glacier_epsg:
+                        # todo: maybe need to correct for this.
                         print(f"Note differet UTM zones. Point espg {epsg} and glacier center epsg {glacier_epsg}.")
-                        #todo: maybe need to correct for this.
 
                 # Decide whether point is inside a nunatak. If yes set the distance to nan
                 is_nunatak = any(nunatak.contains(Point(lon, lat)) for nunatak in gl_geom_nunataks_list)
@@ -1134,35 +1140,76 @@ def add_dist_from_boder_using_geometries(glathida):
                 else:
                     # get shapely Point
                     point_epsg = geoseries_points_epsg.iloc[i]
-                    # Calculate the distances between such point and all glacier geometries
-                    min_distances_point_geometries = geoseries_geometries_epsg.distance(point_epsg)
-                    min_dist = np.min(min_distances_point_geometries)  # unit UTM: m
 
-                    # To debug we want to check what point corresponds to the minimum distance.
-                    debug_distance = False
-                    if debug_distance:
-                        min_distance_index = min_distances_point_geometries.idxmin()
-                        nearest_line = geoseries_geometries_epsg.loc[min_distance_index]
-                        nearest_point_on_line = nearest_line.interpolate(nearest_line.project(point_epsg))
-                        # todo: would be useful to add the slope calculated at this location
-                        # print(f"{i} Minimum distance: {min_dist:.2f} meters.")
+                    # Method 1 with geopandas spatial index (fast)
+                    if method_geopandas_spatial_index:
+
+                        # Find the index of the nearest geometry
+                        nearest_idx = sindex_id.nearest(point_epsg.bounds)
+                        # Get the nearest geometry (NB may consists of more than one geometry)
+                        nearest_geometries = geoseries_geometries_epsg.iloc[nearest_idx]
+                        # Calculate the distance between the closest geometry and the point
+                        min_distances = nearest_geometries.distance(point_epsg)
+                        # Find the index of the row with the minimum distance
+                        min_idx = min_distances.idxmin()
+
+                        # Get the minimum distance and corresponding geometry
+                        min_dist_spatial_index = min_distances.loc[min_idx]
+                        nearest_geometry = nearest_geometries.loc[min_idx]
+                        #print(min_distances)
+                        #print(min_dist_spatial_index)
+                        #print(nearest_geometries)
+
+                        # Find the nearest point on the boundary of the polygon
+                        get_closest_point = True
+                        if get_closest_point:
+                            nearest_point_on_boundary, nearest_point_point = nearest_points(nearest_geometry, point_epsg)
+                            # Calculate the minimum distance again, just to verify
+                            #min_distance_check = nearest_point_on_boundary.distance(point_epsg)
+                            #print(min_distance_check)
+
+                    # Method 2 with KDTree
+                    if method_KDTree_spatial_index:
+
+                        point_array = np.array(point_epsg.coords)  # (1,2)
+
+                        # Perform nearest neighbor search for each point and calculate minimum distances
+                        # both distances and indices have shape (1, len(geoseries_geometries_epsg))
+                        distances, indices = kdtree.query(point_array, k=len(geoseries_geometries_epsg))
+                        min_dist_KDTree = distances[0,0] # np.min(distances, axis=1)) or equivalently distances[:,0]
+                        closest_point_index = indices[0, 0]
+                        closest_point = Point(geoms_coords_array[closest_point_index])
+                        # todo: convert to lat lon and return it add slope calculation method
+                        #tqdm.write(f"{min_dist_KDTree}")
+                        #tqdm.write(f"{closest_point, nearest_point_on_boundary}")
+
+                    # Method 3 (exact but slow): Calculate the distances between such point and all glacier geometries.
+                    if method_geopandas_distances:
+                        min_distances_point_geometries = geoseries_geometries_epsg.distance(point_epsg)
+                        min_dist_geopandas_distances = np.min(min_distances_point_geometries)  # unit UTM: m
+
+                        # To debug we want to check what point corresponds to the minimum distance.
+                        debug_distance = True
+                        if debug_distance:
+                            min_distance_index = min_distances_point_geometries.idxmin()
+                            nearest_line = geoseries_geometries_epsg.loc[min_distance_index]
+                            nearest_point_on_line = nearest_line.interpolate(nearest_line.project(point_epsg))
+
 
                 # Fill distance list for glacier id of point
-                glacier_id_dist.append(min_dist/1000.)
+                glacier_id_dist.append(min_dist_KDTree/1000.)
 
-                # Compare with Millan's distance method
-                check_with_millan = False
-                if check_with_millan:
-                    dist_with_millan = glathida_id.loc[idx, 'dist_from_border_km']
-                    if (abs(min_dist/1000.-dist_with_millan)/(min_dist/1000.)>2.):
-                        millan_mismatch=True
-                        print(f"Geometry method: {min_dist / 1000.:.5f} Millan method: {dist_with_millan:.5f}")
+                # For debugging
+                if method_KDTree_spatial_index and method_geopandas_spatial_index and method_geopandas_distances:
+                    if min_dist_KDTree>300 and abs(min_dist_KDTree-min_dist_geopandas_distances)/min_dist_geopandas_distances >.5:
+                        plot_calculate_distance = True
+                        print(min_dist_KDTree, min_dist_geopandas_distances, min_dist_spatial_index)
+                    else: plot_calculate_distance = False
+                else: plot_calculate_distance = False
 
                 # Plot
-                plot_calculate_distance = False
-                r = random.uniform(0,1)
-                if (plot_calculate_distance and list_cluster_RGIIds is not None and r<1.0):
-                    plot_calculate_distance = True
+                #r = random.uniform(0,1)
+                #if (plot_calculate_distance and list_cluster_RGIIds is not None and r<1.0):
                 if plot_calculate_distance:
                     fig, (ax1, ax2) = plt.subplots(1, 2)
                     ax1.plot(*gl_geom_ext.exterior.xy, lw=1, c='magenta', zorder=4)
@@ -1215,9 +1262,16 @@ def add_dist_from_boder_using_geometries(glathida):
                         for inter in geoseries_geometries_epsg.loc[1:]:  # all interiors if present
                             ax2.plot(*inter.xy, lw=1, c='blue')
 
-                    if is_nunatak: ax2.scatter(*point_epsg.xy, s=50, lw=2, c='b')
-                    else: ax2.scatter(*point_epsg.xy, s=50, lw=2, c='r', ec='r')
-                    if debug_distance: ax2.scatter(*nearest_point_on_line.xy, s=50, lw=2, c='g')
+                    if is_nunatak: ax2.scatter(*point_epsg.xy, s=50, lw=2, c='b', zorder=5)
+                    else: ax2.scatter(*point_epsg.xy, s=50, lw=2, c='r', ec='r', zorder=5)
+
+                    if method_geopandas_distances and debug_distance:
+                        ax2.scatter(*nearest_point_on_line.xy, s=50, lw=2, c='g', zorder=5)
+
+                    if method_geopandas_spatial_index and get_closest_point:
+                        ax2.scatter(x=nearest_point_on_boundary.x, y=nearest_point_on_boundary.y, s=40, lw=2, c='y', zorder=5)
+
+                    if method_KDTree_spatial_index: ax2.scatter(x=closest_point.x, y=closest_point.y, s=30, lw=2, c='k', zorder=5)
 
                     ax1.set_title('EPSG 4326')
                     ax2.set_title(f'EPSG {glacier_epsg}')
@@ -1254,6 +1308,10 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
     glathida['TermType'] = [np.nan] * len(glathida) # 9 Not assigned
     glathida['Aspect'] = [np.nan] * len(glathida) # -9 bad values
 
+    # Define this function for the parallelization
+    def check_contains(point, geometry):
+        return geometry.contains(point)
+
     regions = [1,3,4,7,8,11,18]
 
     for rgi in regions:
@@ -1280,17 +1338,18 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
         # loop sui ghiacciai di oggm
         for i, ind in tqdm(enumerate(oggm_rgi_glaciers.index), total=len(oggm_rgi_glaciers), desc=f"glaciers in rgi {rgi}", leave=True, position=0):
 
-            glacier_geometry = oggm_rgi_glaciers.loc[ind, 'geometry']
-            glacier_RGIId = oggm_rgi_glaciers.loc[ind, 'RGIId']
-            glacier_area = oggm_rgi_glaciers.loc[ind, 'Area']
-            glacier_zmin = oggm_rgi_glaciers.loc[ind, 'Zmin']
-            glacier_zmax = oggm_rgi_glaciers.loc[ind, 'Zmax']
-            glacier_zmed = oggm_rgi_glaciers.loc[ind, 'Zmed']
-            glacier_slope = oggm_rgi_glaciers.loc[ind, 'Slope']
-            glacier_lmax = oggm_rgi_glaciers.loc[ind, 'Lmax']
-            glacier_form = oggm_rgi_glaciers.loc[ind, 'Form']
-            glacier_termtype = oggm_rgi_glaciers.loc[ind, 'TermType']
-            glacier_aspect = oggm_rgi_glaciers.loc[ind, 'Aspect']
+            glacier_geometry = oggm_rgi_glaciers.at[ind, 'geometry']
+            glacier_RGIId = oggm_rgi_glaciers.at[ind, 'RGIId']
+            glacier_area = oggm_rgi_glaciers.at[ind, 'Area']
+            glacier_zmin = oggm_rgi_glaciers.at[ind, 'Zmin']
+            glacier_zmax = oggm_rgi_glaciers.at[ind, 'Zmax']
+            glacier_zmed = oggm_rgi_glaciers.at[ind, 'Zmed']
+            glacier_slope = oggm_rgi_glaciers.at[ind, 'Slope']
+            glacier_lmax = oggm_rgi_glaciers.at[ind, 'Lmax']
+            glacier_form = oggm_rgi_glaciers.at[ind, 'Form']
+            glacier_termtype = oggm_rgi_glaciers.at[ind, 'TermType']
+            glacier_aspect = oggm_rgi_glaciers.at[ind, 'Aspect']
+
             # calculate the area using pyproj and shapely for comparison with oggm
             # area_pyproj = abs(Geod(ellps="WGS84").geometry_area_perimeter(shapely.wkt.loads(str(glacier_geometry)))[0])*1.e-6 #km2
 
@@ -1311,7 +1370,11 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
             #print(f'RGIId {glacier_RGIId} No. point in bound: {len(df_points_in_bound)}')
 
             # mask True/False to decide whether the points are inside the glacier geometry
-            mask_points_in_glacier = glacier_geometry.contains(points_in_bound)
+            # NOTE: PARALLELIZATION HERE
+            mask_points_in_glacier = Parallel(n_jobs=-1)(delayed(check_contains)(point, glacier_geometry) for point in points_in_bound)
+            mask_points_in_glacier = np.array(mask_points_in_glacier)
+            #mask_points_in_glacier_0 = glacier_geometry.contains(points_in_bound)
+            #print(np.array_equal(mask_points_in_glacier_0, mask_points_in_glacier))
 
             # select only those points inside the glacier
             df_poins_in_glacier = df_points_in_bound[mask_points_in_glacier]
@@ -1338,7 +1401,10 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
             assert glacier_lmax != -9, "Lmax should not be -9"
             assert glacier_form != 9, "Form should not be 9 (not assigned)"
             assert glacier_termtype != 9, "TermType should not be 9 (not assigned)"
-            assert glacier_aspect != -9, "Aspect should not be -9"
+            #assert glacier_aspect != -9, "Aspect should not be -9"
+
+            # Data imputation (found needed for Greenland)
+            if glacier_aspect == -9: glacier_aspect = 0
 
             assert not np.any(np.isnan(np.array([glacier_area, glacier_zmin, glacier_zmax,
                                                      glacier_zmed, glacier_slope, glacier_lmax,
@@ -1401,7 +1467,7 @@ def add_farinotti_ith(glathida, path_farinotti_icethickness):
                 # See page 28 of https://www.glims.org/RGI/00_rgi60_TechnicalNote.pdf
                 glacier_geometry = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name, 'geometry'].item()
             except ValueError:
-                tqdm.write(f"{glacier_name} not present in RGI v6.")
+                tqdm.write(f"{glacier_name} not present in OGGM's RGI v6.")
                 continue
 
             file_glacier_farinotti = rioxarray.open_rasterio(tiffile, masked=False)
@@ -1509,9 +1575,10 @@ if __name__ == '__main__':
         glathida = add_dist_from_boder_using_geometries(glathida)
         glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
 
-        #glathida = pd.read_csv(args.path_ttt_rgi_csv.replace('TTT_rgi.csv', 'metadata.csv'), low_memory=False)
+        #glathida = pd.read_csv(args.path_ttt_rgi_csv.replace('TTT_rgi.csv', 'metadata3.csv'), low_memory=False)
         #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
         #glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
+        #glathida = add_dist_from_boder_using_geometries(glathida)
         #glathida = add_slopes_elevation(glathida, args.mosaic)
         #glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
 
