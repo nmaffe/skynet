@@ -205,6 +205,19 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
     points_df['TermType'] = gl_df['TermType'].item()
     points_df['Aspect'] = gl_df['Aspect'].item()
 
+    # Calculate the adaptive filter size based on the Area value
+    sigma_af_min, sigma_af_max = 100.0, 2000.0
+    try:
+        area_gl = points_df['Area'][0]
+        lmax_gl = points_df['Lmax'][0]
+        a = 1e6 * area_gl / (np.pi * 0.5 * lmax_gl)
+        sigma_af = int(min(max(a, sigma_af_min), sigma_af_max))
+        # print(area_gl, lmax_gl, a, value)
+    except Exception as e:
+        sigma_af = sigma_af_min
+    # Ensure that our value correctly in range
+    assert sigma_af_min <= sigma_af <= sigma_af_max, f"Value {sigma_af} is not within the range [{sigma_af_min}, {sigma_af_max}]"
+
     """ Calculate Millan vx, vy, v """
     print(f"Calculating vx, vy, v, ith_m...")
     tmillan1 = time.time()
@@ -341,36 +354,50 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
         num_px_sigma_100 = max(1, round(100 / ris_metre_millan))  # 2
         num_px_sigma_150 = max(1, round(150 / ris_metre_millan))  # 3
         num_px_sigma_300 = max(1, round(300 / ris_metre_millan))  # 6
+        num_px_sigma_450 = max(1, round(450 / ris_metre_millan))
+        num_px_sigma_af = max(1, round(sigma_af / ris_metre_millan))
 
         # Apply filter to velocities
         focus_filter_vx_50 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_50, trunc=4.0)
         focus_filter_vx_100 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_100, trunc=4.0)
         focus_filter_vx_150 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_150, trunc=4.0)
         focus_filter_vx_300 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_300, trunc=4.0)
+        focus_filter_vx_450 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_450, trunc=4.0)
+        focus_filter_vx_af = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_af, trunc=4.0)
         focus_filter_vy_50 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_50, trunc=4.0)
         focus_filter_vy_100 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_100, trunc=4.0)
         focus_filter_vy_150 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_150, trunc=4.0)
         focus_filter_vy_300 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_300, trunc=4.0)
+        focus_filter_vy_450 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_450, trunc=4.0)
+        focus_filter_vy_af = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_af, trunc=4.0)
 
         # Mask back the filtered arrays
         focus_filter_vx_50 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_50)
         focus_filter_vx_100 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_100)
         focus_filter_vx_150 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_150)
         focus_filter_vx_300 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_300)
+        focus_filter_vx_450 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_450)
+        focus_filter_vx_af = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_af)
         focus_filter_vy_50 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_50)
         focus_filter_vy_100 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_100)
         focus_filter_vy_150 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_150)
         focus_filter_vy_300 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_300)
+        focus_filter_vy_450 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_450)
+        focus_filter_vy_af = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_af)
 
         # create xarrays of filtered velocities
         focus_filter_vx_50_ar = focus_vx.copy(deep=True, data=focus_filter_vx_50)
         focus_filter_vx_100_ar = focus_vx.copy(deep=True,data=focus_filter_vx_100)
         focus_filter_vx_150_ar = focus_vx.copy(deep=True,data=focus_filter_vx_150)
         focus_filter_vx_300_ar = focus_vx.copy(deep=True,data=focus_filter_vx_300)
+        focus_filter_vx_450_ar = focus_vx.copy(deep=True,data=focus_filter_vx_450)
+        focus_filter_vx_af_ar = focus_vx.copy(deep=True,data=focus_filter_vx_af)
         focus_filter_vy_50_ar = focus_vy.copy(deep=True,data=focus_filter_vy_50)
         focus_filter_vy_100_ar = focus_vy.copy(deep=True,data=focus_filter_vy_100)
         focus_filter_vy_150_ar = focus_vy.copy(deep=True,data=focus_filter_vy_150)
         focus_filter_vy_300_ar = focus_vy.copy(deep=True,data=focus_filter_vy_300)
+        focus_filter_vy_450_ar = focus_vy.copy(deep=True,data=focus_filter_vy_450)
+        focus_filter_vy_af_ar = focus_vy.copy(deep=True,data=focus_filter_vy_af)
 
         # Calculate the velocity gradients
         dvx_dx_ar, dvx_dy_ar = focus_filter_vx_300_ar.differentiate(coord='x'), focus_filter_vx_300_ar.differentiate(coord='y')
@@ -387,10 +414,14 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
         vx_filter_100_data = focus_filter_vx_100_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
         vx_filter_150_data = focus_filter_vx_150_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
         vx_filter_300_data = focus_filter_vx_300_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        vx_filter_450_data = focus_filter_vx_450_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        vx_filter_af_data = focus_filter_vx_af_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
         vy_filter_50_data = focus_filter_vy_50_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
         vy_filter_100_data = focus_filter_vy_100_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
         vy_filter_150_data = focus_filter_vy_150_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
         vy_filter_300_data = focus_filter_vy_300_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        vy_filter_450_data = focus_filter_vy_450_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
+        vy_filter_af_data = focus_filter_vy_af_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
 
         dvx_dx_data = dvx_dx_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
         dvx_dy_data = dvx_dy_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
@@ -413,10 +444,14 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
         points_df['vx_gf100'] = vx_filter_100_data
         points_df['vx_gf150'] = vx_filter_150_data
         points_df['vx_gf300'] = vx_filter_300_data
+        points_df['vx_gf450'] = vx_filter_450_data
+        points_df['vx_gfa'] = vx_filter_af_data
         points_df['vy_gf50'] = vy_filter_50_data
         points_df['vy_gf100'] = vy_filter_100_data
         points_df['vy_gf150'] = vy_filter_150_data
         points_df['vy_gf300'] = vy_filter_300_data
+        points_df['vy_gf450'] = vy_filter_450_data
+        points_df['vy_gfa'] = vy_filter_af_data
         points_df['dvx_dx'] = dvx_dx_data
         points_df['dvx_dy'] = dvx_dy_data
         points_df['dvy_dx'] = dvy_dx_data
@@ -426,7 +461,8 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
         print(f"No Millan data can be found for rgi {rgi} glacier {glacier_name}. Data imputation needed !")
         points_df['ith_m'] = np.nan
         # Data imputation: set Millan velocities as zero (keep ith_m as nan)
-        for col in ['vx','vy','vx_gf50', 'vx_gf100', 'vx_gf150', 'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300',
+        for col in ['vx','vy','vx_gf50', 'vx_gf100', 'vx_gf150', 'vx_gf300', 'vx_gf450', 'vx_gfa',
+                    'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300', 'vy_gf450', 'vy_gfa',
                     'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy']:
             points_df[col] = 0.0
 
@@ -511,24 +547,12 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
         maxx=max(eastings) + 2000,
         maxy=max(northings) + 2000)
 
-    min_sigma, max_sigma = 100.0, 2000.0
-    try:
-        area_gl = points_df['Area'][0]
-        lmax_gl = points_df['Lmax'][0]
-        a = 1e6 * area_gl / (np.pi * 0.5 * lmax_gl)
-        value = int(min(max(a, min_sigma), max_sigma))
-        # print(area_gl, lmax_gl, a, value)
-    except Exception as e:
-        value = min_sigma
-    # Ensure that our value correctly in range
-    assert min_sigma <= value <= max_sigma, f"Value {value} is not within the range [{min_sigma}, {max_sigma}]"
-
     num_px_sigma_50 = max(1, round(50 / res_utm_metres))
     num_px_sigma_100 = max(1, round(100 / res_utm_metres))
     num_px_sigma_150 = max(1, round(150 / res_utm_metres))
     num_px_sigma_300 = max(1, round(300 / res_utm_metres))
     num_px_sigma_450 = max(1, round(450 / res_utm_metres))
-    num_px_sigma_af = max(1, round(value / res_utm_metres))
+    num_px_sigma_af = max(1, round(sigma_af / res_utm_metres))
 
     # Apply filter (utm here)
     focus_filter_50_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_50, trunc=4.0)
@@ -1011,7 +1035,8 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
 
     # Data imputation for any nan survived in Millan velocities. Set all to zero.
     list_cols_for_nan_to_zero_replacement = ['vx', 'vy', 'vx_gf50', 'vx_gf100', 'vx_gf150',
-                                             'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300',
+                                             'vx_gf300', 'vx_gf450', 'vx_gfa', 'vy_gf50', 'vy_gf100',
+                                             'vy_gf150', 'vy_gf300', 'vy_gf450', 'vy_gfa',
                                              'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy']
     points_df[list_cols_for_nan_to_zero_replacement] = points_df[list_cols_for_nan_to_zero_replacement].fillna(0)
 
