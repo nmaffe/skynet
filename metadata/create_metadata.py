@@ -64,7 +64,7 @@ parser.add_argument('--farinotti_icethickness_folder', type=str,default="/home/n
 parser.add_argument('--OGGM_folder', type=str,default="/home/nico/OGGM", help="Path to OGGM main folder")
 parser.add_argument('--save', type=int, default=0, help="Save final dataset or not.")
 parser.add_argument('--save_outname', type=str,
-            default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata4.csv",
+            default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata4af.csv",
             help="Saved dataframe name.")
 
 #todo: Smoothing: think or a more intelligent filter, e.g. gaussian filter adapted to glacier area ?
@@ -181,7 +181,7 @@ def add_slopes_elevation(glathida, path_mosaic):
 
     if (any(ele in list(glathida) for ele in ['slope_lat', 'slope_lon', 'elevation'])):
         print('Variables slope_lat, slope_lon or elevation already in dataframe.')
-        return glathida
+        #return glathida
 
     glathida['elevation'] = [np.nan] * len(glathida)
     glathida['slope_lat'] = [np.nan] * len(glathida)
@@ -196,10 +196,14 @@ def add_slopes_elevation(glathida, path_mosaic):
     glathida['slope_lon_gf300'] = [np.nan] * len(glathida)
     glathida['slope_lat_gf450'] = [np.nan] * len(glathida)
     glathida['slope_lon_gf450'] = [np.nan] * len(glathida)
+    glathida['slope_lat_gfa'] = [np.nan] * len(glathida)
+    glathida['slope_lon_gfa'] = [np.nan] * len(glathida)
     glathida['curv_50'] = [np.nan] * len(glathida)
     glathida['curv_300'] = [np.nan] * len(glathida)
+    glathida['curv_gfa'] = [np.nan] * len(glathida)
     glathida['aspect_50'] = [np.nan] * len(glathida)
     glathida['aspect_300'] = [np.nan] * len(glathida)
+    glathida['aspect_gfa'] = [np.nan] * len(glathida)
     datax = []  # just to analyse the results
     datay = []  # just to analyse the results
 
@@ -292,19 +296,36 @@ def add_slopes_elevation(glathida, path_mosaic):
                 # Calculate the resolution in meters of the utm focus (resolutions in x and y are the same!)
                 res_utm_metres = focus_utm_clipped.rio.resolution()[0]
 
+                # Calculate sigma in meters for adaptive gaussian fiter
+                min_sigma, max_sigma = 100.0, 2000.0
+                try:
+                    # Each id_rgi may come with multiple area values and also nans (probably if all points outside glacier geometries)
+                    area_id = glathida_id_epsg['Area'].min()  # km2
+                    lmax_id = glathida_id_epsg['Lmax'].max()  # m
+                    a = 1e6*area_id/(np.pi*0.5*lmax_id)
+                    value = int(min(max(a, min_sigma), max_sigma))
+                    #print(area_id, lmax_id, a, value)
+                except Exception as e:
+                    value = min_sigma
+                # Ensure that our value correctly in range [50.0, 2000.0]
+                assert min_sigma <= value <= max_sigma, f"Value {value} is not within the range [{min_sigma}, {max_sigma}]"
+                #print(f"Adaptive gaussian filter with sigma = {value} meters.")
+
                 # Calculate how many pixels I need for a resolution of 50, 100, 150, 300 meters
                 num_px_sigma_50 = max(1, round(50/res_utm_metres))
                 num_px_sigma_100 = max(1, round(100/res_utm_metres))
                 num_px_sigma_150 = max(1, round(150/res_utm_metres))
                 num_px_sigma_300 = max(1, round(300/res_utm_metres))
                 num_px_sigma_450 = max(1, round(450/res_utm_metres))
+                num_px_sigma_af = max(1, round(value / res_utm_metres))
 
                 # Apply filter
-                focus_filter_50_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_50)
-                focus_filter_100_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_100)
-                focus_filter_150_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_150)
-                focus_filter_300_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_300)
-                focus_filter_450_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_450)
+                focus_filter_50_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_50, trunc=4.0)
+                focus_filter_100_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_100, trunc=4.0)
+                focus_filter_150_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_150, trunc=4.0)
+                focus_filter_300_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_300, trunc=4.0)
+                focus_filter_450_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_450, trunc=4.0)
+                focus_filter_af_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_af, trunc=3.0)
 
                 # Mask back the filtered arrays
                 focus_filter_50_utm = np.where(np.isnan(focus_utm_clipped.values), np.nan, focus_filter_50_utm)
@@ -312,6 +333,7 @@ def add_slopes_elevation(glathida, path_mosaic):
                 focus_filter_150_utm = np.where(np.isnan(focus_utm_clipped.values), np.nan, focus_filter_150_utm)
                 focus_filter_300_utm = np.where(np.isnan(focus_utm_clipped.values), np.nan, focus_filter_300_utm)
                 focus_filter_450_utm = np.where(np.isnan(focus_utm_clipped.values), np.nan, focus_filter_450_utm)
+                focus_filter_af_utm = np.where(np.isnan(focus_utm_clipped.values), np.nan, focus_filter_af_utm)
 
                 # create xarray object of filtered dem
                 focus_filter_xarray_50_utm = focus_utm_clipped.copy(data=focus_filter_50_utm)
@@ -319,6 +341,7 @@ def add_slopes_elevation(glathida, path_mosaic):
                 focus_filter_xarray_150_utm = focus_utm_clipped.copy(data=focus_filter_150_utm)
                 focus_filter_xarray_300_utm = focus_utm_clipped.copy(data=focus_filter_300_utm)
                 focus_filter_xarray_450_utm = focus_utm_clipped.copy(data=focus_filter_450_utm)
+                focus_filter_xarray_af_utm = focus_utm_clipped.copy(data=focus_filter_af_utm)
 
                 # calculate slopes for restricted dem
                 # using numpy.gradient dz_dlat, dz_dlon = np.gradient(focus_utm_clipped.values, -res_utm_metres, res_utm_metres)  # [m/m]
@@ -328,6 +351,7 @@ def add_slopes_elevation(glathida, path_mosaic):
                 dz_dlat_filter_xar_150, dz_dlon_filter_xar_150 = focus_filter_xarray_150_utm.differentiate(coord='y'), focus_filter_xarray_150_utm.differentiate(coord='x')
                 dz_dlat_filter_xar_300, dz_dlon_filter_xar_300  = focus_filter_xarray_300_utm.differentiate(coord='y'), focus_filter_xarray_300_utm.differentiate(coord='x')
                 dz_dlat_filter_xar_450, dz_dlon_filter_xar_450  = focus_filter_xarray_450_utm.differentiate(coord='y'), focus_filter_xarray_450_utm.differentiate(coord='x')
+                dz_dlat_filter_xar_af, dz_dlon_filter_xar_af  = focus_filter_xarray_af_utm.differentiate(coord='y'), focus_filter_xarray_af_utm.differentiate(coord='x')
 
                 # Calculate curvature and aspect using xrspatial
                 # Units of the curvature output (1/100) of a z-unit. Units of aspect are between [0, 360]
@@ -335,8 +359,10 @@ def add_slopes_elevation(glathida, path_mosaic):
                 # Note that xrspatial produces nans at boundaries, but that should not be a problem for interpolation.
                 curv_50 = xrspatial.curvature(focus_filter_xarray_50_utm)
                 curv_300 = xrspatial.curvature(focus_filter_xarray_300_utm)
+                curv_af = xrspatial.curvature(focus_filter_xarray_af_utm)
                 aspect_50 = xrspatial.aspect(focus_filter_xarray_50_utm)
                 aspect_300 = xrspatial.aspect(focus_filter_xarray_300_utm)
+                aspect_af = xrspatial.aspect(focus_filter_xarray_af_utm)
 
                 # interpolate slope and dem
                 elevation_data = focus_utm_clipped.interp(y=northings_xar, x=eastings_xar, method='linear').data
@@ -352,10 +378,14 @@ def add_slopes_elevation(glathida, path_mosaic):
                 slope_lon_data_filter_300 = dz_dlon_filter_xar_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 slope_lat_data_filter_450 = dz_dlat_filter_xar_450.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 slope_lon_data_filter_450 = dz_dlon_filter_xar_450.interp(y=northings_xar, x=eastings_xar, method='linear').data
+                slope_lat_data_filter_af = dz_dlat_filter_xar_af.interp(y=northings_xar, x=eastings_xar, method='linear').data
+                slope_lon_data_filter_af = dz_dlon_filter_xar_af.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 curv_data_50 = curv_50.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 curv_data_300 = curv_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
+                curv_data_af = curv_af.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 aspect_data_50 = aspect_50.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 aspect_data_300 = aspect_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
+                aspect_data_af = aspect_af.interp(y=northings_xar, x=eastings_xar, method='linear').data
 
                 # check if any nan in the interpolate data
                 contains_nan = any(np.isnan(arr).any() for arr in [slope_lon_data, slope_lat_data,
@@ -364,8 +394,9 @@ def add_slopes_elevation(glathida, path_mosaic):
                                                                    slope_lon_data_filter_150, slope_lat_data_filter_150,
                                                                    slope_lon_data_filter_300, slope_lat_data_filter_300,
                                                                    slope_lon_data_filter_450, slope_lat_data_filter_450,
-                                                                   curv_data_50, curv_data_300,
-                                                                   aspect_data_50, aspect_data_300])
+                                                                   slope_lon_data_filter_af, slope_lat_data_filter_af,
+                                                                   curv_data_50, curv_data_300, curv_data_af,
+                                                                   aspect_data_50, aspect_data_300, aspect_data_af])
                 if contains_nan:
                     raise ValueError(f"Nan detected in elevation/slope calc. Check")
 
@@ -373,8 +404,8 @@ def add_slopes_elevation(glathida, path_mosaic):
                 assert slope_lat_data.shape == slope_lon_data.shape == elevation_data.shape, "Different shapes, something wrong!"
                 assert slope_lat_data_filter_150.shape == slope_lon_data_filter_150.shape == elevation_data.shape, "Different shapes, something wrong!"
                 assert len(slope_lat_data) == len(indexes_all_epsg), "Different shapes, something wrong!"
-                assert curv_data_50.shape == curv_data_300.shape, "Different shapes, something wrong!"
-                assert aspect_data_50.shape == aspect_data_300.shape, "Different shapes, something wrong!"
+                assert curv_data_50.shape == curv_data_300.shape == curv_data_af.shape, "Different shapes, something wrong!"
+                assert aspect_data_50.shape == aspect_data_300.shape == aspect_data_af.shape, "Different shapes, something wrong!"
 
                 # write to dataframe
                 glathida.loc[indexes_all_epsg, 'elevation'] = elevation_data
@@ -390,10 +421,14 @@ def add_slopes_elevation(glathida, path_mosaic):
                 glathida.loc[indexes_all_epsg, 'slope_lon_gf300'] = slope_lon_data_filter_300
                 glathida.loc[indexes_all_epsg, 'slope_lat_gf450'] = slope_lat_data_filter_450
                 glathida.loc[indexes_all_epsg, 'slope_lon_gf450'] = slope_lon_data_filter_450
+                glathida.loc[indexes_all_epsg, 'slope_lat_gfa'] = slope_lat_data_filter_af
+                glathida.loc[indexes_all_epsg, 'slope_lon_gfa'] = slope_lon_data_filter_af
                 glathida.loc[indexes_all_epsg, 'curv_50'] = curv_data_50
                 glathida.loc[indexes_all_epsg, 'curv_300'] = curv_data_300
+                glathida.loc[indexes_all_epsg, 'curv_gfa'] = curv_data_af
                 glathida.loc[indexes_all_epsg, 'aspect_50'] = aspect_data_50
                 glathida.loc[indexes_all_epsg, 'aspect_300'] = aspect_data_300
+                glathida.loc[indexes_all_epsg, 'aspect_gfa'] = aspect_data_af
 
                 plot_curvature = False
                 if plot_curvature:
@@ -695,14 +730,14 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
                 num_px_sigma_300 = max(1, round(300 / ris_metre_millan))  # 6
 
                 # Apply filter to velocities
-                focus_filter_vx_50 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_50)
-                focus_filter_vx_100 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_100)
-                focus_filter_vx_150 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_150)
-                focus_filter_vx_300 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_300)
-                focus_filter_vy_50 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_50)
-                focus_filter_vy_100 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_100)
-                focus_filter_vy_150 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_150)
-                focus_filter_vy_300 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_300)
+                focus_filter_vx_50 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_50, trunc=4.0)
+                focus_filter_vx_100 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_100, trunc=4.0)
+                focus_filter_vx_150 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_150, trunc=4.0)
+                focus_filter_vx_300 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_300, trunc=4.0)
+                focus_filter_vy_50 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_50, trunc=4.0)
+                focus_filter_vy_100 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_100, trunc=4.0)
+                focus_filter_vy_150 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_150, trunc=4.0)
+                focus_filter_vy_300 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_300, trunc=4.0)
 
                 # Mask back the filtered arrays
                 focus_filter_vx_50 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_50)
@@ -1567,19 +1602,19 @@ if __name__ == '__main__':
         print(f'Begin Metadata dataset creation !')
         t0 = time.time()
 
-        glathida = pd.read_csv(args.path_ttt_csv, low_memory=False)
-        glathida = add_rgi(glathida, args.path_O1Regions_shp)
-        glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
-        glathida = add_slopes_elevation(glathida, args.mosaic)
-        glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
-        glathida = add_dist_from_boder_using_geometries(glathida)
-        glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
+        #glathida = pd.read_csv(args.path_ttt_csv, low_memory=False)
+        #glathida = add_rgi(glathida, args.path_O1Regions_shp)
+        #glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
+        #glathida = add_slopes_elevation(glathida, args.mosaic)
+        #glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
+        #glathida = add_dist_from_boder_using_geometries(glathida)
+        #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
 
-        #glathida = pd.read_csv(args.path_ttt_rgi_csv.replace('TTT_rgi.csv', 'metadata3.csv'), low_memory=False)
+        glathida = pd.read_csv(args.path_ttt_rgi_csv.replace('TTT_rgi.csv', 'metadata4.csv'), low_memory=False)
         #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
         #glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
         #glathida = add_dist_from_boder_using_geometries(glathida)
-        #glathida = add_slopes_elevation(glathida, args.mosaic)
+        glathida = add_slopes_elevation(glathida, args.mosaic)
         #glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
 
         if args.save:
