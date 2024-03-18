@@ -28,15 +28,15 @@ def from_lat_lon_to_utm_and_epsg(lat, lon):
     epsg_code = 32600 + zone_number + southern_hemisphere_TrueFalse * 100
     return (easting, northing, zone_number, zone_letter, epsg_code)
 
-def gaussian_filter_with_nans(U, sigma):
+def gaussian_filter_with_nans(U, sigma, trunc=4.0):
     # Since the reprojection into utm leads to distortions (=nans) we need to take care of this during filtering
     # From David in https://stackoverflow.com/questions/18697532/gaussian-filtering-a-image-with-nan-in-python
     V = U.copy()
     V[np.isnan(U)] = 0
-    VV = scipy.ndimage.gaussian_filter(V, sigma=[sigma, sigma], mode='nearest')
+    VV = scipy.ndimage.gaussian_filter(V, sigma=[sigma, sigma], mode='nearest', truncate=trunc)
     W = np.ones_like(U)
     W[np.isnan(U)] = 0
-    WW = scipy.ndimage.gaussian_filter(W, sigma=[sigma, sigma], mode='nearest')
+    WW = scipy.ndimage.gaussian_filter(W, sigma=[sigma, sigma], mode='nearest', truncate=trunc)
     WW[WW == 0] = np.nan
     filtered_U = VV / WW
     return filtered_U
