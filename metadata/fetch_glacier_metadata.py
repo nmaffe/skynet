@@ -50,14 +50,14 @@ Note the following policy for Millan special cases to produce vx, vy, v, ith_m:
     2) In case the interpolation of Millan's fields yields nan because points are either too close to the margins. 
     I keep the nans that will be however removed before returning the dataset.   
 """
-# todo: smooth millan, farinotti and slope fiels before interpolation
 # todo: Data imputation: Millan and other features
 # todo: inserire anche un ulteriore feature che è la velocità media di tutto il ghiacciao ? sia vxm, vym, vm ?
+
 # todo: a proposito di come smussare i campi di slope e velocita, guardare questo articolo:
 #  Slope estimation influences on ice thickness inversion models: a case study for Monte Tronador glaciers, North Patagonian Andes
 
-# todo: 1. implement parallelization i did in add_RGIId_and_OGGM_stats
-# todo: 2. implement faster version of distance calculation
+# todo: 1. implement faster version of slope calculation
+# todo: 2. implement faster version of velocity calculation
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--mosaic', type=str,default="/media/nico/samsung_nvme/Tandem-X-EDEM/",
@@ -343,14 +343,14 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
         num_px_sigma_300 = max(1, round(300 / ris_metre_millan))  # 6
 
         # Apply filter to velocities
-        focus_filter_vx_50 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_50)
-        focus_filter_vx_100 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_100)
-        focus_filter_vx_150 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_150)
-        focus_filter_vx_300 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_300)
-        focus_filter_vy_50 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_50)
-        focus_filter_vy_100 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_100)
-        focus_filter_vy_150 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_150)
-        focus_filter_vy_300 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_300)
+        focus_filter_vx_50 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_50, trunc=4.0)
+        focus_filter_vx_100 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_100, trunc=4.0)
+        focus_filter_vx_150 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_150, trunc=4.0)
+        focus_filter_vx_300 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_300, trunc=4.0)
+        focus_filter_vy_50 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_50, trunc=4.0)
+        focus_filter_vy_100 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_100, trunc=4.0)
+        focus_filter_vy_150 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_150, trunc=4.0)
+        focus_filter_vy_300 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_300, trunc=4.0)
 
         # Mask back the filtered arrays
         focus_filter_vx_50 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_50)
@@ -511,18 +511,32 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
         maxx=max(eastings) + 2000,
         maxy=max(northings) + 2000)
 
+    min_sigma, max_sigma = 100.0, 2000.0
+    try:
+        area_gl = points_df['Area'][0]
+        lmax_gl = points_df['Lmax'][0]
+        a = 1e6 * area_gl / (np.pi * 0.5 * lmax_gl)
+        value = int(min(max(a, min_sigma), max_sigma))
+        # print(area_gl, lmax_gl, a, value)
+    except Exception as e:
+        value = min_sigma
+    # Ensure that our value correctly in range
+    assert min_sigma <= value <= max_sigma, f"Value {value} is not within the range [{min_sigma}, {max_sigma}]"
+
     num_px_sigma_50 = max(1, round(50 / res_utm_metres))
     num_px_sigma_100 = max(1, round(100 / res_utm_metres))
     num_px_sigma_150 = max(1, round(150 / res_utm_metres))
     num_px_sigma_300 = max(1, round(300 / res_utm_metres))
     num_px_sigma_450 = max(1, round(450 / res_utm_metres))
+    num_px_sigma_af = max(1, round(value / res_utm_metres))
 
     # Apply filter (utm here)
-    focus_filter_50_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_50)
-    focus_filter_100_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_100)
-    focus_filter_150_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_150)
-    focus_filter_300_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_300)
-    focus_filter_450_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_450)
+    focus_filter_50_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_50, trunc=4.0)
+    focus_filter_100_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_100, trunc=4.0)
+    focus_filter_150_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_150, trunc=4.0)
+    focus_filter_300_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_300, trunc=4.0)
+    focus_filter_450_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_450, trunc=4.0)
+    focus_filter_af_utm = gaussian_filter_with_nans(U=focus_utm.values, sigma=num_px_sigma_af, trunc=3.0)
 
     # Mask back the filtered arrays
     focus_filter_50_utm = np.where(np.isnan(focus_utm.values), np.nan, focus_filter_50_utm)
@@ -530,12 +544,14 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
     focus_filter_150_utm = np.where(np.isnan(focus_utm.values), np.nan, focus_filter_150_utm)
     focus_filter_300_utm = np.where(np.isnan(focus_utm.values), np.nan, focus_filter_300_utm)
     focus_filter_450_utm = np.where(np.isnan(focus_utm.values), np.nan, focus_filter_450_utm)
+    focus_filter_af_utm = np.where(np.isnan(focus_utm.values), np.nan, focus_filter_af_utm)
     # create xarray object of filtered dem
     focus_filter_xarray_50_utm = focus_utm.copy(data=focus_filter_50_utm)
     focus_filter_xarray_100_utm = focus_utm.copy(data=focus_filter_100_utm)
     focus_filter_xarray_150_utm = focus_utm.copy(data=focus_filter_150_utm)
     focus_filter_xarray_300_utm = focus_utm.copy(data=focus_filter_300_utm)
     focus_filter_xarray_450_utm = focus_utm.copy(data=focus_filter_450_utm)
+    focus_filter_xarray_af_utm = focus_utm.copy(data=focus_filter_af_utm)
 
     # create xarray slopes
     dz_dlat_xar, dz_dlon_xar = focus_utm.differentiate(coord='y'), focus_utm.differentiate(coord='x')
@@ -544,12 +560,15 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
     dz_dlat_filter_xar_150, dz_dlon_filter_xar_150 = focus_filter_xarray_150_utm.differentiate(coord='y'), focus_filter_xarray_150_utm.differentiate(coord='x')
     dz_dlat_filter_xar_300, dz_dlon_filter_xar_300  = focus_filter_xarray_300_utm.differentiate(coord='y'), focus_filter_xarray_300_utm.differentiate(coord='x')
     dz_dlat_filter_xar_450, dz_dlon_filter_xar_450  = focus_filter_xarray_450_utm.differentiate(coord='y'), focus_filter_xarray_450_utm.differentiate(coord='x')
+    dz_dlat_filter_xar_af, dz_dlon_filter_xar_af = focus_filter_xarray_af_utm.differentiate(coord='y'), focus_filter_xarray_af_utm.differentiate(coord='x')
 
     # Calculate curvature and aspect using xrspatial
     curv_50 = xrspatial.curvature(focus_filter_xarray_50_utm)
     curv_300 = xrspatial.curvature(focus_filter_xarray_300_utm)
+    curv_af = xrspatial.curvature(focus_filter_xarray_af_utm)
     aspect_50 = xrspatial.aspect(focus_filter_xarray_50_utm)
     aspect_300 = xrspatial.aspect(focus_filter_xarray_300_utm)
+    aspect_af = xrspatial.aspect(focus_filter_xarray_af_utm)
 
     # interpolate slope and dem
     elevation_data = focus_utm.interp(y=northings_xar, x=eastings_xar, method='linear').data
@@ -565,10 +584,14 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
     slope_lon_data_filter_300 = dz_dlon_filter_xar_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
     slope_lat_data_filter_450 = dz_dlat_filter_xar_450.interp(y=northings_xar, x=eastings_xar, method='linear').data
     slope_lon_data_filter_450 = dz_dlon_filter_xar_450.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    slope_lat_data_filter_af = dz_dlat_filter_xar_af.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    slope_lon_data_filter_af = dz_dlon_filter_xar_af.interp(y=northings_xar, x=eastings_xar, method='linear').data
     curv_data_50 = curv_50.interp(y=northings_xar, x=eastings_xar, method='linear').data
     curv_data_300 = curv_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    curv_data_af = curv_af.interp(y=northings_xar, x=eastings_xar, method='linear').data
     aspect_data_50 = aspect_50.interp(y=northings_xar, x=eastings_xar, method='linear').data
     aspect_data_300 = aspect_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
+    aspect_data_af = aspect_af.interp(y=northings_xar, x=eastings_xar, method='linear').data
 
     # check if any nan in the interpolate data
     contains_nan = any(np.isnan(arr).any() for arr in [slope_lon_data, slope_lat_data,
@@ -577,7 +600,9 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
                                                        slope_lon_data_filter_150, slope_lat_data_filter_150,
                                                        slope_lon_data_filter_300, slope_lat_data_filter_300,
                                                        slope_lon_data_filter_450, slope_lat_data_filter_450,
-                                                       curv_data_50, curv_data_300, aspect_data_50, aspect_data_300])
+                                                       slope_lon_data_filter_af, slope_lat_data_filter_af,
+                                                       curv_data_50, curv_data_300, curv_data_af,
+                                                       aspect_data_50, aspect_data_300, aspect_data_af])
     if contains_nan:
         raise ValueError(f"Nan detected in elevation/slope calc. Check")
 
@@ -595,10 +620,14 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
     points_df['slope_lon_gf300'] = slope_lon_data_filter_300
     points_df['slope_lat_gf450'] = slope_lat_data_filter_450
     points_df['slope_lon_gf450'] = slope_lon_data_filter_450
+    points_df['slope_lat_gfa'] = slope_lat_data_filter_af
+    points_df['slope_lon_gfa'] = slope_lon_data_filter_af
     points_df['curv_50'] = curv_data_50
     points_df['curv_300'] = curv_data_300
+    points_df['curv_gfa'] = curv_data_af
     points_df['aspect_50'] = aspect_data_50
     points_df['aspect_300'] = aspect_data_300
+    points_df['aspect_gfa'] = aspect_data_af
 
     calculate_elevation_and_slopes_in_epsg_4326_and_show_differences_wrt_utm = False
     if calculate_elevation_and_slopes_in_epsg_4326_and_show_differences_wrt_utm:
