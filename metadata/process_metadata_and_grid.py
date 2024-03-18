@@ -20,7 +20,7 @@ The processed and gridded dataframe is finally saved.
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--input_metadata_file', type=str,
-                    default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata4af.csv",
+                    default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata5.csv",
                     help="Input metadata file to be gridded")
 parser.add_argument('--tmin', type=int, default=20050000, help="Keep only measurements after this year.")
 parser.add_argument('--hmin', type=float, default=0.0, help="Keep only measurements with thickness greater than this.")
@@ -47,7 +47,7 @@ cols = ['RGI', 'RGIId', 'POINT_LAT', 'POINT_LON', 'THICKNESS', 'Area', 'elevatio
        'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'ith_m', 'ith_f',
         'slope_lon_gf50', 'slope_lat_gf50', 'slope_lon_gf100', 'slope_lat_gf100', 'slope_lon_gf150', 'slope_lat_gf150',
         'slope_lon_gf300', 'slope_lat_gf300', 'slope_lon_gf450', 'slope_lat_gf450', 'slope_lon_gfa', 'slope_lat_gfa', 'Form', 'Aspect', 'TermType', 'vx_gf50', 'vx_gf100', 'vx_gf150',
-        'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300', 'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy',
+        'vx_gf300', 'vx_gf450', 'vx_gfa', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300', 'vy_gf450', 'vy_gfa', 'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy',
         'curv_50', 'curv_300', 'curv_gfa', 'aspect_50', 'aspect_300', 'aspect_gfa']
 
 glathida = glathida[cols]
@@ -71,8 +71,9 @@ features_to_grid = ['THICKNESS', 'Area', 'elevation',
         'slope_lat', 'slope_lon', 'vx', 'vy', 'dist_from_border_km_geom',
        'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'ith_m', 'ith_f',
         'slope_lon_gf50', 'slope_lat_gf50', 'slope_lon_gf100', 'slope_lat_gf100', 'slope_lon_gf150', 'slope_lat_gf150',
-        'slope_lon_gf300', 'slope_lat_gf300', 'slope_lon_gf450', 'slope_lat_gf450', 'slope_lon_gfa', 'slope_lat_gfa', 'vx_gf50', 'vx_gf100', 'vx_gf150',
-        'vx_gf300', 'vy_gf50', 'vy_gf100', 'vy_gf150', 'vy_gf300', 'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy',
+        'slope_lon_gf300', 'slope_lat_gf300', 'slope_lon_gf450', 'slope_lat_gf450', 'slope_lon_gfa', 'slope_lat_gfa',
+        'vx_gf50', 'vx_gf100', 'vx_gf150', 'vx_gf300', 'vx_gf450', 'vx_gfa', 'vy_gf50', 'vy_gf100', 'vy_gf150',
+                    'vy_gf300', 'vy_gf450', 'vy_gfa', 'dvx_dx', 'dvx_dy', 'dvy_dx', 'dvy_dy',
                     'curv_50', 'curv_300', 'curv_gfa', 'aspect_50', 'aspect_300', 'aspect_gfa']
 
 list_num_measurements_before_grid = []
