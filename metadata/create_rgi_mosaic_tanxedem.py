@@ -1,15 +1,93 @@
 import gc
-import sys
+import sys, time
 from tqdm import tqdm
 import os, glob
 import argparse
 import numpy as np
 import xarray as xr
+import pandas as pd
 import rioxarray
 import rasterio
 from rioxarray.merge import merge_arrays
 import matplotlib
 import matplotlib.pyplot as plt
+
+
+def get_NS(lat):
+    if lat >= 0:
+        return 'N'
+    else:
+        return 'S'
+
+
+def get_EW(lon):
+    if lon >= 0:
+        return 'E'
+    else:
+        return 'W'
+
+
+def min_closest_multiple(num, res):
+    if not isinstance(num, int): num = int(num)
+    if res == 1:
+        return num
+    elif res == 2:
+        return num - (num % 2)  # Rounds down to the nearest even multiple of num
+    elif res == 4:
+        return num - (num % 4)  # Rounds down to the nearest multiple of 4
+
+
+def max_closest_multiple(num, res):
+    if not isinstance(num, int): num = int(num)
+    if res == 1:
+        return num
+    elif res == 2:
+        return num + (2 - num % 2)
+    elif res == 4:
+        return num + (4 - num % 4)
+
+def getTDXlonres(lat):
+    """Product Tile Extent
+    Between 0° - 60° North/South latitude have a file extent of 1° in latitude and 1° in longitude direction.
+    Between 60° - 80° North/South latitudes a product has an extent of 1° x 2°,
+    between 80° - 90° North/South latitudes a product tile has an extent of 1° x 4°.
+    See https: // geoservice.dlr.de / web / dataguide / tdm30 /"""
+    if lat >= 80:
+        reslon = 4
+    elif 60 <= lat < 80:
+        reslon = 2
+    else:
+        reslon = 1
+    return reslon
+
+def get_codes(miny, minx, maxy, maxx):
+    """In: box. Out: tile codes to be merged
+    # todo: passaggi da N->S e E->W da verificare. I could overwrite the values to test
+    """
+    tile_minx, tile_miny = int(np.floor(minx)), int(np.floor(miny))
+    tile_maxx, tile_maxy = int(np.ceil(maxx)), int(np.ceil(maxy))
+    #print(f"Lat min: {tile_miny} max: {tile_maxy}")
+    #print(f"Lon min: {tile_minx} max: {tile_maxx}")
+
+    # Create a dataframe of lat lon tiles
+    # Lat times always have 1 degree res
+    lats_interval = np.arange(tile_miny, tile_maxy, dtype=int)
+    df_latlon = pd.DataFrame({'lat': lats_interval, 'lon': None})
+    for index, row in df_latlon.iterrows():
+        lat = row['lat']
+        res_lon = getTDXlonres(lat)
+        lons_interval = np.arange(min_closest_multiple(tile_minx, res_lon),
+                                  max_closest_multiple(tile_maxx, res_lon),
+                                  getTDXlonres(lat), dtype=int)
+        df_latlon.at[index, 'lon'] = lons_interval
+    #print(f"Combination of lat lon tiles {df_latlon}")
+
+    possible_codes = [f"{get_NS(lat)}{abs(lat):02d}{get_EW(lon)}{abs(lon):03d}"
+                          for lat, lon_list in zip(df_latlon['lat'], df_latlon['lon'])
+                          for lon in lon_list]
+    #print(f"Possible code combinations: {possible_codes}")
+
+    return possible_codes
 
 def fetch_dem(folder_mosaic=None, rgi=None):
     if os.path.exists(folder_mosaic + f'mosaic_RGI_{rgi}.tif'):
@@ -19,47 +97,60 @@ def fetch_dem(folder_mosaic=None, rgi=None):
         dem_rgi = create_mosaic_rgi_tandemx(rgi=rgi, path_rgi_tiles=folder_mosaic, save=0)
     return dem_rgi
 
-def find_tandemx_tiles(minx, miny, maxx, maxy, rgi, path_tandemx):
+def create_glacier_tile_dem_mosaic(minx, miny, maxx, maxy, rgi, path_tandemx):
     """Find either the tile or the tandemx tiles that contain the glacier
     See https://geoservice.dlr.de/web/dataguide/tdm30/"""
+    t0_mosaic_tiles = time.time()
     if isinstance(rgi, int):
         rgi = f"{rgi:02d}"
 
-    folder_rgi_tiles = f"{path_tandemx}RGI_{rgi}"
-    print(folder_rgi_tiles)
+    folder_rgi_tiles = f"{path_tandemx}RGI_{rgi}/"
 
-    # Calculate the latitude and longitude values needed for tandemx lookup
-    tile_minx, tile_miny = int(minx), int(miny)
-    tile_maxx, tile_maxy = int(maxx), int(maxy)
-    print(minx, miny, maxx, maxy)
-    print((tile_minx, tile_miny), (tile_maxx, tile_maxy))
+    # Get the codes of the tiles that contain the glacier
+    codes_tiles_for_mosaic = get_codes(miny, minx, maxy, maxx)
 
-    def get_NS(x):
-        if x>=0: return 'N'
-        else: return 'S'
-    def get_EW(x):
-        if x>=0: return 'E'
-        else: return 'W'
+    # Look for the actual existing files from the possible codes
+    matching_files = []
+    for code in codes_tiles_for_mosaic:
+        matching_files.extend(glob.glob(f"{folder_rgi_tiles}TDM1_EDEM_10_*{code}*_V01_C/EDEM/*_W84.tif", recursive=False))
 
-    # Now I have to look for the tile(s) that contain (tile_minx, tile_miny) and (tile_maxx, tile_maxy)
-    #all_files = sorted(glob.glob(f"{folder_rgi_tiles}/*", recursive = False))
-    code1 = f"{get_NS(tile_miny)}{tile_miny:02d}{get_EW(tile_minx)}{tile_minx:03d}"
-    code2 = f"{get_NS(tile_maxy)}{tile_maxy:02d}{get_EW(tile_maxx)}{tile_maxx:03d}"
-    dif_lat = maxy - miny
-    dif_lon = maxx - minx
+    # Create Mosaic
+    src_files_to_mosaic = []
+    for i, file in enumerate(matching_files):
+        #print(i, file)
+        src = rioxarray.open_rasterio(file, cache=True)
+        src.rio.write_crs("EPSG:4326", inplace=True)
+        src = src.where(src != src.rio.nodata)  # replace nodata (-32767).0 with nans.
+        src.rio.write_nodata(np.nan, inplace=True)  # set nodata as nan
+        #fig, ax1 = plt.subplots()
+        #im1 = src.plot(ax=ax1, cmap='terrain')
+        #plt.show()
+        src_files_to_mosaic.append(src)
 
-    list_tiles = []
-    tile1 = sorted(glob.glob(f"{folder_rgi_tiles}/TDM1_EDEM_*_{code1}_V01_C", recursive = False))
-    tile2 = sorted(glob.glob(f"{folder_rgi_tiles}/TDM1_EDEM_10_{code2}_V01_C", recursive = False))
-    list_tiles.extend(tile1)
-    list_tiles.extend(tile2)
+    res_out = min(np.abs(src.rio.resolution()))
+    assert res_out == 1. / 3600, "Unexpected resolution for merging tiles."
+    # todo: verificare che risoluzione devo usare. A questo proposito vedere Pixel Spacing at https://geoservice.dlr.de/web/dataguide/tdm30/
+    # Imposing the res_out in merge_arrays is time consuming. Do I need it ? res=(res_out, res_out)
+    # I sjould see that res along lat is constant, that in lon varies.
+    # If I leave it unspecified it will take the res of the first arryay
+    mosaic_tiles = merge_arrays(src_files_to_mosaic, nodata=np.nan)
 
-    print(code1, 'Tile:', tile1)
-    print(code2, 'Tile:', tile2)
-    print(f"List of tiles I need to import: {list_tiles}")
+    try:
+        focus = mosaic_tiles.rio.clip_box(
+            minx=minx,
+            miny=miny,
+            maxx=maxx,
+            maxy=maxy)
+    except:
+        raise ValueError(f"Problems creation of clipping the focus around the glacier tiles")
 
-    mosaic = None
-    return mosaic
+    #fig, ax1 = plt.subplots()
+    #im1 = focus.plot(ax=ax1, cmap='terrain')
+    #plt.show()
+
+    t1_mosaic_tiles = time.time()
+    print(f"Mosaic of tiles done in {t1_mosaic_tiles-t0_mosaic_tiles}")
+    return focus
 
 def create_mosaic_rgi_tandemx(rgi=None, path_rgi_tiles=None, save=0):
 
