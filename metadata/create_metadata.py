@@ -24,7 +24,7 @@ from shapely.ops import unary_union, nearest_points
 from pyproj import Transformer, CRS, Geod
 import utm
 from joblib import Parallel, delayed
-from create_rgi_mosaic_tanxedem import create_mosaic_rgi_tandemx
+from create_rgi_mosaic_tanxedem import create_mosaic_rgi_tandemx, create_glacier_tile_dem_mosaic
 from utils_metadata import from_lat_lon_to_utm_and_epsg, gaussian_filter_with_nans, haversine
 
 """
@@ -64,7 +64,7 @@ parser.add_argument('--farinotti_icethickness_folder', type=str,default="/home/n
 parser.add_argument('--OGGM_folder', type=str,default="/home/nico/OGGM", help="Path to OGGM main folder")
 parser.add_argument('--save', type=int, default=0, help="Save final dataset or not.")
 parser.add_argument('--save_outname', type=str,
-            default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata5.csv",
+            default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata6.csv",
             help="Saved dataframe name.")
 
 #todo: whenever i call clip_box i need to check if there is only 1 measurement !
@@ -206,25 +206,24 @@ def add_slopes_elevation(glathida, path_mosaic):
 
     for rgi in [1,3,4,7,8,11,18]:
 
-        print(f'rgi: {rgi}')
         # get dem o create it
-        if os.path.exists(path_mosaic + f'mosaic_RGI_{rgi:02d}.tif'):
-            dem_rgi = rioxarray.open_rasterio(path_mosaic + f'mosaic_RGI_{rgi:02d}.tif')
-            print(f"mosaic_RGI_{rgi:02d}.tif found")
-        else:  # We have to create the mosaic
-            print(f"Mosaic {rgi} not present. Let's create it on the fly...")
-            dem_rgi = create_mosaic_rgi_tandemx(rgi=rgi, path_rgi_tiles=path_mosaic, save=0)
+        #if os.path.exists(path_mosaic + f'mosaic_RGI_{rgi:02d}.tif'):
+        #    dem_rgi = rioxarray.open_rasterio(path_mosaic + f'mosaic_RGI_{rgi:02d}.tif')
+        #    print(f"mosaic_RGI_{rgi:02d}.tif found")
+        #else:  # We have to create the mosaic
+        #    print(f"Mosaic {rgi} not present. Let's create it on the fly...")
+        #    dem_rgi = create_mosaic_rgi_tandemx(rgi=rgi, path_rgi_tiles=path_mosaic, save=0)
 
-        ris_ang = dem_rgi.rio.resolution()[0]
+        #ris_ang = dem_rgi.rio.resolution()[0]
+        # eps = 5 * ris_ang
 
         glathida_rgi = glathida.loc[glathida['RGI'] == rgi] # collapse glathida to specific rgi
         ids_rgi = glathida_rgi['GlaThiDa_ID'].unique().tolist()  # unique IDs
 
-        for id_rgi in tqdm(ids_rgi, total=len(ids_rgi), leave=True):
+        for id_rgi in tqdm(ids_rgi, total=len(ids_rgi), desc=f"rgi {rgi} Glathida ID", leave=True):
 
             glathida_id = glathida_rgi.loc[glathida_rgi['GlaThiDa_ID'] == id_rgi]  # collapse glathida_rgi to specific id
             glathida_id = glathida_id.copy()
-            indexes_all = glathida_id.index.tolist() # useless
 
             glathida_id['northings'] = np.nan
             glathida_id['eastings'] = np.nan
@@ -260,20 +259,20 @@ def add_slopes_elevation(glathida, path_mosaic):
                 northings_xar = xarray.DataArray(northings)
                 eastings_xar = xarray.DataArray(eastings)
 
-                eps = 5 * ris_ang
 
                 # clip
                 try:
-                    focus = dem_rgi.rio.clip_box(
-                        #minx=swlon - (deltalon + eps),
-                        #miny=swlat - (deltalat + eps),
-                        #maxx=nelon + (deltalon + eps),
-                        #maxy=nelat + (deltalat + eps),
-                        minx = swlon - delta,
-                        miny = swlat - delta,
-                        maxx = nelon + delta,
-                        maxy = nelat + delta,
-                    )
+                    #focus = dem_rgi.rio.clip_box(
+                    #    minx = swlon - delta,
+                    #    miny = swlat - delta,
+                    #    maxx = nelon + delta,
+                    #    maxy = nelat + delta,
+                    #)
+                    focus = create_glacier_tile_dem_mosaic(minx=swlon - delta,
+                                                            miny=swlat - delta,
+                                                            maxx=nelon + delta,
+                                                            maxy=nelat + delta,
+                                                            rgi=rgi, path_tandemx=path_mosaic)
                 except:
                     raise ValueError(f"Problems in method add_slopes_elevation for glacier_id: {id_rgi}")
 
@@ -429,7 +428,6 @@ def add_slopes_elevation(glathida, path_mosaic):
 
                 plot_curvature = False
                 if plot_curvature:
-
                     fig, (ax1, ax2, ax3, ax4, ax5, ax6) = plt.subplots(1, 6)
                     im1 = focus_filter_xarray_50_utm.plot(ax=ax1, cmap='viridis')
                     im2 = focus_filter_xarray_300_utm.plot(ax=ax2, cmap='viridis')
@@ -437,7 +435,6 @@ def add_slopes_elevation(glathida, path_mosaic):
                     im4 = curv_300.plot(ax=ax4, cmap='viridis')
                     im5 = aspect_50.plot(ax=ax5, cmap='viridis')
                     im6 = aspect_300.plot(ax=ax6, cmap='viridis')
-
                     plt.show()
 
 
@@ -1646,19 +1643,19 @@ if __name__ == '__main__':
         print(f'Begin Metadata dataset creation !')
         t0 = time.time()
 
-        glathida = pd.read_csv(args.path_ttt_csv, low_memory=False)
-        glathida = add_rgi(glathida, args.path_O1Regions_shp)
-        glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
-        glathida = add_slopes_elevation(glathida, args.mosaic)
-        glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
-        glathida = add_dist_from_boder_using_geometries(glathida)
-        glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
+        #glathida = pd.read_csv(args.path_ttt_csv, low_memory=False)
+        #glathida = add_rgi(glathida, args.path_O1Regions_shp)
+        #glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
+        #glathida = add_slopes_elevation(glathida, args.mosaic)
+        #glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
+        #glathida = add_dist_from_boder_using_geometries(glathida)
+        #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
 
-        #glathida = pd.read_csv(args.path_ttt_rgi_csv.replace('TTT_rgi.csv', 'metadata4.csv'), low_memory=False)
+        glathida = pd.read_csv(args.path_ttt_rgi_csv.replace('TTT_rgi.csv', 'metadata5.csv'), low_memory=False)
         #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
         #glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
         #glathida = add_dist_from_boder_using_geometries(glathida)
-        #glathida = add_slopes_elevation(glathida, args.mosaic)
+        glathida = add_slopes_elevation(glathida, args.mosaic)
         #glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
 
         if args.save:
