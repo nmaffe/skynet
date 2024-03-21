@@ -20,7 +20,7 @@ The processed and gridded dataframe is finally saved.
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--input_metadata_file', type=str,
-                    default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata5.csv",
+                    default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata6.csv",
                     help="Input metadata file to be gridded")
 parser.add_argument('--tmin', type=int, default=20050000, help="Keep only measurements after this year.")
 parser.add_argument('--hmin', type=float, default=0.0, help="Keep only measurements with thickness greater than this.")
