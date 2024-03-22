@@ -35,13 +35,13 @@ Note: rgi 6 has no glathida data.
 
 1. add_rgi. Time: 2min.
 2. add_RGIId_and_OGGM_stats. Time: 10 min (+rgi 5 in 14min)
-3. add_slopes_elevation. Time: 80 min.
+3. add_slopes_elevation. Time: 80 min. (+rgi 5 in 32min)
     - No nan can be produced here. 
-4. add_millan_vx_vy_ith. Time: 4.5 h (rgi1 30m, rgi3 3h, rgi4 40mm, rgi7 35m)
+4. add_millan_vx_vy_ith. Time: 4.5 h (rgi1 30m, rgi3 3h, rgi4 40m, rgi7 35m)
     - Points inside the glacier but close to the borders can be interpolated as nan.
     - Note: method to interpolate is chosen as "nearest" to reduce as much as possible these nans.
-5. add_dist_from_boder_using_geometries. 1.5h (rgi1 30m, rgi3 30m, rgi4 13m, rgi7 17m)
-6. add_farinotti_ith. Time: 2h (rgi1 1h, rgi3 0.5h, rgi4 10m, rgi7 8m, rgi8 3m, rgi11 10m, rgi18 3m)
+5. add_dist_from_boder_using_geometries. 1.5h (rgi1 30m, rgi3 30m, rgi4 13m, rgi7 17m) (+rgi5: 1.5h)
+6. add_farinotti_ith. Time: 2h (rgi1 1h, rgi3 0.5h, rgi4 10m, rgi7 8m, rgi8 3m, rgi11 10m, rgi18 3m) (+rgi 5 in 35m)
     - Points inside the glacier but close to the borders can be interpolated as nan.
     - Note: method to interpolate is chosen as "nearest" to reduce as much as possible these nans.
 """
@@ -72,11 +72,17 @@ parser.add_argument('--save_outname', type=str,
 # todo: Slope from oggm has some strangely high values (or is it expressed in %?). Worth thicking of calculating it myself ?
 
 # todo:
-#  00) Add adaptive filter to Millan velocity
-#  0) Slope/elevation function: avoid the mosaic thing and only collect the necessary tiles
+#  00) Add adaptive filter to Millan velocity. I THINK DONE
+#  0) Slope/elevation function: avoid the mosaic thing and only collect the necessary tiles. DONE
 #  1) Add rgi 5. Why in rgi 5 glaciers should be 19306 and instead oggm lists them as 20261 ?
 #  I believe OGGM glaciers are slightly different from the official RGI, they have their V62 version.
 #  2) Bonus: add feature slope interpolation at closest point.
+
+# TODO: IMPORTANT !!! VV AS PROVIDED FROM SAT PRODUCT SHOULD BE USED INSTEAD OF MY MANUAL CALCULATION.
+#  ALSO CHECK IF THE UNIT OF THE VELOCITY MATCH WITH THE UNIT OF THE UNDERLYING GRID SIZE. THIS IS IMPORTANT WHEN
+#  I THEN DIFFERENTIATE. IF [VX]=M/YR AND I DIFFERENTIATE IN UTM WITH GRID SPACING IN METERS, IT SHOULD BE FINE.
+#  I FEEL I MAY NEED TO IMPORT V RATHER THAN CALCULATING IT MYSELF.
+
 
 
 utils.get_rgi_dir(version='62')
@@ -222,6 +228,8 @@ def add_slopes_elevation(glathida, path_mosaic):
 
         for id_rgi in tqdm(ids_rgi, total=len(ids_rgi), desc=f"rgi {rgi} Glathida ID", leave=True):
 
+            # todo: appears to be a problem for rgi 5 id_rgi 2092, 2102 ? Maybe not..
+
             glathida_id = glathida_rgi.loc[glathida_rgi['GlaThiDa_ID'] == id_rgi]  # collapse glathida_rgi to specific id
             glathida_id = glathida_id.copy()
 
@@ -274,7 +282,8 @@ def add_slopes_elevation(glathida, path_mosaic):
                                                             maxy=nelat + delta,
                                                             rgi=rgi, path_tandemx=path_mosaic)
                 except:
-                    raise ValueError(f"Problems in method add_slopes_elevation for glacier_id: {id_rgi}")
+                    raise ValueError(f"Problems in method add_slopes_elevation for rgi {rgi} glacier_id: {id_rgi}, "
+                                     f"glacier box {swlon - delta} {swlat - delta} {nelon + delta} {nelat + delta}")
 
                 focus = focus.squeeze()
 
@@ -591,7 +600,7 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
 
     if (any(ele in list(glathida) for ele in ['vx', 'vy', 'ith_m'])):
         print('Variable already in dataframe.')
-        return glathida
+        #return glathida
 
     glathida['ith_m'] = [np.nan] * len(glathida)
     glathida['vx'] = [np.nan] * len(glathida)
@@ -613,7 +622,7 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
     glathida['dvy_dx'] = [np.nan] * len(glathida)
     glathida['dvy_dy'] = [np.nan] * len(glathida)
 
-    for rgi in [1,3,4,7,8,11,18]:
+    for rgi in [5]:#[1,3,4,7,8,11,18]:
         glathida_rgi = glathida.loc[glathida['RGI'] == rgi]  # glathida to specific rgi
         tqdm.write(f'rgi: {rgi}, Total points: {len(glathida_rgi)}')
 
@@ -627,6 +636,27 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
             tile_vx = rioxarray.open_rasterio(file_vx, masked=False)
             tile_vy = rioxarray.open_rasterio(file_vy, masked=False)
             tile_ith = rioxarray.open_rasterio(file_ith, masked=False)
+
+            """Rasterio detects the raster as in EPSG:32629. Millan says another thing (3414). Who should I believe ?
+            How does rasterio detects the EPSG, can he be wrong ? Is the file wrong ? Is the file correct but the EPSG is wrong ?
+            I should try reproject in 4326 and see how it looks. 
+            ith files are: EPSG:3413 Sea Ice Polar Stereographic North
+            Ok Millan mentions velocity should be this one, which does not fully cover the entire greenland
+            https://nsidc.org/data/nsidc-0646/versions/3
+            However, there is also this one from insar (should be better?) https://nsidc.org/data/nsidc-0478/versions/2
+            https://nsidc.org/data/nsidc-0481/versions/4
+            The spatial coverage however is still a mistery
+            https://nsidc.org/data/nsidc-0670/versions/1#anchor-1
+            https://nsidc.org/data/nsidc-0725/versions/5"""
+            if not file_ith=="/home/nico/PycharmProjects/skynet/Extra_Data/Millan/thickness/RGI-5/THICKNESS_RGI-5.2_2022February24.tif":
+                continue
+            print(file_vx, tile_vx.rio.crs)
+            print(file_vy, tile_vy.rio.crs)
+            print(file_ith, tile_ith.rio.crs)
+            print(tile_vx)
+            tile_ith.rio.reproject("EPSG:4326").plot(cmap='viridis')
+            plt.show()
+            exit('wait')
 
             tile_vx.rio.write_nodata(np.nan, inplace=True)
             tile_vy.rio.write_nodata(np.nan, inplace=True)
@@ -1655,8 +1685,8 @@ if __name__ == '__main__':
         #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
         #glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
         #glathida = add_dist_from_boder_using_geometries(glathida)
-        glathida = add_slopes_elevation(glathida, args.mosaic)
-        #glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
+        #glathida = add_slopes_elevation(glathida, args.mosaic)
+        glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
 
         if args.save:
             glathida.to_csv(args.save_outname, index=False)
