@@ -516,15 +516,18 @@ def training_loop(generator,        # generator network
 
         # save model at multiple iteration
         if (config.save_model_multiple_iter and n_iter%config.save_model_multiple_iter==0 and n_iter>init_n_iter):
-            misc.save_states(f"states_it{n_iter}.pth", generator, discriminator, g_optimizer, d_optimizer, n_iter, config)
+            misc.save_states(f"states_{args.mask}_it{n_iter}.pth",
+                             generator, discriminator, g_optimizer, d_optimizer, n_iter, config)
 
         # save model at specific iteration
         if (config.save_model_specific_iter and n_iter==config.save_model_specific_iter and n_iter>init_n_iter):
-            misc.save_states(f"states_it{n_iter}.pth", generator, discriminator, g_optimizer, d_optimizer, n_iter, config)
+            misc.save_states(f"states_{args.mask}_it{n_iter}.pth",
+                             generator, discriminator, g_optimizer, d_optimizer, n_iter, config)
 
         # save model at last iteration
         if (config.save_model_final and n_iter==config.max_iters-1 and n_iter > init_n_iter):
-            misc.save_states(f"states_it{config.max_iters}.pth", generator, discriminator, g_optimizer, d_optimizer, config.max_iters, config)
+            misc.save_states(f"states_{args.mask}_it{config.max_iters}.pth",
+                             generator, discriminator, g_optimizer, d_optimizer, config.max_iters, config)
 
 
 def main():
