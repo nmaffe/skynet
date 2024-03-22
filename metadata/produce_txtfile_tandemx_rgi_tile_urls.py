@@ -35,13 +35,13 @@ for idx, row in gdf.iterrows():
 
     minx, miny, maxx, maxy = geometry.bounds
     # Add some buffer
-    minx = minx - buffer
-    miny = miny - buffer
-    maxx = maxx + buffer
-    maxy = maxy + buffer
+    minxB = minx - buffer
+    minyB = miny - buffer
+    maxxB = maxx + buffer
+    maxyB = maxy + buffer
     #print(miny, minx, maxy, maxx)
 
-    codes_tiles_for_glacier = get_codes(miny, minx, maxy, maxx)
+    codes_tiles_for_glacier = get_codes(minyB, minxB, maxyB, maxxB)
     list_rgi_tiles.extend(codes_tiles_for_glacier)
 
 # We now have a list of tile code names.
