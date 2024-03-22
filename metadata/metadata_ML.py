@@ -1,4 +1,4 @@
-import argparse
+import argparse, time
 import random
 import math
 import numpy as np
@@ -30,7 +30,7 @@ warnings.filterwarnings('ignore')
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--metadata_file', type=str, default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/"
-                        +"glathida-3.1.0/data/metadata3_hmineq0.0_tmin20050000_mean_grid_20.csv", help="Training dataset.")
+                        +"glathida-3.1.0/data/metadata6_hmineq0.0_tmin20050000_mean_grid_20.csv", help="Training dataset.")
 parser.add_argument('--farinotti_icethickness_folder', type=str,default="/home/nico/PycharmProjects/skynet/Extra_Data/Farinotti/",
                     help="Path to Farinotti ice thickness data")
 parser.add_argument('--mosaic', type=str,default="/media/nico/samsung_nvme/Tandem-X-EDEM/",
@@ -47,19 +47,25 @@ utils.get_rgi_intersects_dir(version='62')
 
 
 class CFG:
-    features_not_used = ['RGI', 'dvx', 'dvy', ]
-    features = ['Area', 'slope_lon_gf50', 'slope_lat_gf50', 'elevation', 'vx_gf300', 'vy_gf300',
-                'dist_from_border_km_geom', 'slope50', 'slope150', 'slope300', 'slope450', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
-                'elevation_from_zmin', 'Form', 'TermType', 'Aspect', 'curv_50', 'curv_300', 'aspect_50', 'aspect_300',
-                'dvx_dx', 'dvx_dy', 'dvy_dx','dvy_dy',  'v50', 'v150', 'v300']
+    features_not_used = ['RGI', 'dvx', 'dvy', 'slope_lon_gf50', 'slope_lat_gf50', 'slope_lon_gf100', 'slope_lat_gf100',
+                         'slope_lon_gf150', 'slope_lat_gf150', 'slope_lon_gf300', 'slope_lat_gf300',
+                         'slope_lon_gf450', 'slope_lat_gf450', 'v450', 'vgfa']
+
+    features = ['Area', 'slope_lat_gfa', 'slope_lon_gfa', 'elevation', 'vx_gfa', 'vy_gfa',
+                'dist_from_border_km_geom',  'slope50', 'slope100', 'slope150', 'slope300', 'slope450', 'slopegfa',
+                'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
+                'elevation_from_zmin', 'Form', 'TermType', 'Aspect', 'curv_50', 'curv_300', 'curv_gfa',
+                'aspect_50', 'aspect_300', 'aspect_gfa', 'dvx_dx', 'dvx_dy', 'dvy_dx','dvy_dy',
+                'v50', 'v100', 'v150', 'v300', 'v450', 'vgfa',]
     target = 'THICKNESS'
     millan = 'ith_m'
     farinotti = 'ith_f'
-    model = lgb.LGBMRegressor(num_leaves=40, n_jobs=12) #num_leaves=28
-    model2 = xgb.XGBRegressor()
+    model = lgb.LGBMRegressor(num_leaves=40, n_jobs=-1) #num_leaves=28
+    #model = xgb.XGBRegressor(tree_method='gpu_hist', gpu_id=0)
     #model = RandomForestRegressor()
     #model = MLPRegressor(hidden_layer_sizes=(100, 50, 10,), activation='logistic', solver='adam')
-    n_rounds = 10
+    n_rounds = 100
+    min_thick_value_train = 0 # This may value may have a significant impact on the predictions (check for single glaciers)
     n_points_regression = 10000
     use_log_transform = False
     run_feature_importance = False
@@ -68,18 +74,23 @@ class CFG:
 # Import the training dataset
 glathida_rgis = pd.read_csv(args.metadata_file, low_memory=False)
 # Filter out some portion of it
-glathida_rgis = glathida_rgis.loc[glathida_rgis['THICKNESS']>=0]
+glathida_rgis = glathida_rgis.loc[glathida_rgis['THICKNESS']>=CFG.min_thick_value_train]
 
 # Add some features
 glathida_rgis['v50'] = np.sqrt(glathida_rgis['vx_gf50']**2 + glathida_rgis['vy_gf50']**2)
+glathida_rgis['v100'] = np.sqrt(glathida_rgis['vx_gf100']**2 + glathida_rgis['vy_gf100']**2)
 glathida_rgis['v150'] = np.sqrt(glathida_rgis['vx_gf150']**2 + glathida_rgis['vy_gf150']**2)
 glathida_rgis['v300'] = np.sqrt(glathida_rgis['vx_gf300']**2 + glathida_rgis['vy_gf300']**2)
+glathida_rgis['v450'] = np.sqrt(glathida_rgis['vx_gf450']**2 + glathida_rgis['vy_gf450']**2)
+glathida_rgis['vgfa'] = np.sqrt(glathida_rgis['vx_gfa']**2 + glathida_rgis['vy_gfa']**2)
 glathida_rgis['dvx'] = np.sqrt(glathida_rgis['dvx_dx']**2 + glathida_rgis['dvx_dy']**2) #todo: wrong ! df = dfx/dx dx + dfy/dy dy
 glathida_rgis['dvy'] = np.sqrt(glathida_rgis['dvy_dx']**2 + glathida_rgis['dvy_dy']**2) #todo: wrong !
 glathida_rgis['slope50'] = np.sqrt(glathida_rgis['slope_lon_gf50']**2 + glathida_rgis['slope_lat_gf50']**2)
+glathida_rgis['slope100'] = np.sqrt(glathida_rgis['slope_lon_gf100']**2 + glathida_rgis['slope_lat_gf100']**2)
 glathida_rgis['slope150'] = np.sqrt(glathida_rgis['slope_lon_gf150']**2 + glathida_rgis['slope_lat_gf150']**2)
 glathida_rgis['slope300'] = np.sqrt(glathida_rgis['slope_lon_gf300']**2 + glathida_rgis['slope_lat_gf300']**2)
 glathida_rgis['slope450'] = np.sqrt(glathida_rgis['slope_lon_gf450']**2 + glathida_rgis['slope_lat_gf450']**2)
+glathida_rgis['slopegfa'] = np.sqrt(glathida_rgis['slope_lon_gfa']**2 + glathida_rgis['slope_lat_gfa']**2)
 glathida_rgis['elevation_from_zmin'] = glathida_rgis['elevation'] - glathida_rgis['Zmin']
 #glathida_rgis['hbahrm'] = 0.03*(glathida_rgis['Area']**0.375)*1000 # Bahr's approximation: h in meters
 #glathida_rgis['hbahrm2'] = glathida_rgis['dist_from_border_km_geom']*np.sqrt(glathida_rgis['Area'])
@@ -411,7 +422,7 @@ def get_random_glacier_rgiid(name=None, rgi=11, area=None, seed=None):
     rgiid = np.random.choice(rgi_ids)
     return rgiid
 
-glacier_name_for_generation = get_random_glacier_rgiid(name='RGI60-07.00832', rgi=1, area=10, seed=None)
+glacier_name_for_generation = get_random_glacier_rgiid(name='RGI60-03.01710', rgi=7, area=15, seed=None)
 test_glacier_rgi = glacier_name_for_generation[6:8]
 #glacier_name_for_generation = 'RGI60-07.00228' #RGI60–07.00027 'RGI60-11.01450' RGI60-07.00552,'RGI60-07.00228'
 #glacier_name_for_generation = 'RGI60-07.00832' very nice
@@ -429,20 +440,12 @@ test_glacier_rgi = glacier_name_for_generation[6:8]
 # RGI60-03.00862 and RGI60-03.04229 have produced points in another utm zone wrt glacier center (issue?)
 # RGI60-03.02811 in interesting since on top Millan has no data, so what is the effect or modeling with/without v ?
 #RGI60-07.00174 Farinotti has a gap ?
+# RGI60-01.17165 potrebbe essere il primo ghiacciaio in cui vedo qualcosa di strano nel mio modello !
+
 
 # Import of create rgi dem
-dem_rgi = fetch_dem(folder_mosaic=args.mosaic, rgi=test_glacier_rgi)
-
-
-try:
-    test_glacier_folder_farinotti = glob(f"{args.farinotti_icethickness_folder}/*{test_glacier_rgi}/*{test_glacier_rgi}/")[0]
-    ice_farinotti = rioxarray.open_rasterio(test_glacier_folder_farinotti+glacier_name_for_generation+'_thickness.tif')
-    res_farinotti = ice_farinotti.rio.resolution()[0]
-    vol_farinotti = 1.e-9 * (res_farinotti ** 2) * np.nansum(ice_farinotti.values) # Volume Farinotti km3
-except ValueError:
-    print(f"Farinotti glacier {glacier_name_for_generation} not found.")
-
-
+#dem_rgi = fetch_dem(folder_mosaic=args.mosaic, rgi=test_glacier_rgi)
+dem_rgi = None
 # Generate points for one glacier
 test_glacier = populate_glacier_with_metadata(glacier_name=glacier_name_for_generation,
                                               dem_rgi=dem_rgi,
@@ -450,31 +453,38 @@ test_glacier = populate_glacier_with_metadata(glacier_name=glacier_name_for_gene
                                               seed=None)
 
 test_glacier['v50'] = np.sqrt(test_glacier['vx_gf50']**2 + test_glacier['vy_gf50']**2)
+test_glacier['v100'] = np.sqrt(test_glacier['vx_gf100']**2 + test_glacier['vy_gf100']**2)
 test_glacier['v150'] = np.sqrt(test_glacier['vx_gf150']**2 + test_glacier['vy_gf150']**2)
 test_glacier['v300'] = np.sqrt(test_glacier['vx_gf300']**2 + test_glacier['vy_gf300']**2)
+test_glacier['v450'] = np.sqrt(test_glacier['vx_gf450']**2 + test_glacier['vy_gf450']**2)
+test_glacier['vgfa'] = np.sqrt(test_glacier['vx_gfa']**2 + test_glacier['vy_gfa']**2)
 test_glacier['dvx'] = np.sqrt(test_glacier['dvx_dx']**2 + test_glacier['dvx_dy']**2)
 test_glacier['dvy'] = np.sqrt(test_glacier['dvy_dx']**2 + test_glacier['dvy_dy']**2)
 test_glacier['slope50'] = np.sqrt(test_glacier['slope_lon_gf50']**2 + test_glacier['slope_lat_gf50']**2)
+test_glacier['slope100'] = np.sqrt(test_glacier['slope_lon_gf100']**2 + test_glacier['slope_lat_gf100']**2)
 test_glacier['slope150'] = np.sqrt(test_glacier['slope_lon_gf150']**2 + test_glacier['slope_lat_gf150']**2)
 test_glacier['slope300'] = np.sqrt(test_glacier['slope_lon_gf300']**2 + test_glacier['slope_lat_gf300']**2)
 test_glacier['slope450'] = np.sqrt(test_glacier['slope_lon_gf450']**2 + test_glacier['slope_lat_gf450']**2)
+test_glacier['slopegfa'] = np.sqrt(test_glacier['slope_lon_gfa']**2 + test_glacier['slope_lat_gfa']**2)
 test_glacier['elevation_from_zmin'] = test_glacier['elevation'] - test_glacier['Zmin']
 test_glacier['sia'] = ((0.3*test_glacier['v50']*(3+1))/(2*A*(rho*g*test_glacier['slope50'])**3))**(1./4)
 
-X_train_glacier = test_glacier[CFG.features]
+X_test_glacier = test_glacier[CFG.features]
 y_test_glacier_m = test_glacier[CFG.millan]  # Note that here nans are present if Millan has no data
 no_millan_data = np.isnan(y_test_glacier_m).all()
 y_test_glacier_f = test_glacier[CFG.farinotti]
 
 if CFG.use_log_transform:
-    y_preds_glacier_log = best_model.predict(X_train_glacier)
+    y_preds_glacier_log = best_model.predict(X_test_glacier)
     y_preds_glacier = np.expm1(y_preds_glacier_log)  # Inverse log transform
 else:
-    y_preds_glacier = best_model.predict(X_train_glacier)
+    y_preds_glacier = best_model.predict(X_test_glacier)
 
 # Set negative predictions to zero
 y_preds_glacier = np.where(y_preds_glacier < 0, 0, y_preds_glacier)
 
+
+# Begin to extract all necessary things to plot the result
 rgi = glacier_name_for_generation[6:8]
 oggm_rgi_shp = glob(f'/home/nico/OGGM/rgi/RGIV62/{rgi}*/{rgi}*.shp')[0]
 oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)
@@ -490,13 +500,23 @@ def calc_volume_glacier(points_thickness, area=0):
     volume = np.sum(points_thickness) * 0.001 * area / N
     return volume
 
+# Get Farinotti file and calculate the volume
+try:
+    test_glacier_folder_farinotti = glob(f"{args.farinotti_icethickness_folder}/*{test_glacier_rgi}/*{test_glacier_rgi}/")[0]
+    ice_farinotti = rioxarray.open_rasterio(test_glacier_folder_farinotti+glacier_name_for_generation+'_thickness.tif')
+    res_farinotti = ice_farinotti.rio.resolution()[0]
+    vol_farinotti = 1.e-9 * (res_farinotti ** 2) * np.nansum(ice_farinotti.values) # Volume Farinotti km3
+except ValueError:
+    print(f"Farinotti glacier {glacier_name_for_generation} not found.")
+
+# Calculate the glacier volume using the 3 models
 vol_ML = calc_volume_glacier(y_preds_glacier, glacier_area)
 vol_millan = calc_volume_glacier(y_test_glacier_m, glacier_area)
 vol_farinotti2 = calc_volume_glacier(y_test_glacier_f, glacier_area)
 print(f"Glacier {glacier_name_for_generation} Area: {glacier_area:.2f} km2, "
-      f"volML: {vol_ML:.3f} km3 "
-      f"volMil: {vol_millan:.3f} km3 "
-      f"volFar: {vol_farinotti:.3f} km3 volFar2: {vol_farinotti2:.3f} km3"
+      f"volML: {vol_ML:.4g} km3 "
+      f"volMil: {vol_millan:.4g} km3 "
+      f"volFar: {vol_farinotti:.4g} km3 volFar2: {vol_farinotti2:.4g} km3"
       f"Far mismatch {100*abs(vol_farinotti2-vol_farinotti)/vol_farinotti:.2f}%")
 
 print(f"No. points: {len(y_preds_glacier)} no. positive preds {100*np.sum(y_preds_glacier > 0)/len(y_preds_glacier):.1f}")
@@ -507,32 +527,32 @@ y_max = max(np.concatenate((y_preds_glacier, y_test_glacier_m, y_test_glacier_f)
 
 fig, axes = plt.subplots(1,3, figsize=(8,4))
 ax1, ax2, ax3 = axes.flatten()
-s1 = ax1.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_preds_glacier, cmap='Blues', label='ML')
+s1 = ax1.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_preds_glacier, cmap='plasma', label='ML')
 #cntr1 = ax1.tricontourf(test_glacier['lons'], test_glacier['lats'], y_preds_glacier, levels=5, cmap="Blues")
 if not no_millan_data:
-    s2 = ax2.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_test_glacier_m, cmap='Blues', label='Millan')
+    s2 = ax2.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_test_glacier_m, cmap='plasma', label='Millan')
 #cntr2 = ax2.tricontourf(test_glacier['lons'], test_glacier['lats'], y_test_glacier_m, levels=5, cmap="Blues")
-s3 = ax3.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_test_glacier_f, cmap='Blues', label='Farinotti')
+s3 = ax3.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_test_glacier_f, cmap='plasma', label='Farinotti')
 #cntr3 = ax3.tricontourf(test_glacier['lons'], test_glacier['lats'], y_test_glacier_f, levels=5, cmap="Blues")
 #im4 = ice_farinotti.plot(ax=ax4, cmap='Blues', vmin=y_min,vmax=y_max)
 
 #for ax in [ax1, ax2, ax3]:
 #    ax.scatter(13.28464, 79.13954, s=30, c='lime', zorder=2)
 
-ax1.set_title(f"ML {vol_ML:.3f} km3")
-ax2.set_title(f"Millan {vol_millan:.3f} km3")
-ax3.set_title(f"Farinotti {vol_farinotti:.3f} km3")
+ax1.set_title(f"ML {vol_ML:.4g} km3")
+ax2.set_title(f"Millan {vol_millan:.4g} km3")
+ax3.set_title(f"Farinotti {vol_farinotti:.4g} km3")
 
 cbar1 = plt.colorbar(s1, ax=ax1)
 cbar1.mappable.set_clim(vmin=y_min,vmax=y_max)
-cbar1.set_label('THICKNESS (m)', labelpad=15, rotation=270)
+cbar1.set_label('Thickness (m)', labelpad=15, rotation=270)
 if not no_millan_data:
     cbar2 = plt.colorbar(s2, ax=ax2)
     cbar2.mappable.set_clim(vmin=y_min, vmax=y_max)
-    cbar2.set_label('THICKNESS (m)', labelpad=15, rotation=270)
+    cbar2.set_label('Thickness (m)', labelpad=15, rotation=270)
 cbar3 = plt.colorbar(s3, ax=ax3)
 cbar3.mappable.set_clim(vmin=y_min,vmax=y_max)
-cbar3.set_label('THICKNESS (m)', labelpad=15, rotation=270)
+cbar3.set_label('Thickness (m)', labelpad=15, rotation=270)
 
 for ax in (ax1, ax2, ax3):
     ax.plot(*exterior_ring.xy, c='k')
