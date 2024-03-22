@@ -66,6 +66,7 @@ def get_codes(miny, minx, maxy, maxx):
     """
     tile_minx, tile_miny = int(np.floor(minx)), int(np.floor(miny))
     tile_maxx, tile_maxy = int(np.ceil(maxx)), int(np.ceil(maxy))
+    #print(f"miny {miny} minx {minx} maxy {maxy} maxx {maxx}")
     #print(f"Lat min: {tile_miny} max: {tile_maxy}")
     #print(f"Lon min: {tile_minx} max: {tile_maxx}")
 
@@ -108,11 +109,13 @@ def create_glacier_tile_dem_mosaic(minx, miny, maxx, maxy, rgi, path_tandemx):
 
     # Get the codes of the tiles that contain the glacier
     codes_tiles_for_mosaic = get_codes(miny, minx, maxy, maxx)
+    #print(codes_tiles_for_mosaic)
 
     # Look for the actual existing files from the possible codes
     matching_files = []
     for code in codes_tiles_for_mosaic:
         matching_files.extend(glob.glob(f"{folder_rgi_tiles}TDM1_EDEM_10_*{code}*_V01_C/EDEM/*_W84.tif", recursive=False))
+    #print(matching_files)
 
     # Create Mosaic
     src_files_to_mosaic = []
@@ -149,7 +152,7 @@ def create_glacier_tile_dem_mosaic(minx, miny, maxx, maxy, rgi, path_tandemx):
     #plt.show()
 
     t1_mosaic_tiles = time.time()
-    print(f"Mosaic of tiles done in {t1_mosaic_tiles-t0_mosaic_tiles}")
+    #print(f"Mosaic of tiles done in {t1_mosaic_tiles-t0_mosaic_tiles}")
     return focus
 
 def create_mosaic_rgi_tandemx(rgi=None, path_rgi_tiles=None, save=0):
