@@ -22,7 +22,7 @@ import time
 from rtree import index
 from joblib import Parallel, delayed
 
-from create_rgi_mosaic_tanxedem import fetch_dem, find_tandemx_tiles
+from create_rgi_mosaic_tanxedem import fetch_dem, create_glacier_tile_dem_mosaic
 from utils_metadata import haversine, from_lat_lon_to_utm_and_epsg, gaussian_filter_with_nans
 
 """
@@ -30,10 +30,8 @@ This program generates glacier metadata at some random locations inside the glac
 
 Input: glacier name (RGIId), how many points you want to generate. 
 Output: pandas dataframe with features calculated for each generated point. 
-Computational time scales linearly with no. generated points- Ca. 50% time is point generation, other 50% distances. 
 
-Note: the features slope, elevation_from_zmin and v are calculated in model.py, not here.
-
+Note: some features are calculated in model.py, not here.
 Note: the points are generated inside the glacier but outside nunataks (there is a check for this)
 
 Note: as of Feb 16, 2024 I decide to fill the nans in Millan veloity fields. I do that interpolating these fields.
@@ -41,9 +39,7 @@ After that I interpolate at the locations of the generated points.
 
 Note: Millan and Farinotti products needs to be interpolated. Interpolation close to the borders may result in nans. 
 The interpolation method="nearest" yields much less nans close to borders if compared to linear
-interpolation and therefore is chosen. 
-
-Note that Farinotti interpolation ith_f may result in nan when generated point too close to the border.
+interpolation and therefore is preferred. 
 
 Note the following policy for Millan special cases to produce vx, vy, v, ith_m:
     1) There is no Millan data for such glacier. Data imputation: vy=vy=v=0.0 and ith_m=nan. 
@@ -56,8 +52,9 @@ Note the following policy for Millan special cases to produce vx, vy, v, ith_m:
 # todo: a proposito di come smussare i campi di slope e velocita, guardare questo articolo:
 #  Slope estimation influences on ice thickness inversion models: a case study for Monte Tronador glaciers, North Patagonian Andes
 
-# todo: 1. implement faster version of slope calculation
-# todo: 2. implement faster version of velocity calculation
+# todo: all gaussian filters to trunc=3
+
+# todo speedup: slope, velocity, geometries and distances
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--mosaic', type=str,default="/media/nico/samsung_nvme/Tandem-X-EDEM/",
@@ -492,7 +489,6 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
     """ Add Slopes and Elevation """
     print(f"Calculating slopes and elevations...")
     tslope1 = time.time()
-    ris_ang = dem_rgi.rio.resolution()[0]
 
     swlat = points_df['lats'].min()
     swlon = points_df['lons'].min()
@@ -503,18 +499,19 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
     lats_xar = xarray.DataArray(points_df['lats'])
     lons_xar = xarray.DataArray(points_df['lons'])
 
+    #ris_ang = dem_rgi.rio.resolution()[0]
+    ris_ang = 1./3600
     eps = 5 * ris_ang
 
-    # WORK IN PROGRESS
-    #sth = find_tandemx_tiles(minx=swlon - (deltalon + eps),
-    #                        miny=swlat - (deltalat + eps),
-    #                        maxx=nelon + (deltalon + eps),
-    #                        maxy=nelat + (deltalat + eps),
-    #                         rgi=rgi, path_tandemx=args.mosaic)
-
-    #input('wait')
+    # We now create the mosaic of the dem clipped around the glacier
+    focus_mosaic_tiles = create_glacier_tile_dem_mosaic(minx=swlon - (deltalon + eps),
+                            miny=swlat - (deltalat + eps),
+                            maxx=nelon + (deltalon + eps),
+                            maxy=nelat + (deltalat + eps),
+                             rgi=rgi, path_tandemx=args.mosaic)
 
     # clip
+    """
     try:
         focus = dem_rgi.rio.clip_box(
             minx=swlon - (deltalon + eps),
@@ -526,6 +523,8 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
         raise ValueError(f"Problems in method for fetching add_slopes_elevation")
 
     focus = focus.squeeze()
+    """
+    focus = focus_mosaic_tiles.squeeze()
 
     # ***************** Calculate elevation and slopes in UTM ********************
     # Reproject to utm (projection distortions along boundaries converted to nans)
@@ -1063,9 +1062,10 @@ def populate_glacier_with_metadata(glacier_name, dem_rgi=None, n=50, seed=None):
 
 
 if __name__ == "__main__":
-    glacier_name = 'RGI60-11.00846'
+    glacier_name =  'RGI60-01.10325' # 'RGI60-07.00607'
     rgi = glacier_name[6:8]
-    dem_rgi = fetch_dem(folder_mosaic=args.mosaic, rgi=rgi)
+    #dem_rgi = fetch_dem(folder_mosaic=args.mosaic, rgi=rgi)
+    dem_rgi = None
     generated_points_dataframe = populate_glacier_with_metadata(
                                             glacier_name=glacier_name,
                                             dem_rgi=dem_rgi,
