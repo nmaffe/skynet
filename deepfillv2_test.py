@@ -35,10 +35,11 @@ parser.add_argument("--fullmask", type=str,
                     default="/home/nico/PycharmProjects/skynet/code/dataset/test/RGI_11_size_256/masks_full/",
                     help="input folder with full mask files")
 parser.add_argument("--out", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/dataset/output/RGI_11_size_256_test/",
+                    default="/home/nico/PycharmProjects/skynet/code/dataset/output/RGI_11_size_256_minmax/",
                     help="path to saved results")
 parser.add_argument("--checkpoint", type=str,
-                    default="/home/nico/PycharmProjects/skynet/code/Deepfillv2/callbacks/checkpoints/box_model/states_it500.pth",
+                    default="/home/nico/PycharmProjects/skynet/code/Deepfillv2/callbacks/checkpoints"+
+                            "/box_model/states_minmax_it100000.pth",
                     help="path to the checkpoint file")
 parser.add_argument("--tfmodel", action='store_true',
                     default=False, help="use model from models_tf.py?")
@@ -55,6 +56,9 @@ def main():
     # --------------------------------------------------------------------------------------- #
     args = parser.parse_args()
     config = misc.get_config(args.config)  # some stuff in train.yaml may be useful
+    print(f"Model: {args.checkpoint}")
+    print(f"Input images: {args.image}")
+    print(f"Results saved in: {args.out}")
     # --------------------------------------------------------------------------------------- #
     #                                         Model                                           #
     # --------------------------------------------------------------------------------------- #
@@ -80,8 +84,9 @@ def main():
     # --------------------------------------------------------------------------------------- #
     #                             Setup the glacier list                                      #
     # --------------------------------------------------------------------------------------- #
-
-    RGI_burned = ['RGI60-11.00562', 'RGI60-11.00590', 'RGI60-11.00603', 'RGI60-11.00638', 'RGI60-11.00647',
+    # Note: this one should be interesting to evaluate if not too big: RGI60-11.02796
+    RGI_burned = ['RGI60-11.02922', 'RGI60-11.02437', 'RGI60-11.01698', 'RGI60-11.00666', 'RGI60-11.02704',
+        'RGI60-11.00562', 'RGI60-11.00590', 'RGI60-11.00603', 'RGI60-11.00638', 'RGI60-11.00647',
                   'RGI60-11.00689', 'RGI60-11.00695', 'RGI60-11.00846', 'RGI60-11.00950', 'RGI60-11.01024', 
                   'RGI60-11.01041', 'RGI60-11.01067', 'RGI60-11.01144', 'RGI60-11.01199', 'RGI60-11.01296', 
                   'RGI60-11.01344', 'RGI60-11.01367', 'RGI60-11.01376', 'RGI60-11.01473', 'RGI60-11.01509', 
@@ -94,7 +99,9 @@ def main():
                   'RGI60-11.02624', 'RGI60-11.02673', 'RGI60-11.02679', 'RGI60-11.02704', 'RGI60-11.02709', 
                   'RGI60-11.02715', 'RGI60-11.02740', 'RGI60-11.02745', 'RGI60-11.02755', 'RGI60-11.02774', 
                   'RGI60-11.02775', 'RGI60-11.02787', 'RGI60-11.02796', 'RGI60-11.02864', 'RGI60-11.02884', 
-                  'RGI60-11.02890', 'RGI60-11.02909', 'RGI60-11.03249']
+                  'RGI60-11.02890', 'RGI60-11.02909', 'RGI60-11.03249',
+                  ]
+    # Big glaciers: RGI60-11.02922, RGI60-11.02437, RGI60-11.01698, RGI60-11.00666, RGI60-11.02704
 
     if args.burned:
         list_of_glaciers = [gl + '.tif' for gl in RGI_burned]
@@ -170,7 +177,7 @@ def main():
         slope_lat.mul_(2).sub_(1).unsqueeze_(0).unsqueeze_(1) # (1, 1, 256, 256)
         slope_lon.mul_(2).sub_(1).unsqueeze_(0).unsqueeze_(1) # (1, 1, 256, 256)
 
-        show_input_examples = True
+        show_input_examples = False
         if show_input_examples:
             img_slope_lat = slope_lat[0,0,:,:].numpy()
             img_slope_lon = slope_lon[0,0,:,:].numpy()
@@ -239,6 +246,11 @@ def main():
         show2d = True
         if show2d:
             mask_to_show = np.where((mask_full_values > 0.), mask_full_values, np.nan)
+            ice_farinotti = rioxarray.open_rasterio(
+                '/home/nico/PycharmProjects/skynet/Extra_Data/Farinotti/composite_thickness_RGI60-11/RGI60-11/'
+                + imgfile.replace('.tif', '_thickness.tif'))
+            ice_farinotti = ice_farinotti.values.squeeze()
+
             fig, axes = plt.subplots(2,3, figsize=(11,6))
             ax1, ax2, ax3, ax4, ax5, ax6 = axes.flatten()
 
@@ -256,16 +268,15 @@ def main():
             im1_1 = ax1.imshow(mask_to_show, alpha=.3, cmap='gray')
             im2 = ax2.imshow(image_denorm, cmap='terrain')
             vmin, vmax = abs(np.nanmin(icethick)), abs(np.nanmax(icethick))
-            v = max(vmin, vmax)
+            vminfar, vmaxfar = abs(np.nanmin(ice_farinotti)), abs(np.nanmax(ice_farinotti))
+            v = max(vmin, vmax, vminfar, vmaxfar)
             im3 = ax3.imshow(icethick, vmin=-v, vmax=v, cmap='bwr_r')
             im4 = ax4.scatter(range(N), y_lon_dem, s=5, c='k', label='dem along lon')
             im4_1 = ax4.plot(range(N), y_lon_bed*y_lon_mask, c='r', label='bed along lon')
             im5 = ax5.scatter(range(N), y_lat_dem, s=5, c='k', label='dem along lat')
             im5_1 = ax5.plot(range(N), y_lat_bed*y_lat_mask, c='r', label='bed along lat')
 
-            ice_farinotti = rioxarray.open_rasterio('/home/nico/PycharmProjects/skynet/Extra_Data/Farinotti/composite_thickness_RGI60-11/RGI60-11/'
-                                                    +imgfile.replace('.tif', '_thickness.tif'))
-            ice_farinotti = ice_farinotti.values.squeeze()
+
             im6 = ax6.imshow(ice_farinotti, vmin=-v, vmax=v, cmap='bwr_r')
 
             plt.colorbar(im1, ax=ax1, fraction=0.046, pad=0.04, label='H (m)')
