@@ -1,11 +1,11 @@
-import time
-import copy
+import sys, argparse
+import time, copy
 import random
 import math
 from glob import glob
 import numpy as np
 import matplotlib.pyplot as plt
-
+sys.path.append("/home/nico/PycharmProjects/skynet/code") # to import haversine from utils.py
 from utils import haversine
 import pandas as pd
 import geopandas as gpd
@@ -27,11 +27,25 @@ from torch_geometric.transforms import RandomNodeSplit
 import networkx as nx
 from torch_geometric.utils import to_networkx
 
+from fetch_glacier_metadata import populate_glacier_with_metadata
+
+#todo: I now need to add the calculation for v, slope, elevation_from_zmin as not contained in imported metadata file
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--metadata_file', type=str, default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final2_grid_20.csv",
+                    help="Training dataset.")
+parser.add_argument('--save_model', type=bool, default=False, help="True to save the model.")
+parser.add_argument('--save_outdir', type=str, default="/home/nico/PycharmProjects/skynet/code/metadata/", help="Saved model dir.")
+parser.add_argument('--save_outname', type=str, default="model_gnn_weights.pth", help="Saved model name.")
+args = parser.parse_args()
 
 class CFG:
-
+    #features = ['Area', 'slope_lat', 'slope_lon', 'elevation_astergdem', 'vx', 'vy',
+     #'dist_from_border_km_geom', 'v', 'slope', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
+     #'elevation_from_zmin', 'RGI'] #'sia'
     features = ['Area', 'slope_lat', 'slope_lon', 'elevation_astergdem', 'vx', 'vy',
-     'dist_from_border_km', 'v', 'slope', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
+     'dist_from_border_km_geom', 'v', 'slope', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
      'elevation_from_zmin', 'RGI'] #'sia'
     millan = 'ith_m'
     farinotti = 'ith_f'
@@ -39,16 +53,14 @@ class CFG:
     batch_size = 512
     num_workers = 16
     lr = 0.002
-    epochs = 30000#10000
+    epochs = 30000#30000#10000
     loss = nn.MSELoss()
     L2_penalty = 0.0
-    threshold = 3.0#3.0 #.5
+    threshold = 1.0#3.0 #.5
 
-PATH_METADATA = '/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/'
-file = 'TTT_final_grid_20.csv'
 
-glathida_rgis = pd.read_csv(PATH_METADATA+file, low_memory=False)
-
+# Import the training dataset
+glathida_rgis = pd.read_csv(args.metadata_file, low_memory=False)
 #glathida_rgis['sia'] = ((4*glathida_rgis['v'])/((917*9.81*glathida_rgis['slope'])**3))**1./4
 #glathida_rgis.fillna(glathida_rgis.mean(), inplace=T#rue)
 #glathida_rgis['sia'][glathida_rgis['sia'] > 1000] = 1000
@@ -57,8 +69,8 @@ glathida_rgis = pd.read_csv(PATH_METADATA+file, low_memory=False)
 
 #glathida_rgis = glathida_rgis.loc[glathida_rgis['RGI']==11]
 glathida_rgis = glathida_rgis.loc[glathida_rgis['THICKNESS']>=0]
-print(f'Dataset: {len(glathida_rgis)} rows and', glathida_rgis['RGIId'].nunique(), 'glaciers.')
-print(list(glathida_rgis))
+print(f"Dataset: {len(glathida_rgis)} rows, {glathida_rgis['RGI'].nunique()} regions and {glathida_rgis['RGIId'].nunique()} glaciers.")
+#print(list(glathida_rgis))
 
 # Calculate pair-wise haversine distances between all points in a vectorized fashion
 lon_ar = np.array(glathida_rgis['POINT_LON'])
@@ -157,23 +169,23 @@ if ifplot is True:
 class GCN(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv1 = GCNConv(data.num_node_features, 100, improved=True)
-        self.conv1_2 = GCNConv(data.num_node_features, 100, improved=True)
-        self.conv2 = GCNConv(100, 50, improved=True)
-        self.conv2_2 = GCNConv(100, 1, improved=True)
-        self.conv3 = GCNConv(50, 30, improved=True)
-        self.conv3_1 = GCNConv(30, 30, improved=True)
-        self.conv4 = GCNConv(30, 10, improved=True)
-        self.conv4_1 = GCNConv(10, 1, improved=True)
+        self.conv1 = GCNConv(data.num_node_features, 100, improved=False)
+        self.conv1_2 = GCNConv(data.num_node_features, 100, improved=False)
+        self.conv2 = GCNConv(100, 50, improved=False)
+        self.conv2_2 = GCNConv(100, 1, improved=False)
+        self.conv3 = GCNConv(50, 30, improved=False)
+        self.conv3_1 = GCNConv(30, 30, improved=False)
+        self.conv4 = GCNConv(30, 10, improved=False)
+        self.conv4_1 = GCNConv(10, 1, improved=False)
 
-        self.fc_A = GCNConv(2, 10, improved=True)
-        self.fcA_1 = GCNConv(10, 1, improved=True)
+        self.fc_A = GCNConv(2, 10, improved=False)
+        self.fcA_1 = GCNConv(10, 1, improved=False)
 
-        self.conv2m = GCNConv(2, 10, improved=True)
-        self.conv2m_1 = GCNConv(10, 1, improved=True)
+        self.conv2m = GCNConv(2, 10, improved=False)
+        self.conv2m_1 = GCNConv(10, 1, improved=False)
 
-        self.conv2f = GCNConv(2, 10, improved=True)
-        self.conv2f_1 = GCNConv(10, 1, improved=True)
+        self.conv2f = GCNConv(2, 10, improved=False)
+        self.conv2f_1 = GCNConv(10, 1, improved=False)
 
     def forward(self, data):
         h, edge_index, edge_weight = data.x, data.edge_index, data.edge_weight
@@ -224,11 +236,47 @@ class GCN(torch.nn.Module):
         return h#, hm, hf
 
 # Train / Val / Test
+def create_test_index(df, minimum_test_size=1000, rgi=None, seed=None):
+    """
+    - rgi se voglio creare il test in una particolare regione
+    - minimum_test_size: quanto lo voglio grande
+    """
+    if rgi is not None:
+        df = df[df['RGI']==rgi]
+    if seed is not None:
+        random.seed(seed)
+
+    unique_glaciers = df['RGIId'].unique()
+    random.shuffle(unique_glaciers)
+    selected_glaciers = []
+    n_total_points = 0
+
+    for glacier_name in unique_glaciers:
+        if n_total_points < minimum_test_size:
+            selected_glaciers.append(glacier_name)
+            n_points = df[df['RGIId'] == glacier_name].shape[0]
+            n_total_points += n_points
+            print(glacier_name, n_points, n_total_points)
+        else:
+            #print('Finished with', n_total_points, 'points, and', len(selected_glaciers), 'glaciers.')
+            break
+
+    test = df[df['RGIId'].isin(selected_glaciers)]
+    print(test['RGI'].value_counts())
+    print('Total test size: ', len(test))
+    return test.index
+
 train_mask_bool = pd.Series(True, index=glathida_rgis.index)
 val_mask_bool = pd.Series(False, index=glathida_rgis.index)
 
+test_index = create_test_index(glathida_rgis,  minimum_test_size=1800, rgi=7, seed=None)
+test_mask_bool = pd.Series(glathida_rgis.index.isin(test_index), index=glathida_rgis.index)
+
 #test_mask_bool = ((glathida_rgis['RGI']==11) & (glathida_rgis['POINT_LON']<7.2))#<76)
-test_mask_bool = ((glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76))#<76)
+#test_mask_bool = glathida_rgis.sample(1822).index
+#random_bool_array = np.concatenate([np.full(1822, True), np.full(len(glathida_rgis) - 1822, False)])
+#test_mask_bool = pd.Series(np.random.permutation(random_bool_array), index=glathida_rgis.index)
+#test_mask_bool = ((glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76))#<76)
 
 train_mask_bool[test_mask_bool] = False
 #print(len(train_mask_bool), train_mask_bool.sum())
@@ -296,6 +344,11 @@ for epoch in range(CFG.epochs):
 
 print('Finished training loop.')
 
+# Save model
+if args.save_model:
+    torch.save(best_weights, args.save_outdir + args.save_outname)
+    print(f"Saved model: {args.save_outdir + args.save_outname}")
+
 # Inference on test
 best_model = GCN().to(device)
 best_model.load_state_dict(best_weights)
@@ -358,9 +411,9 @@ fit_farinotti_plot = ax1.plot([0.0, xmax], [q_farinotti, q_farinotti+xmax*m_fari
 s2 = ax1.plot([0.0, xmax], [0.0, xmax], c='k')
 ax1.axis([None, xmax, None, xmax])
 
-ax2.hist(y_test-y_preds, bins=np.arange(-1000, 1000, 10), label='NN', color='lightblue', ec='blue', alpha=.4, zorder=2)
+ax2.hist(y_test-y_preds, bins=np.arange(-1000, 1000, 10), label='GNN', color='lightblue', ec='blue', alpha=.4, zorder=2)
 ax2.hist(y_test-y_test_m, bins=np.arange(-1000, 1000, 10), label='Millan', color='green', ec='green', alpha=.3, zorder=1)
-ax2.hist(y_test-y_test_f, bins=np.arange(-1000, 1000, 10), label='Farinotti', color='red', ec='red', alpha=.3, zorder=1)
+ax2.hist(y_test-y_test_f, bins=np.arange(-1000, 1000, 10), label='Farinotti', color='red', ec='red', alpha=.3, zorder=3)
 
 # text
 text_ml = f'GNN\n$\mu$ = {mu_ML:.1f}\nmed = {med_ML:.1f}\n$\sigma$ = {std_ML:.1f}'
@@ -408,6 +461,7 @@ y_min = min(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
 y_max = max(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
 y_min_diff = min(np.concatenate((y_preds-y_test_f, y_test-y_preds)))
 y_max_diff = max(np.concatenate((y_preds-y_test_f, y_test-y_preds)))
+absmax = max(abs(y_min_diff), abs(y_max_diff))
 
 s1 = ax1.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_test, cmap='Blues', label='Glathida')
 s2 = ax2.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10, c=y_preds, cmap='Blues', label='GNN')
@@ -418,7 +472,7 @@ s6 = ax6.scatter(x=dataset_test['POINT_LON'], y=dataset_test['POINT_LAT'], s=10,
 
 for ax in (ax1, ax2, ax3, ax4, ax5, ax6):
     for geom in glacier_geometries:
-        ax.plot(*geom.exterior.xy, c='magenta')
+        ax.plot(*geom.exterior.xy, c='k')
 
 cbar1 = plt.colorbar(s1, ax=ax1)
 cbar2 = plt.colorbar(s2, ax=ax2)
@@ -431,7 +485,7 @@ for cbar in (cbar1, cbar2, cbar3, cbar4):
     cbar.mappable.set_clim(vmin=y_min,vmax=y_max)
     cbar.set_label('THICKNESS (m)', labelpad=15, rotation=270)
 for cbar in (cbar5, cbar6):
-    cbar.mappable.set_clim(vmin=y_min_diff, vmax=y_max_diff)
+    cbar.mappable.set_clim(vmin=-absmax, vmax=absmax)
 
 
 for ax in (ax1, ax2, ax3, ax4, ax5, ax6): ax.legend(loc='upper left')
