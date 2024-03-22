@@ -1,4 +1,4 @@
-import time
+import argparse, time
 import copy
 from glob import glob
 import random
@@ -18,20 +18,32 @@ from torch.optim import Adam
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--metadata_file', type=str, default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_final2_grid_20.csv",
+                    help="Training dataset.")
+parser.add_argument('--save_model', type=bool, default=False, help="True to save the model.")
+parser.add_argument('--save_outdir', type=str, default="/home/nico/PycharmProjects/skynet/code/metadata/", help="Saved model dir.")
+parser.add_argument('--save_outname', type=str, default="model_mlp_weights.pth", help="Saved model name.")
+args = parser.parse_args()
+
+#todo: I now need to add the calculation for v, slope, elevation_from_zmin as not contained in imported metadata file
 
 class CFG:
 
+    #features = ['Area', 'slope_lat', 'slope_lon', 'elevation_astergdem', 'vx', 'vy',
+    # 'dist_from_border_km', 'v', 'slope', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
+    # 'elevation_from_zmin', 'RGI']
     features = ['Area', 'slope_lat', 'slope_lon', 'elevation_astergdem', 'vx', 'vy',
-     'dist_from_border_km', 'v', 'slope', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
-     'elevation_from_zmin', 'RGI']
+                'dist_from_border_km_geom', 'v', 'slope', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax',
+                'elevation_from_zmin', 'RGI']
 
     millan = 'ith_m'
     farinotti = 'ith_f'
     target = 'THICKNESS'
     batch_size = 512
     num_workers = 16
-    lr = 0.001
-    epochs = 100
+    lr = 0.002
+    epochs = 500
     loss = nn.MSELoss()
     L2_penalty=0.000
 
@@ -51,8 +63,10 @@ class NeuralNetwork(nn.Module):
         self.fc1 = nn.Linear(len(CFG.features), 100)
         self.fc1_2 = nn.Linear(len(CFG.features), 100)
 
-        self.fc2 = nn.Linear(100, 1)
-        self.fc2_2 = nn.Linear(100, 1)
+        self.fc2 = nn.Linear(100, 50)
+        self.fc3 = nn.Linear(50, 30)
+        self.fc4 = nn.Linear(30, 10)
+        self.fc5 = nn.Linear(10, 1)
 
         self.fc2m = nn.Linear(2, 10)
         self.fc2m_1 = nn.Linear(10, 1)
@@ -73,29 +87,36 @@ class NeuralNetwork(nn.Module):
         #self.fc3 = nn.Linear(len(CFG.features), 100)
         #self.fc3_1 = nn.Linear(100, 1)
 
-    def forward(self, x, m, f):
+    #def forward(self, x, m, f):
+    def forward(self, x):
 
         x1 = torch.relu(self.fc1(x))
         x1 = nn.Dropout(0.5)(x1)
-        x1 = self.fc2(x1)
+        x1 = torch.relu(self.fc2(x1))
+        x1 = nn.Dropout(0.2)(x1)
+        x1 = torch.relu(self.fc3(x1))
+        x1 = nn.Dropout(0.1)(x1)
+        x1 = torch.relu(self.fc4(x1))
+        x1 = nn.Dropout(0.1)(x1)
+        x1 = self.fc5(x1)
 
-        hm = torch.concat((x1, m), 1)
-        hm = torch.relu(self.fc2m(hm))
-        hm = nn.Dropout(0.2)(hm)
-        hm = torch.relu(self.fc2m_1(hm))
+        #hm = torch.concat((x1, m), 1)
+        #hm = torch.relu(self.fc2m(hm))
+        #hm = nn.Dropout(0.2)(hm)
+        #hm = torch.relu(self.fc2m_1(hm))
 
-        x2 = torch.relu(self.fc1_2(x))
-        x2 = nn.Dropout(0.5)(x2)
-        x2 = self.fc2_2(x2)
+        #x2 = torch.relu(self.fc1_2(x))
+        #x2 = nn.Dropout(0.5)(x2)
+        #x2 = self.fc2_2(x2)
 
-        hf = torch.concat((x2, f), 1)
-        hf = torch.relu(self.fc2f(hf))
-        hf = nn.Dropout(0.2)(hf)
-        hf = torch.relu(self.fc2f_1(hf))
+        #hf = torch.concat((x2, f), 1)
+        #hf = torch.relu(self.fc2f(hf))
+        #hf = nn.Dropout(0.2)(hf)
+        #hf = torch.relu(self.fc2f_1(hf))
 
-        x = torch.concat((hm, hf), 1)
-        x =  torch.relu(self.fc_A(x))
-        x = self.fcA_1(x)
+        #x = torch.concat((hm, hf), 1)
+        #x =  torch.relu(self.fc_A(x))
+        #x = self.fcA_1(x)
 
         #x1 = torch.relu(self.fc1_1(x1))
         #x1 = nn.Dropout(0.2)(x1)
@@ -154,7 +175,7 @@ class NeuralNetwork(nn.Module):
         #print('x:', x.shape)
         #input('wait')
 
-        return x, hm, hf#x_physics
+        return x1#, hm, hf#x_physics
 
 # ====================================================
 # Dataset
@@ -185,12 +206,10 @@ class MaffeDataset(Dataset):
         return xfeatures, target, millan, farinotti
 
 
-PATH_METADATA = '/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/'
-file = 'TTT_final_grid_20.csv'
 
-glathida_rgis = pd.read_csv(PATH_METADATA+file, low_memory=False)
+glathida_rgis = pd.read_csv(args.metadata_file, low_memory=False)
 #glathida_rgis = glathida_rgis.loc[glathida_rgis['THICKNESS'] > 0]
-#glathida_rgis = glathida_rgis.loc[glathida_rgis['RGI'] == 11]
+glathida_rgis = glathida_rgis.loc[glathida_rgis['RGI'] == 8]
 print(f'Dataset: {len(glathida_rgis)} rows and', glathida_rgis['RGIId'].nunique(), 'glaciers.')
 
 
@@ -226,9 +245,9 @@ def create_test(df, minimum_test_size=1000, rgi=None, seed=None):
     return test
 
 # Train, val, and test
-#test = create_test(glathida_rgis,  minimum_test_size=1000, rgi=3, seed=4)
+test = create_test(glathida_rgis,  minimum_test_size=400, rgi=8, seed=4)
 #test = glathida_rgis.loc[(glathida_rgis['RGI']==11) & (glathida_rgis['POINT_LON']<7.2)]
-test = glathida_rgis.loc[(glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76)]#.sample(n=1879)
+#test = glathida_rgis.loc[(glathida_rgis['RGI']==3) & (glathida_rgis['POINT_LAT']<76)]#.sample(n=1879)
 #val = glathida_rgis.loc[(glathida_rgis['RGI']==3)].drop(test.index).sample(n=2000)
 val = glathida_rgis.drop(test.index).sample(n=1000)
 #train = glathida_rgis.sample(100000)#.drop(val.index)
@@ -300,11 +319,11 @@ def train_loop(train, val, model, optimizer):
             #print(type(X_train), X_train.shape, type(y_train), y_train.shape, X_train.dtype, type(y_train_m), y_train_m.shape)
             #input('wait')
 
-            y_preds, out_m, out_f = model(X_train, y_train_m, y_train_f) # (N,1)
+            y_preds = model(X_train) #model(X_train, y_train_m, y_train_f) # (N,1) y_preds, out_m, out_f
             loss3 = criterion(y_preds, y_train)
-            loss1 = criterion(y_preds, out_m)
-            loss2 = criterion(y_preds, out_f)
-            loss = loss1 + loss2 + 2 * loss3
+            #loss1 = criterion(y_preds, out_m)
+            #loss2 = criterion(y_preds, out_f)
+            loss = loss3 #loss1 + loss2 + 2 * loss3
             #print(step, X_train.shape, y_train.shape, y_preds.shape)
             #input('wait')
 
@@ -329,11 +348,11 @@ def train_loop(train, val, model, optimizer):
             y_test_m = y_test_m.reshape(-1, 1).to(device)
             y_test_f = y_test_f.reshape(-1, 1).to(device)
             with torch.no_grad():
-                y_preds, out_m, out_f = model(X_test, y_test_m, y_test_f)
+                y_preds = model(X_test) #model(X_test, y_test_m, y_test_f) #, out_m, out_f
                 loss3 = criterion(y_preds, y_test)
-                loss1 = criterion(y_preds, out_m)
-                loss2 = criterion(y_preds, out_f)
-                loss = loss1 + loss2 + 2 * loss3
+                #loss1 = criterion(y_preds, out_m)
+                #loss2 = criterion(y_preds, out_f)
+                loss = loss3#loss1 + loss2 + 2 * loss3
 
             r2 = r2_score(y_preds.detach().cpu().numpy(), y_test.detach().cpu().numpy())
             rmse = mean_squared_error(y_preds.detach().cpu().numpy(), y_test.detach().cpu().numpy(), squared=False)
@@ -379,9 +398,10 @@ X_test = torch.tensor(test[CFG.features].to_numpy(), dtype=torch.float32)
 y_test = test[CFG.target].to_numpy()
 y_test_m = test[CFG.millan].to_numpy()
 y_test_f = test[CFG.farinotti].to_numpy()
-y_preds, out_m, out_f = best_model(X_test,
-                                torch.tensor(y_test_m, dtype=torch.float32).reshape(-1, 1),
-                                torch.tensor(y_test_f, dtype=torch.float32).reshape(-1, 1))
+#y_preds, out_m, out_f = best_model(X_test,
+#                                torch.tensor(y_test_m, dtype=torch.float32).reshape(-1, 1),
+#                                torch.tensor(y_test_f, dtype=torch.float32).reshape(-1, 1))
+y_preds = best_model(X_test)
 
 y_preds = y_preds.detach().cpu().numpy().squeeze()
 #print(y_test.shape, y_preds.shape, y_test_m.shape, y_test_f.shape)
@@ -482,17 +502,18 @@ y_min = min(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
 y_max = max(np.concatenate((y_test, y_preds, y_test_m, y_test_f)))
 y_min_diff = min(np.concatenate((y_preds-y_test_f, y_test-y_preds)))
 y_max_diff = max(np.concatenate((y_preds-y_test_f, y_test-y_preds)))
+absmax = max(abs(y_min_diff), abs(y_max_diff))
 
 s1 = ax1.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test, cmap='Blues', label='Glathida')
 s2 = ax2.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_preds, cmap='Blues', label='MLP')
 s3 = ax3.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test_m, cmap='Blues', label='Millan')
 s4 = ax4.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test_f, cmap='Blues', label='Farinotti')
 s5 = ax5.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test-y_preds, cmap='bwr', label='Glathida-MLP')
-s6 = ax6.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_preds-y_test_f, cmap='bwr', label='MLP-Farinotti')
+s6 = ax6.scatter(x=test['POINT_LON'], y=test['POINT_LAT'], s=10, c=y_test-y_test_f, cmap='bwr', label='Glathida-Farinotti')
 
 for ax in (ax1, ax2, ax3, ax4, ax5, ax6):
     for geom in glacier_geometries:
-        ax.plot(*geom.exterior.xy, c='magenta')
+        ax.plot(*geom.exterior.xy, c='k')
 
 cbar1 = plt.colorbar(s1, ax=ax1)
 cbar2 = plt.colorbar(s2, ax=ax2)
@@ -505,7 +526,7 @@ for cbar in (cbar1, cbar2, cbar3, cbar4):
     cbar.mappable.set_clim(vmin=y_min,vmax=y_max)
     cbar.set_label('THICKNESS (m)', labelpad=15, rotation=270)
 for cbar in (cbar5, cbar6):
-    cbar.mappable.set_clim(vmin=y_min_diff, vmax=y_max_diff)
+    cbar.mappable.set_clim(vmin=-absmax, vmax=absmax)
 
 
 for ax in (ax1, ax2, ax3, ax4, ax5, ax6): ax.legend(loc='upper left')
