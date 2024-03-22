@@ -31,18 +31,18 @@ d_lr: 0.0001 # lr for Adam optimizer (discriminator)
 d_beta1: 0.5 # beta1 for Adam optimizer (discriminator)
 d_beta2: 0.999 # beta2 for Adam optimizer (discriminator)
 
-max_iters: 200 # number of batches to train the models (e.g. 100000)
+max_iters: 100000 # number of batches to train the models (e.g. 100000)
 
 # logging
-tb_logging: False # Enable Tensorboard logging?
+tb_logging: True # Enable Tensorboard logging?
 viz_max_out: 10 # number of images from batch 
 # if optional: set to False to deactivate
 print_iter: 100 # write losses to console and tensorboard
 save_imgs_to_tb_iter: 0 #10000 #10000 #1000 #500 # (optional) add image grids to tensorboard
-save_imgs_to_dics_iter: 1000 #1000 #1000 #500 # (optional) save image grids in checkpoint folder
+save_imgs_to_disk_iter: 1000 #1000 #1000 #500 # (optional) save image grids in checkpoint folder
 save_model_multiple_iter: 0 # Every multiple of this number the model is saved as states_{n_iter}.pth
 save_model_specific_iter: 0 # (optional) save model at specific iteration as states_{n_iter}.pth
-save_model_final: 0 # save model at last iteration. Set to either 0 or 1.
+save_model_final: 1 # save model at last iteration. Set to either 0 or 1.
 
 img_shapes: [256, 256, 1]
 
