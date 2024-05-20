@@ -1,5 +1,6 @@
 import utm
 import scipy
+import math
 from math import radians, cos, sin, asin, sqrt
 import numpy as np
 
@@ -41,3 +42,10 @@ def gaussian_filter_with_nans(U, sigma, trunc=4.0):
     filtered_U = VV / WW
     return filtered_U
 
+def get_cmap():
+    from matplotlib.colors import LinearSegmentedColormap
+    # (0.11764706, 0.56470588, 1.0)] dodgerblue
+    colors = [(1, 1, 1), (0.0, 0.0, .8)]  # White to electric blue
+    cmap_name = 'white_electric_blue'
+    cm = LinearSegmentedColormap.from_list(cmap_name, colors)
+    return cm
