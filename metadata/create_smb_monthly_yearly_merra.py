@@ -603,8 +603,7 @@ if args.downscale:
 
     fig, ax = plt.subplots()
     ax.scatter(x=h_mask_vals, y=smb_mask_vals)
-    ax.plot(np.sort(h_mask_vals), func_fit(np.sort(h_mask_vals), *popt), 'r--', lw=2,label=f"{popt}") #label=f"a:{popt[0]:.3f}, b:{popt[1]:.3f}, "
-                                                                                  #      f"c: {popt[2]:.3f}, p:{popt[3]:.3f}")
+    ax.plot(np.sort(h_mask_vals), func_fit(np.sort(h_mask_vals), *popt), 'r--', lw=2,label=f"{popt}")
     #ax.scatter(x=h_mask_vals, y=y_check, c='k', s=4)
     #ax.scatter(x=h_mask2, y=smb_mask2, c='g')
     ax.legend()
