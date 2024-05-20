@@ -51,19 +51,18 @@ def getTDXlonres(lat):
     Between 0° - 60° North/South latitude have a file extent of 1° in latitude and 1° in longitude direction.
     Between 60° - 80° North/South latitudes a product has an extent of 1° x 2°,
     between 80° - 90° North/South latitudes a product tile has an extent of 1° x 4°.
-    See https: // geoservice.dlr.de / web / dataguide / tdm30 /"""
-    if lat >= 80:
+    See https: // geoservice.dlr.de / web / dataguide / tdm30 /
+    Note that slight North-South difference. """
+    if lat >= 80 or lat <= -81:
         reslon = 4
-    elif 60 <= lat < 80:
+    elif 60 <= lat <= 79 or -80 <= lat <= -61:
         reslon = 2
     else:
         reslon = 1
     return reslon
 
 def get_codes(miny, minx, maxy, maxx):
-    """In: box. Out: tile codes to be merged
-    # todo: passaggi da N->S e E->W da verificare. I could overwrite the values to test
-    """
+    """In: box. Out: tile codes to be merged"""
     tile_minx, tile_miny = int(np.floor(minx)), int(np.floor(miny))
     tile_maxx, tile_maxy = int(np.ceil(maxx)), int(np.ceil(maxy))
     #print(f"miny {miny} minx {minx} maxy {maxy} maxx {maxx}")
@@ -79,8 +78,8 @@ def get_codes(miny, minx, maxy, maxx):
         res_lon = getTDXlonres(lat)
         lons_interval = np.arange(min_closest_multiple(tile_minx, res_lon),
                                   max_closest_multiple(tile_maxx, res_lon),
-                                  getTDXlonres(lat), dtype=int)
-        df_latlon.at[index, 'lon'] = lons_interval
+                                  getTDXlonres(lat), dtype=int).tolist()
+        df_latlon.at[index, 'lon'] = list(lons_interval)
     #print(f"Combination of lat lon tiles {df_latlon}")
 
     possible_codes = [f"{get_NS(lat)}{abs(lat):02d}{get_EW(lon)}{abs(lon):03d}"
@@ -213,7 +212,7 @@ def create_mosaic_rgi_tandemx(rgi=None, path_rgi_tiles=None, save=0):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description='Create DEM mosaic from TandemX-EDEM tiles')
-    parser.add_argument("--input", type=str, default="/media/nico/samsung_nvme/Tandem-X-EDEM/",
+    parser.add_argument("--input", type=str, default="/media/maffe/nvme/Tandem-X-EDEM/",
                         help="folder path to the TandemX-EDEM tiles")
     parser.add_argument("--region", type=int, default=None, help="RGI region in x format")
     parser.add_argument("--save", type=int, default=0, help="Save mosaic: 0/1")
