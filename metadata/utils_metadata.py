@@ -49,3 +49,10 @@ def get_cmap():
     cmap_name = 'white_electric_blue'
     cm = LinearSegmentedColormap.from_list(cmap_name, colors)
     return cm
+
+def calc_volume_glacier(points_thickness, area=0):
+    # A potential drawback of this method is that I am randomly sampling in epsg:4326. In a utm projection
+    # such sampling does not turn out to be uniform. Returned volume in km3.
+    N = len(points_thickness)
+    volume = np.sum(points_thickness) * 0.001 * area / N
+    return volume
