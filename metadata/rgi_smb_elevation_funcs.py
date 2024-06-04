@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 "Functions that map elevation to smb for each rgi"
 
 def smb_elev_functs(rgi, elev, lat, lon):
@@ -116,3 +117,33 @@ def smb_elev_functs(rgi, elev, lat, lon):
 
     else:
         raise ValueError(f"rgi value {rgi} does not exist.")
+
+def smb_elev_functs_hugo(rgi=None):
+    """
+    returns rate of change of hugonnet dmdtda wrt elevation
+    - m [d(dmdtda) / dh] = [m w.e./year / m a.s.l]
+    - q [dmdtda] = [m w.e./year]
+    """
+    df = pd.DataFrame(index=range(1, 20), columns=['m', 'q'])
+    df.loc[1, ['m', 'q']] = [0.000196, -0.68827]
+    df.loc[2, ['m', 'q']] = [0.000119, -0.58036]
+    df.loc[3, ['m', 'q']] = [0.000114, -0.43329]
+    df.loc[4, ['m', 'q']] = [0.000366, -0.67971]
+    df.loc[5, ['m', 'q']] = [0.000271, -0.49126]
+    df.loc[6, ['m', 'q']] = [0.000828, -1.0745]
+    df.loc[7, ['m', 'q']] = [0.000460, -0.41898]
+    df.loc[8, ['m', 'q']] = [0.000287, -0.75539]
+    df.loc[9, ['m', 'q']] = [0.000331, -0.3501]
+    df.loc[10, ['m', 'q']] = [0.000233, -0.8894]
+    df.loc[11, ['m', 'q']] = [0.000254, -1.3050]
+    df.loc[12, ['m', 'q']] = [0.000121, -0.84961]
+    df.loc[13, ['m', 'q']] = [0.000189, -1.0982]
+    df.loc[14, ['m', 'q']] = [0.0000681, -0.45128]
+    df.loc[15, ['m', 'q']] = [0.0000565, -0.72384]
+    df.loc[16, ['m', 'q']] = [0.0004048, -2.31655]
+    df.loc[17, ['m', 'q']] = [0.000144, -0.48587]
+    df.loc[18, ['m', 'q']] = [0.0001887, -0.52303]
+    df.loc[19, ['m', 'q']] = [0.000222, -0.16630]
+
+    return df
+
