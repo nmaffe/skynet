@@ -2,6 +2,8 @@ import utm
 import scipy
 import math
 import numpy as np
+import geopandas as gpd
+from sklearn.neighbors import KDTree
 
 def haversine(lon1, lat1, lon2, lat2):
     """
@@ -18,6 +20,20 @@ def haversine(lon1, lat1, lon2, lat2):
     c = 2 * np.arcsin(np.sqrt(a))
     r = 6371 # Radius of earth in kilometers. Determines return value units.
     return c * r
+
+def lmax_imputer(geometry, glacier_epsg):
+    '''
+    geometry: glacier external geometry as pandas geodataframe in 4326 prjection
+    glacier_epsg: glacier espg
+    return: lmax in meters
+    '''
+    geometry_epsg = geometry.to_crs(epsg=glacier_epsg)
+    glacier_vertices = np.array(geometry_epsg.iloc[0].geometry.exterior.coords)
+    tree_lmax = KDTree(glacier_vertices)
+    dists, _ = tree_lmax.query(glacier_vertices, k=len(glacier_vertices))
+    lmax = np.max(dists)
+
+    return lmax
 
 def from_lat_lon_to_utm_and_epsg(lat, lon):
     """https://github.com/Turbo87/utm"""
