@@ -147,3 +147,43 @@ def smb_elev_functs_hugo(rgi=None):
 
     return df
 
+def velocity_median_rgi(rgi=None):
+    """
+    median velocities for each rgi
+    Note: rgi 6, 9, 14, 15, 18 are taken from other rgis
+    """
+    df = pd.DataFrame(index=range(1, 20), columns=['v50', 'v100', 'v150', 'v300', 'v450', 'vgfa'])
+    df.loc[1, df.columns] = np.array([50.29, 50.56, 50.71, 51.40, 51.91, 55.85])
+    df.loc[2, df.columns] = np.array([13.81, 17.59, 19.25, 19.61, 18.52, 26.73])
+    df.loc[3, df.columns] = np.array([17.64, 17.64, 17.63, 17.67, 17.71, 17.95])
+    df.loc[4, df.columns] = np.array([7.69, 7.79, 7.91, 8.20, 8.53, 10.34])
+    df.loc[5, df.columns] = np.array([7.37, 7.37, 7.37, 7.37, 7.63, 9.15])
+    df.loc[7, df.columns] = np.array([9.96, 9.89, 9.85, 9.85, 10.18, 12.16])
+    df.loc[8, df.columns] = np.array([19.42, 19.65, 19.80, 20.18, 20.31, 19.95])
+    df.loc[10, df.columns] = np.array([10.46, 9.87, 9.13, 11.54, 12.77, 10.42])
+    df.loc[11, df.columns] = np.array([7.63, 7.98, 8.31, 9.15, 9.63, 10.51])
+    df.loc[12, df.columns] = np.array([8.99, 9.50, 10.03, 10.44, 10.57, 10.20])
+    df.loc[13, df.columns] = np.array([7.14, 7.15, 6.91, 5.93, 5.18, 4.83])
+    df.loc[16, df.columns] = np.array([6.67, 8.85, 10.37, 10.86, 9.93, 10.86])
+    df.loc[17, df.columns] = np.array([14.50, 14.24, 14.21, 14.54, 15.25, 15.12])
+    df.loc[19, df.columns] = np.array([21.57, 21.57, 21.57, 21.57, 21.57, 24.00])
+
+    df.loc[6, df.columns] = df.loc[7]
+    df.loc[9, df.columns] = df.loc[7]
+    df.loc[14, df.columns] = df.loc[13]
+    df.loc[15, df.columns] = df.loc[13]
+    df.loc[18, df.columns] = df.loc[11]
+
+    rgi_median_velocities = df.loc[rgi].to_numpy()
+    return rgi_median_velocities
+
+
+
+
+
+
+
+
+
+
+
