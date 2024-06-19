@@ -1,4 +1,4 @@
-import os, sys, time
+import time
 import pandas as pd
 from glob import glob
 import random
@@ -11,80 +11,97 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import oggm
-from oggm import cfg, utils, workflow, tasks, graphics
+from oggm import utils
 import geopandas as gpd
 from tqdm import tqdm
-import scipy
 from scipy import spatial
+from astropy.convolution import Gaussian2DKernel, convolve, convolve_fft
 from sklearn.neighbors import KDTree
 import shapely
-from shapely.geometry import box, Point, Polygon, LinearRing, LineString, MultiLineString
-from matplotlib.colors import Normalize, LogNorm
+from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union, nearest_points
-from pyproj import Transformer, CRS, Geod
-import utm
+from pyproj import Transformer
 from joblib import Parallel, delayed
-from create_rgi_mosaic_tanxedem import create_mosaic_rgi_tandemx, create_glacier_tile_dem_mosaic
-from utils_metadata import from_lat_lon_to_utm_and_epsg, gaussian_filter_with_nans, haversine
+from create_rgi_mosaic_tanxedem import create_glacier_tile_dem_mosaic
+from utils_metadata import from_lat_lon_to_utm_and_epsg, gaussian_filter_with_nans, haversine, lmax_imputer
+from imputation_policies import smb_elev_functs, smb_elev_functs_hugo
 
+pd.set_option('display.max_colwidth', None)
+pd.set_option('display.width', None)
+pd.set_option('display.max_rows', None)
 """
 This program creates a dataframe of metadata for the points in glathida.
+Time all rgis: 293m
 
-Run time evaluated on on rgi = [1,3,4,7,8,11,18]: 9.6h
-Note: rgi 6 has no glathida data.
-
-1. add_rgi. Time: 2min.
-2. add_RGIId_and_OGGM_stats. Time: 10 min (+rgi 5 in 14min)
-3. add_slopes_elevation. Time: 80 min. (+rgi 5 in 32min)
+1. add_rgi. Time: 1min. TESTED.
+2. add_RGIId_and_OGGM_stats. TESTED. All rgis: 15 min 
+3. add_slopes_elevation. TESTED. All rgis: 70 min
     - No nan can be produced here. 
-4. add_millan_vx_vy_ith. Time: 4.5 h (rgi1 30m, rgi3 3h, rgi4 40m, rgi7 35m)
+4. add_millan_vx_vy_ith. TESTED. All rgis: 8 min
     - Points inside the glacier but close to the borders can be interpolated as nan.
     - Note: method to interpolate is chosen as "nearest" to reduce as much as possible these nans.
-5. add_dist_from_boder_using_geometries. 1.5h (rgi1 30m, rgi3 30m, rgi4 13m, rgi7 17m) (+rgi5: 1.5h)
-6. add_farinotti_ith. Time: 2h (rgi1 1h, rgi3 0.5h, rgi4 10m, rgi7 8m, rgi8 3m, rgi11 10m, rgi18 3m) (+rgi 5 in 35m)
+5. add_dist_from_boder_using_geometries. TESTED. All rgis: 1h40m
+    - Note: if a point is inside a nunatak the distance will be set to nan.
+6. add_farinotti_ith. TESTED. All rgis: 1h15m
     - Points inside the glacier but close to the borders can be interpolated as nan.
     - Note: method to interpolate is chosen as "nearest" to reduce as much as possible these nans.
 """
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--path_ttt_csv', type=str,default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT.csv",
+parser.add_argument('--path_ttt_csv', type=str,default="/media/maffe/nvme/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT.csv",
                     help="Path to TTT.csv file")
-parser.add_argument('--path_ttt_rgi_csv', type=str,default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_rgi.csv",
+parser.add_argument('--path_ttt_rgi_csv', type=str,default="/media/maffe/nvme/glathida/glathida-3.1.0/glathida-3.1.0/data/TTT_rgi.csv",
                     help="Path to TTT_rgi.csv file")
-parser.add_argument('--path_O1Regions_shp', type=str,default="/home/nico/OGGM/rgi/RGIV62/00_rgi62_regions/00_rgi62_O1Regions.shp",
+parser.add_argument('--path_O1Regions_shp', type=str,default="/home/maffe/OGGM/rgi/RGIV62/00_rgi62_regions/00_rgi62_O1Regions.shp",
                     help="Path to OGGM's 00_rgi62_O1Regions.shp shapefiles of all 19 RGI regions")
-parser.add_argument('--mosaic', type=str,default="/media/nico/samsung_nvme/Tandem-X-EDEM/",
+parser.add_argument('--mosaic', type=str,default="/media/maffe/nvme/Tandem-X-EDEM/",
                     help="Path to DEM mosaics")
-parser.add_argument('--millan_velocity_folder', type=str,default="/home/nico/PycharmProjects/skynet/Extra_Data/Millan/velocity/",
+parser.add_argument('--oggm', type=str,default="/home/maffe/OGGM/", help="Path to OGGM folder")
+parser.add_argument('--millan_velocity_folder', type=str,default="/media/maffe/nvme/Millan/velocity/",
                     help="Path to Millan velocity data")
-parser.add_argument('--millan_icethickness_folder', type=str,default="/home/nico/PycharmProjects/skynet/Extra_Data/Millan/thickness/",
+parser.add_argument('--millan_icethickness_folder', type=str,default="/media/maffe/nvme/Millan/thickness/",
                     help="Path to Millan ice thickness data")
-parser.add_argument('--farinotti_icethickness_folder', type=str,default="/home/nico/PycharmProjects/skynet/Extra_Data/Farinotti/",
+parser.add_argument('--NSIDC_velocity_folder_Antarctica', type=str,default="/media/maffe/nvme/Antarctica_NSIDC/velocity/NSIDC-0754/",
+                    help="Path to AnIS velocity data")
+parser.add_argument('--NSIDC_icethickness_folder_Antarctica', type=str,default="/media/maffe/nvme/Antarctica_NSIDC/thickness/NSIDC-0756/",
+                    help="Path to AnIS velocity data")
+parser.add_argument('--farinotti_icethickness_folder', type=str,default="/media/maffe/nvme/Farinotti/composite_thickness_RGI60-all_regions/",
                     help="Path to Farinotti ice thickness data")
-parser.add_argument('--OGGM_folder', type=str,default="/home/nico/OGGM", help="Path to OGGM main folder")
+parser.add_argument('--OGGM_folder', type=str,default="/home/maffe/OGGM", help="Path to OGGM main folder")
+parser.add_argument('--RACMO_folder', type=str,default="/media/maffe/nvme/racmo", help="Path to RACMO main folder")
 parser.add_argument('--save', type=int, default=0, help="Save final dataset or not.")
 parser.add_argument('--save_outname', type=str,
-            default="/home/nico/PycharmProjects/skynet/Extra_Data/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata6.csv",
+            default="/media/maffe/nvme/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata28.csv",
             help="Saved dataframe name.")
 
 #todo: whenever i call clip_box i need to check if there is only 1 measurement !
 #todo: change all reprojecting method from nearest to something else, like bisampling. Also in all .to_crs(...)
-# todo: Slope from oggm has some strangely high values (or is it expressed in %?). Worth thicking of calculating it myself ?
+# todo: Slope from oggm: worth thicking of calculating it myself ?
 
 # todo:
-#  00) Add adaptive filter to Millan velocity. I THINK DONE
-#  0) Slope/elevation function: avoid the mosaic thing and only collect the necessary tiles. DONE
-#  1) Add rgi 5. Why in rgi 5 glaciers should be 19306 and instead oggm lists them as 20261 ?
-#  I believe OGGM glaciers are slightly different from the official RGI, they have their V62 version.
-#  2) Bonus: add feature slope interpolation at closest point.
+#  1) Bonus: add feature slope interpolation at closest point.
+#  2) zmin, zmax, zmed are currently imported from oggm. I think using tandemx could be better ?
+#  3) Add connectivity to ice sheet ? that may help glaciers in rgi 5, 19
+#  4) Add curvature at same resolution than slope !!
 
-# TODO: IMPORTANT !!! VV AS PROVIDED FROM SAT PRODUCT SHOULD BE USED INSTEAD OF MY MANUAL CALCULATION.
-#  ALSO CHECK IF THE UNIT OF THE VELOCITY MATCH WITH THE UNIT OF THE UNDERLYING GRID SIZE. THIS IS IMPORTANT WHEN
+#todo: check that whenever i reproject i use the nodata field, see fetch_glacier_metadata.py:
+# focus_utm = focus.rio.reproject(glacier_epsg, resampling=rasterio.enums.Resampling.bilinear, nodata=-9999)
+
+# todo: PROBLEMS
+#  distance from border is flawed in rgi 5 and 19 since my geometries no not include the ice sheet :) I should include
+#  the ice sheet geometry. An easier alternative would be to only consider in these regions the distance from the cluster
+#  nunataks, and remove the external boundary from the calculation. If the cluster does not contain nunataks
+#  then yes consider the cluster external geometry
+
+# TODO: IMPORTANT !!! CHECK IF THE UNIT OF THE VELOCITY MATCH WITH THE UNIT OF THE UNDERLYING GRID SIZE. THIS IS IMPORTANT WHEN
 #  I THEN DIFFERENTIATE. IF [VX]=M/YR AND I DIFFERENTIATE IN UTM WITH GRID SPACING IN METERS, IT SHOULD BE FINE.
-#  I FEEL I MAY NEED TO IMPORT V RATHER THAN CALCULATING IT MYSELF.
 
+# todo: speedups:
+#todo: for Millan velocity and ith fields I may use oggm at inference time (probably much faster)
+#todo: I can use astropy library to make gaussian smoothing and interpolating nans, instead of scipy or my manual definitions
+# In the distance from border I can reduce k in the kdtree query
 
-
+# Setup oggm
 utils.get_rgi_dir(version='62')
 utils.get_rgi_intersects_dir(version='62')
 
@@ -191,8 +208,12 @@ def add_slopes_elevation(glathida, path_mosaic):
     glathida['slope_lon'] = [np.nan] * len(glathida)
     glathida['slope_lat_gf50'] = [np.nan] * len(glathida)
     glathida['slope_lon_gf50'] = [np.nan] * len(glathida)
+    glathida['slope_lat_gf75'] = [np.nan] * len(glathida)
+    glathida['slope_lon_gf75'] = [np.nan] * len(glathida)
     glathida['slope_lat_gf100'] = [np.nan] * len(glathida)
     glathida['slope_lon_gf100'] = [np.nan] * len(glathida)
+    glathida['slope_lat_gf125'] = [np.nan] * len(glathida)
+    glathida['slope_lon_gf125'] = [np.nan] * len(glathida)
     glathida['slope_lat_gf150'] = [np.nan] * len(glathida)
     glathida['slope_lon_gf150'] = [np.nan] * len(glathida)
     glathida['slope_lat_gf300'] = [np.nan] * len(glathida)
@@ -210,25 +231,17 @@ def add_slopes_elevation(glathida, path_mosaic):
     datax = []  # just to analyse the results
     datay = []  # just to analyse the results
 
-    for rgi in [1,3,4,7,8,11,18]:
-
-        # get dem o create it
-        #if os.path.exists(path_mosaic + f'mosaic_RGI_{rgi:02d}.tif'):
-        #    dem_rgi = rioxarray.open_rasterio(path_mosaic + f'mosaic_RGI_{rgi:02d}.tif')
-        #    print(f"mosaic_RGI_{rgi:02d}.tif found")
-        #else:  # We have to create the mosaic
-        #    print(f"Mosaic {rgi} not present. Let's create it on the fly...")
-        #    dem_rgi = create_mosaic_rgi_tandemx(rgi=rgi, path_rgi_tiles=path_mosaic, save=0)
-
-        #ris_ang = dem_rgi.rio.resolution()[0]
-        # eps = 5 * ris_ang
+    regions = list(range(1, 20))
+    for rgi in regions:
 
         glathida_rgi = glathida.loc[glathida['RGI'] == rgi] # collapse glathida to specific rgi
+
+        if len(glathida_rgi)==0:
+            continue
+
         ids_rgi = glathida_rgi['GlaThiDa_ID'].unique().tolist()  # unique IDs
 
         for id_rgi in tqdm(ids_rgi, total=len(ids_rgi), desc=f"rgi {rgi} Glathida ID", leave=True):
-
-            # todo: appears to be a problem for rgi 5 id_rgi 2092, 2102 ? Maybe not..
 
             glathida_id = glathida_rgi.loc[glathida_rgi['GlaThiDa_ID'] == id_rgi]  # collapse glathida_rgi to specific id
             glathida_id = glathida_id.copy()
@@ -270,12 +283,6 @@ def add_slopes_elevation(glathida, path_mosaic):
 
                 # clip
                 try:
-                    #focus = dem_rgi.rio.clip_box(
-                    #    minx = swlon - delta,
-                    #    miny = swlat - delta,
-                    #    maxx = nelon + delta,
-                    #    maxy = nelat + delta,
-                    #)
                     focus = create_glacier_tile_dem_mosaic(minx=swlon - delta,
                                                             miny=swlat - delta,
                                                             maxx=nelon + delta,
@@ -298,7 +305,7 @@ def add_slopes_elevation(glathida, path_mosaic):
                     maxx=max(eastings)+2000,
                     maxy=max(northings)+2000)
 
-                # Calculate the resolution in meters of the utm focus (resolutions in x and y are the same!)
+                # Get the resolution in meters of the utm focus (resolutions in x and y should be the same!?)
                 res_utm_metres = focus_utm_clipped.rio.resolution()[0]
 
                 # Calculate sigma in meters for adaptive gaussian fiter
@@ -318,31 +325,40 @@ def add_slopes_elevation(glathida, path_mosaic):
 
                 # Calculate how many pixels I need for a resolution of 50, 100, 150, 300 meters
                 num_px_sigma_50 = max(1, round(50/res_utm_metres))
+                num_px_sigma_75 = max(1, round(75/res_utm_metres))
                 num_px_sigma_100 = max(1, round(100/res_utm_metres))
+                num_px_sigma_125 = max(1, round(125 / res_utm_metres))
                 num_px_sigma_150 = max(1, round(150/res_utm_metres))
                 num_px_sigma_300 = max(1, round(300/res_utm_metres))
                 num_px_sigma_450 = max(1, round(450/res_utm_metres))
                 num_px_sigma_af = max(1, round(sigma_af / res_utm_metres))
 
-                # Apply filter
-                focus_filter_50_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_50, trunc=4.0)
-                focus_filter_100_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_100, trunc=4.0)
-                focus_filter_150_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_150, trunc=4.0)
-                focus_filter_300_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_300, trunc=4.0)
-                focus_filter_450_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_450, trunc=4.0)
-                focus_filter_af_utm = gaussian_filter_with_nans(U=focus_utm_clipped.values, sigma=num_px_sigma_af, trunc=3.0)
+                kernel50 = Gaussian2DKernel(num_px_sigma_50, x_size=4 * num_px_sigma_50 + 1, y_size=4 * num_px_sigma_50 + 1)
+                kernel75 = Gaussian2DKernel(num_px_sigma_75, x_size=4 * num_px_sigma_75 + 1, y_size=4 * num_px_sigma_75 + 1)
+                kernel100 = Gaussian2DKernel(num_px_sigma_100, x_size=4 * num_px_sigma_100 + 1, y_size=4 * num_px_sigma_100 + 1)
+                kernel125 = Gaussian2DKernel(num_px_sigma_125, x_size=4 * num_px_sigma_125 + 1, y_size=4 * num_px_sigma_125 + 1)
+                kernel150 = Gaussian2DKernel(num_px_sigma_150, x_size=4 * num_px_sigma_150 + 1, y_size=4 * num_px_sigma_150 + 1)
+                kernel300 = Gaussian2DKernel(num_px_sigma_300, x_size=4 * num_px_sigma_300 + 1, y_size=4 * num_px_sigma_300 + 1)
+                kernel450 = Gaussian2DKernel(num_px_sigma_450, x_size=4 * num_px_sigma_450 + 1, y_size=4 * num_px_sigma_450 + 1)
+                kernelaf = Gaussian2DKernel(num_px_sigma_af, x_size=4 * num_px_sigma_af + 1, y_size=4 * num_px_sigma_af + 1)
 
-                # Mask back the filtered arrays
-                focus_filter_50_utm = np.where(np.isnan(focus_utm_clipped.values), np.nan, focus_filter_50_utm)
-                focus_filter_100_utm = np.where(np.isnan(focus_utm_clipped.values), np.nan, focus_filter_100_utm)
-                focus_filter_150_utm = np.where(np.isnan(focus_utm_clipped.values), np.nan, focus_filter_150_utm)
-                focus_filter_300_utm = np.where(np.isnan(focus_utm_clipped.values), np.nan, focus_filter_300_utm)
-                focus_filter_450_utm = np.where(np.isnan(focus_utm_clipped.values), np.nan, focus_filter_450_utm)
-                focus_filter_af_utm = np.where(np.isnan(focus_utm_clipped.values), np.nan, focus_filter_af_utm)
+                """astropy"""
+                preserve_nans = True
+                focus_filter_50_utm = convolve_fft(focus_utm_clipped.values, kernel50, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                focus_filter_75_utm = convolve_fft(focus_utm_clipped.values, kernel75, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                focus_filter_100_utm = convolve_fft(focus_utm_clipped.values, kernel100, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                focus_filter_125_utm = convolve_fft(focus_utm_clipped.values, kernel125, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                focus_filter_150_utm = convolve_fft(focus_utm_clipped.values, kernel150, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                focus_filter_300_utm = convolve_fft(focus_utm_clipped.values, kernel300, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                focus_filter_450_utm = convolve_fft(focus_utm_clipped.values, kernel450, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                focus_filter_af_utm = convolve_fft(focus_utm_clipped.values, kernelaf, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+
 
                 # create xarray object of filtered dem
                 focus_filter_xarray_50_utm = focus_utm_clipped.copy(data=focus_filter_50_utm)
+                focus_filter_xarray_75_utm = focus_utm_clipped.copy(data=focus_filter_75_utm)
                 focus_filter_xarray_100_utm = focus_utm_clipped.copy(data=focus_filter_100_utm)
+                focus_filter_xarray_125_utm = focus_utm_clipped.copy(data=focus_filter_125_utm)
                 focus_filter_xarray_150_utm = focus_utm_clipped.copy(data=focus_filter_150_utm)
                 focus_filter_xarray_300_utm = focus_utm_clipped.copy(data=focus_filter_300_utm)
                 focus_filter_xarray_450_utm = focus_utm_clipped.copy(data=focus_filter_450_utm)
@@ -352,7 +368,9 @@ def add_slopes_elevation(glathida, path_mosaic):
                 # using numpy.gradient dz_dlat, dz_dlon = np.gradient(focus_utm_clipped.values, -res_utm_metres, res_utm_metres)  # [m/m]
                 dz_dlat_xar, dz_dlon_xar = focus_utm_clipped.differentiate(coord='y'), focus_utm_clipped.differentiate(coord='x')
                 dz_dlat_filter_xar_50, dz_dlon_filter_xar_50 = focus_filter_xarray_50_utm.differentiate(coord='y'), focus_filter_xarray_50_utm.differentiate(coord='x')
+                dz_dlat_filter_xar_75, dz_dlon_filter_xar_75 = focus_filter_xarray_75_utm.differentiate(coord='y'), focus_filter_xarray_75_utm.differentiate(coord='x')
                 dz_dlat_filter_xar_100, dz_dlon_filter_xar_100 = focus_filter_xarray_100_utm.differentiate(coord='y'), focus_filter_xarray_100_utm.differentiate(coord='x')
+                dz_dlat_filter_xar_125, dz_dlon_filter_xar_125 = focus_filter_xarray_125_utm.differentiate(coord='y'), focus_filter_xarray_125_utm.differentiate(coord='x')
                 dz_dlat_filter_xar_150, dz_dlon_filter_xar_150 = focus_filter_xarray_150_utm.differentiate(coord='y'), focus_filter_xarray_150_utm.differentiate(coord='x')
                 dz_dlat_filter_xar_300, dz_dlon_filter_xar_300  = focus_filter_xarray_300_utm.differentiate(coord='y'), focus_filter_xarray_300_utm.differentiate(coord='x')
                 dz_dlat_filter_xar_450, dz_dlon_filter_xar_450  = focus_filter_xarray_450_utm.differentiate(coord='y'), focus_filter_xarray_450_utm.differentiate(coord='x')
@@ -375,8 +393,12 @@ def add_slopes_elevation(glathida, path_mosaic):
                 slope_lon_data = dz_dlon_xar.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 slope_lat_data_filter_50 = dz_dlat_filter_xar_50.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 slope_lon_data_filter_50 = dz_dlon_filter_xar_50.interp(y=northings_xar, x=eastings_xar, method='linear').data
+                slope_lat_data_filter_75 = dz_dlat_filter_xar_75.interp(y=northings_xar, x=eastings_xar, method='linear').data
+                slope_lon_data_filter_75 = dz_dlon_filter_xar_75.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 slope_lat_data_filter_100 = dz_dlat_filter_xar_100.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 slope_lon_data_filter_100 = dz_dlon_filter_xar_100.interp(y=northings_xar, x=eastings_xar, method='linear').data
+                slope_lat_data_filter_125 = dz_dlat_filter_xar_125.interp(y=northings_xar, x=eastings_xar, method='linear').data
+                slope_lon_data_filter_125 = dz_dlon_filter_xar_125.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 slope_lat_data_filter_150 = dz_dlat_filter_xar_150.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 slope_lon_data_filter_150 = dz_dlon_filter_xar_150.interp(y=northings_xar, x=eastings_xar, method='linear').data
                 slope_lat_data_filter_300 = dz_dlat_filter_xar_300.interp(y=northings_xar, x=eastings_xar, method='linear').data
@@ -395,7 +417,9 @@ def add_slopes_elevation(glathida, path_mosaic):
                 # check if any nan in the interpolate data
                 contains_nan = any(np.isnan(arr).any() for arr in [slope_lon_data, slope_lat_data,
                                                                    slope_lon_data_filter_50, slope_lat_data_filter_50,
+                                                                   slope_lon_data_filter_75, slope_lat_data_filter_75,
                                                                    slope_lon_data_filter_100, slope_lat_data_filter_100,
+                                                                   slope_lon_data_filter_125, slope_lat_data_filter_125,
                                                                    slope_lon_data_filter_150, slope_lat_data_filter_150,
                                                                    slope_lon_data_filter_300, slope_lat_data_filter_300,
                                                                    slope_lon_data_filter_450, slope_lat_data_filter_450,
@@ -418,8 +442,12 @@ def add_slopes_elevation(glathida, path_mosaic):
                 glathida.loc[indexes_all_epsg, 'slope_lon'] = slope_lon_data
                 glathida.loc[indexes_all_epsg, 'slope_lat_gf50'] = slope_lat_data_filter_50
                 glathida.loc[indexes_all_epsg, 'slope_lon_gf50'] = slope_lon_data_filter_50
+                glathida.loc[indexes_all_epsg, 'slope_lat_gf75'] = slope_lat_data_filter_75
+                glathida.loc[indexes_all_epsg, 'slope_lon_gf75'] = slope_lon_data_filter_75
                 glathida.loc[indexes_all_epsg, 'slope_lat_gf100'] = slope_lat_data_filter_100
                 glathida.loc[indexes_all_epsg, 'slope_lon_gf100'] = slope_lon_data_filter_100
+                glathida.loc[indexes_all_epsg, 'slope_lat_gf125'] = slope_lat_data_filter_125
+                glathida.loc[indexes_all_epsg, 'slope_lon_gf125'] = slope_lon_data_filter_125
                 glathida.loc[indexes_all_epsg, 'slope_lat_gf150'] = slope_lat_data_filter_150
                 glathida.loc[indexes_all_epsg, 'slope_lon_gf150'] = slope_lon_data_filter_150
                 glathida.loc[indexes_all_epsg, 'slope_lat_gf300'] = slope_lat_data_filter_300
@@ -480,282 +508,1193 @@ def add_slopes_elevation(glathida, path_mosaic):
 
                     plt.show()
 
-
-            """
-            # I want such amount of pixels to have an equivalent sigma of 50, 100, 150, 300m.
-            sigma_50_lon, sigma_50_lat = max(1, round(50./ris_metre_lon)), max(1, round(50./ris_metre_lat))
-            sigma_100_lon, sigma_100_lat = max(1, round(100./ris_metre_lon)), max(1, round(100./ris_metre_lat))
-            sigma_150_lon, sigma_150_lat = max(1, round(150./ris_metre_lon)), max(1, round(150./ris_metre_lat))
-            sigma_300_lon, sigma_300_lat = max(1, round(300./ris_metre_lon)), max(1, round(300./ris_metre_lat))
-
-            # Apply filter to the restricted dem
-            focus_filter_50 = scipy.ndimage.gaussian_filter(focus.values, sigma=[sigma_50_lat, sigma_50_lon], mode='nearest')
-            focus_filter_100 = scipy.ndimage.gaussian_filter(focus.values, sigma=[sigma_100_lat, sigma_100_lon], mode='nearest')
-            focus_filter_150 = scipy.ndimage.gaussian_filter(focus.values, sigma=[sigma_150_lat, sigma_150_lon], mode='nearest')
-            focus_filter_300 = scipy.ndimage.gaussian_filter(focus.values, sigma=[sigma_300_lat, sigma_300_lon], mode='nearest')
-            # create xarray object of filtered dem
-            focus_filter_xarray_50 = focus.copy(data=focus_filter_50)
-            focus_filter_xarray_100 = focus.copy(data=focus_filter_100)
-            focus_filter_xarray_150 = focus.copy(data=focus_filter_150)
-            focus_filter_xarray_300 = focus.copy(data=focus_filter_300)
-
-            # calculate slopes for restricted dem
-            dz_dlat, dz_dlon = np.gradient(focus.values, -ris_metre_lat, ris_metre_lon)  # [m/m]
-            dz_dlat_filter_50, dz_dlon_filter_50 = np.gradient(focus_filter_50, -ris_metre_lat, ris_metre_lon)  # [m/m]
-            dz_dlat_filter_100, dz_dlon_filter_100 = np.gradient(focus_filter_100, -ris_metre_lat, ris_metre_lon)  # [m/m]
-            dz_dlat_filter_150, dz_dlon_filter_150 = np.gradient(focus_filter_150, -ris_metre_lat, ris_metre_lon)  # [m/m]
-            dz_dlat_filter_300, dz_dlon_filter_300 = np.gradient(focus_filter_300, -ris_metre_lat, ris_metre_lon)  # [m/m]
-
-            # create xarray object of slopes
-            dz_dlat_xar, dz_dlon_xar = focus.copy(data=dz_dlat), focus.copy(data=dz_dlon)
-            dz_dlat_filter_xar_50, dz_dlon_filter_xar_50 = focus.copy(data=dz_dlat_filter_50), focus.copy(data=dz_dlon_filter_50)
-            dz_dlat_filter_xar_100, dz_dlon_filter_xar_100 = focus.copy(data=dz_dlat_filter_100), focus.copy(data=dz_dlon_filter_100)
-            dz_dlat_filter_xar_150, dz_dlon_filter_xar_150 = focus.copy(data=dz_dlat_filter_150), focus.copy(data=dz_dlon_filter_150)
-            dz_dlat_filter_xar_300, dz_dlon_filter_xar_300 = focus.copy(data=dz_dlat_filter_300), focus.copy(data=dz_dlon_filter_300)
-
-            # interpolate slope and dem
-            slope_lat_data = dz_dlat_xar.interp(y=lats_xar, x=lons_xar, method='linear').data
-            slope_lon_data = dz_dlon_xar.interp(y=lats_xar, x=lons_xar, method='linear').data
-            elevation_data = focus.interp(y=lats_xar, x=lons_xar, method='linear').data
-            slope_lat_data_filter_50 = dz_dlat_filter_xar_50.interp(y=lats_xar, x=lons_xar, method='linear').data
-            slope_lon_data_filter_50 = dz_dlon_filter_xar_50.interp(y=lats_xar, x=lons_xar, method='linear').data
-            slope_lat_data_filter_100 = dz_dlat_filter_xar_100.interp(y=lats_xar, x=lons_xar, method='linear').data
-            slope_lon_data_filter_100 = dz_dlon_filter_xar_100.interp(y=lats_xar, x=lons_xar, method='linear').data
-            slope_lat_data_filter_150 = dz_dlat_filter_xar_150.interp(y=lats_xar, x=lons_xar, method='linear').data
-            slope_lon_data_filter_150 = dz_dlon_filter_xar_150.interp(y=lats_xar, x=lons_xar, method='linear').data
-            slope_lat_data_filter_300 = dz_dlat_filter_xar_300.interp(y=lats_xar, x=lons_xar, method='linear').data
-            slope_lon_data_filter_300 = dz_dlon_filter_xar_300.interp(y=lats_xar, x=lons_xar, method='linear').data
-
-            if (len(slope_lat_data.shape) != 0):
-                datax.extend(list(slope_lat_data))
-                datay.extend(list(slope_lon_data))
-            else:
-                datax.append(slope_lat_data.item())
-                datay.append(slope_lon_data.item())
-
-            ifplot = False
-            #if (np.any(np.isnan(slope_lat_data)) or np.any(np.isnan(slope_lon_data))): ifplot = True
-            #if (np.any(slope_lat_data>3)): ifplot = True
-            if ifplot:
-                fig, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3, figsize=(8, 5))
-
-                im1 = focus.plot(ax=ax1, cmap='viridis', )
-
-                im2 = dz_dlat_xar.plot(ax=ax2, cmap='viridis', vmin=np.nanmin(slope_lat_data), vmax=np.nanmax(slope_lat_data))
-                s2 = ax2.scatter(x=lons, y=lats, s=15, c=slope_lat_data, ec=(0, 0, 0, 0.1), cmap='viridis',
-                                 vmin=np.nanmin(slope_lat_data), vmax=np.nanmax(slope_lat_data), zorder=1)
-                s2_1 = ax2.scatter(x=lons[np.argwhere(np.isnan(slope_lat_data))],
-                                   y=lats[np.argwhere(np.isnan(slope_lat_data))], s=15, c='magenta', zorder=1)
-                im3 = dz_dlon_xar.plot(ax=ax3, cmap='viridis', vmin=np.nanmin(slope_lon_data), vmax=np.nanmax(slope_lon_data))
-                s3 = ax3.scatter(x=lons, y=lats, s=15, c=slope_lon_data, ec=(0, 0, 0, 0.1), cmap='viridis',
-                                 vmin=np.nanmin(slope_lon_data), vmax=np.nanmax(slope_lon_data), zorder=1)
-                s3_1 = ax3.scatter(x=lons[np.argwhere(np.isnan(slope_lon_data))],
-                                   y=lats[np.argwhere(np.isnan(slope_lon_data))], s=15, c='magenta', zorder=1)
-
-                im4 = focus_filter_xarray_300.plot(ax=ax4, cmap='viridis',)
-                im5 = dz_dlat_filter_xar_300.plot(ax=ax5, cmap='viridis', vmin=np.nanmin(slope_lat_data_filter_300), vmax=np.nanmax(slope_lat_data_filter_300))
-                s5 = ax5.scatter(x=lons, y=lats, s=15, c=slope_lat_data_filter_300, ec=(0, 0, 0, 0.1), cmap='viridis',
-                                 vmin=np.nanmin(slope_lat_data_filter_300), vmax=np.nanmax(slope_lat_data_filter_300), zorder=1)
-                s5_1 = ax5.scatter(x=lons[np.argwhere(np.isnan(slope_lat_data_filter_300))],
-                                   y=lats[np.argwhere(np.isnan(slope_lat_data_filter_300))], s=15, c='magenta', zorder=1)
-                im6 = dz_dlon_filter_xar_300.plot(ax=ax6, cmap='viridis', vmin=np.nanmin(slope_lon_data_filter_300), vmax=np.nanmax(slope_lon_data_filter_300))
-                s6 = ax6.scatter(x=lons, y=lats, s=15, c=slope_lon_data_filter_300, ec=(0, 0, 0, 0.1), cmap='viridis',
-                                 vmin=np.nanmin(slope_lon_data_filter_300), vmax=np.nanmax(slope_lon_data_filter_300), zorder=1)
-                s6_1 = ax6.scatter(x=lons[np.argwhere(np.isnan(slope_lon_data_filter_300))],
-                                   y=lats[np.argwhere(np.isnan(slope_lon_data_filter_300))], s=15, c='magenta', zorder=1)
-
-                plt.tight_layout()
-                plt.show()
-
-            assert slope_lat_data.shape == slope_lon_data.shape == elevation_data.shape, "Different shapes, something wrong!"
-            assert slope_lat_data_filter_150.shape == slope_lon_data_filter_150.shape == elevation_data.shape, "Different shapes, something wrong!"
-
-            # write to dataframe
-            glathida.loc[indexes_all, 'slope_lat'] = slope_lat_data
-            glathida.loc[indexes_all, 'slope_lon'] = slope_lon_data
-            glathida.loc[indexes_all, 'elevation'] = elevation_data
-            glathida.loc[indexes_all, 'slope_lat_gf50'] = slope_lat_data_filter_50
-            glathida.loc[indexes_all, 'slope_lon_gf50'] = slope_lon_data_filter_50
-            glathida.loc[indexes_all, 'slope_lat_gf100'] = slope_lat_data_filter_100
-            glathida.loc[indexes_all, 'slope_lon_gf100'] = slope_lon_data_filter_100
-            glathida.loc[indexes_all, 'slope_lat_gf150'] = slope_lat_data_filter_150
-            glathida.loc[indexes_all, 'slope_lon_gf150'] = slope_lon_data_filter_150
-            glathida.loc[indexes_all, 'slope_lat_gf300'] = slope_lat_data_filter_300
-            glathida.loc[indexes_all, 'slope_lon_gf300'] = slope_lon_data_filter_300
-            """
     print(f"Slopes and elevation done in {(time.time()-ts)/60} min")
+    return glathida
+
+"""Add surface mass balance"""
+def add_smb(glathida, path_RACMO_folder):
+    if ('smb' in list(glathida)):
+        print('Variable smb already in dataframe.')
+        return glathida
+
+    glathida['smb'] = [np.nan] * len(glathida)
+
+    # Greenland and Antarctica smb using racmo
+    for rgi in [5, 19,]:
+
+        glathida_rgi = glathida.loc[glathida['RGI'] == rgi]
+        indexes_rgi = glathida_rgi.index.tolist()
+
+        if len(glathida_rgi) == 0:
+            continue
+
+        # Import our racmo smoothed (and time averaged)
+        if rgi==5:
+            racmo_file = "/greenland_racmo2.3p2/smb_greenland_mean_1961_1990_RACMO23p2_gf.nc"
+        elif rgi==19:
+            racmo_file = "/antarctica_racmo2.3p2/2km/smb_antarctica_mean_1979_2021_RACMO23p2_gf.nc"
+        else: raise ValueError('rgi value for RACMO smb calculation not recognized')
+
+        # Units should be in both regions mm w.e./yr = kg/m2yr
+        racmo = rioxarray.open_rasterio(f'{path_RACMO_folder}{racmo_file}')
+
+        # Get rgi measurement coordinates
+        lats = glathida_rgi['POINT_LAT']
+        lons = glathida_rgi['POINT_LON']
+        eastings, northings = (Transformer.from_crs("EPSG:4326", racmo.rio.crs)
+                                     .transform(glathida_rgi['POINT_LAT'], glathida_rgi['POINT_LON']))
+
+        # Convert coordinates to racmo projection EPSG:3413 (racmo Greenland) or EPSG:3031 (racmo Antarctica)
+        eastings_ar = xarray.DataArray(eastings)
+        northings_ar = xarray.DataArray(northings)
+
+        # Interpolate racmo onto the points
+        smb_data = racmo.interp(y=northings_ar, x=eastings_ar, method='linear').data.squeeze()
+
+        # Push to dataframe
+        glathida.loc[indexes_rgi, 'smb'] = smb_data
+        #print(rgi, np.nanmean(smb_data))
+
+        plot_smb = False
+        if plot_smb:
+            vmin, vmax = -700, 4000#racmo.min(), racmo.max()
+            fig, (ax1, ax2) = plt.subplots(1,2)
+            racmo.plot(ax=ax1, cmap='hsv', vmin=vmin, vmax=vmax)
+            ax1.scatter(x=eastings, y=northings, c='k', s=20)
+            racmo.plot(ax=ax2, cmap='hsv', vmin=vmin, vmax=vmax)
+            ax2.scatter(x=eastings, y=northings, c=smb_data, ec=(0, 0, 0, 0.3), cmap='hsv', vmin=vmin, vmax=vmax, s=20)
+            plt.show()
+
+    # For regions outside Greenland and Antarctica I use another method
+    regions = [1,2,3,4,6,7,8,9,10,11,12,13,14,15,16,17,18]
+    for rgi in regions:
+
+        glathida_rgi = glathida.loc[glathida['RGI'] == rgi]
+        if len(glathida_rgi) == 0:
+            continue
+
+        indexes_rgi = glathida_rgi.index.tolist()
+
+        lats = glathida_rgi['POINT_LAT']
+        lons = glathida_rgi['POINT_LON']
+        elevation_data = glathida_rgi['elevation']
+
+        # MERRA-GRACE smb elevation relation (BAD IDEA)
+        #smb_data = []
+        #for (lat, lon, elev) in zip(lats, lons, elevation_data):
+            #smb = smb_elev_functs(rgi, elev, lat, lon) # kg/m2s
+            #smb *= 31536000 # kg/m2yr
+            #print(rgi, lat, lon, smb)
+            #smb_data.append(smb)
+        #smb_data = np.array(smb_data)
+
+        # Surface mass balance loop with Hugonnet-elevation relation
+        m_hugo = smb_elev_functs_hugo(rgi=rgi).loc[rgi, 'm']
+        q_hugo = smb_elev_functs_hugo(rgi=rgi).loc[rgi, 'q']
+        smb_data_hugo = m_hugo * elevation_data + q_hugo  # m w.e./yr = (1000kg/m2yr)
+        smb_data_hugo *= 1.e3  # mm w.e./yr = kg/m2yr
+        smb_data = np.array(smb_data_hugo)
+
+        glathida.loc[indexes_rgi, 'smb'] = smb_data
+        #print(rgi, m_hugo, q_hugo, np.mean(smb_data))
+
     return glathida
 
 """Add Millan's velocity vx, vy, ith"""
 def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethickness):
-    """
-    :param glathida: input csv. dataframe to which I want to add velocity
-    :param path_millan_velocity: path to folder with millan velocity data
-    :param path_millan_icethickness: path to folder with millan ice thickness data
-    :return: dataframe with velocity added
-    See https://www.sedoo.fr/theia-publication-products/?uuid=55acbdd5-3982-4eac-89b2-46703557938c for info.
-    """
+
     print('Adding Millan velocity and ice thickness method...')
     tm = time.time()
 
-    if (any(ele in list(glathida) for ele in ['vx', 'vy', 'ith_m'])):
+    if (any(ele in list(glathida) for ele in ['ith_m', 'v50', 'v100'])):
         print('Variable already in dataframe.')
-        #return glathida
+        return glathida
 
     glathida['ith_m'] = [np.nan] * len(glathida)
-    glathida['vx'] = [np.nan] * len(glathida)
-    glathida['vy'] = [np.nan] * len(glathida)
-    glathida['vx_gf50'] = [np.nan] * len(glathida)
-    glathida['vx_gf100'] = [np.nan] * len(glathida)
-    glathida['vx_gf150'] = [np.nan] * len(glathida)
-    glathida['vx_gf300'] = [np.nan] * len(glathida)
-    glathida['vx_gf450'] = [np.nan] * len(glathida)
-    glathida['vx_gfa'] = [np.nan] * len(glathida)
-    glathida['vy_gf50'] = [np.nan] * len(glathida)
-    glathida['vy_gf100'] = [np.nan] * len(glathida)
-    glathida['vy_gf150'] = [np.nan] * len(glathida)
-    glathida['vy_gf300'] = [np.nan] * len(glathida)
-    glathida['vy_gf450'] = [np.nan] * len(glathida)
-    glathida['vy_gfa'] = [np.nan] * len(glathida)
-    glathida['dvx_dx'] = [np.nan] * len(glathida)
-    glathida['dvx_dy'] = [np.nan] * len(glathida)
-    glathida['dvy_dx'] = [np.nan] * len(glathida)
-    glathida['dvy_dy'] = [np.nan] * len(glathida)
+    glathida['v50'] = [np.nan] * len(glathida)
+    glathida['v100'] = [np.nan] * len(glathida)
+    glathida['v150'] = [np.nan] * len(glathida)
+    glathida['v300'] = [np.nan] * len(glathida)
+    glathida['v450'] = [np.nan] * len(glathida)
+    glathida['vgfa'] = [np.nan] * len(glathida)
+    #glathida['vx'] = [np.nan] * len(glathida)
+    #glathida['vy'] = [np.nan] * len(glathida)
+    #glathida['vx_gf50'] = [np.nan] * len(glathida)
+    #glathida['vx_gf100'] = [np.nan] * len(glathida)
+    #glathida['vx_gf150'] = [np.nan] * len(glathida)
+    #glathida['vx_gf300'] = [np.nan] * len(glathida)
+    #glathida['vx_gf450'] = [np.nan] * len(glathida)
+    #glathida['vx_gfa'] = [np.nan] * len(glathida)
+    #glathida['vy_gf50'] = [np.nan] * len(glathida)
+    #glathida['vy_gf100'] = [np.nan] * len(glathida)
+    #glathida['vy_gf150'] = [np.nan] * len(glathida)
+    #glathida['vy_gf300'] = [np.nan] * len(glathida)
+    #glathida['vy_gf450'] = [np.nan] * len(glathida)
+    #glathida['vy_gfa'] = [np.nan] * len(glathida)
+    #glathida['dvx_dx'] = [np.nan] * len(glathida)
+    #glathida['dvx_dy'] = [np.nan] * len(glathida)
+    #glathida['dvy_dx'] = [np.nan] * len(glathida)
+    #glathida['dvy_dy'] = [np.nan] * len(glathida)
 
-    for rgi in [5]:#[1,3,4,7,8,11,18]:
+    for rgi in [19,]:
         glathida_rgi = glathida.loc[glathida['RGI'] == rgi]  # glathida to specific rgi
+
+        if len(glathida_rgi) == 0:
+            continue
+
         tqdm.write(f'rgi: {rgi}, Total points: {len(glathida_rgi)}')
 
-        files_vx = sorted(glob(f"{path_millan_velocity}RGI-{rgi}/VX_RGI-{rgi}*"))
-        files_vy = sorted(glob(f"{path_millan_velocity}RGI-{rgi}/VY_RGI-{rgi}*"))
-        files_ith = sorted(glob(f"{path_millan_icethickness}RGI-{rgi}/THICKNESS_RGI-{rgi}*"))
-        n_rgi_tiles = len(files_vx)
+        # get NSIDC
+        file_vel_NSIDC = f"{args.NSIDC_velocity_folder_Antarctica}antarctic_ice_vel_phase_map_v01.nc"
 
-        for i, (file_vx, file_vy, file_ith) in enumerate(zip(files_vx, files_vy, files_ith)):
+        mosaic_vel_NSIDC = rioxarray.open_rasterio(file_vel_NSIDC, masked=False)
+        vx_NSIDC = mosaic_vel_NSIDC.VX
+        vy_NSIDC = mosaic_vel_NSIDC.VY
 
-            tile_vx = rioxarray.open_rasterio(file_vx, masked=False)
-            tile_vy = rioxarray.open_rasterio(file_vy, masked=False)
+        assert vx_NSIDC.rio.bounds() == vy_NSIDC.rio.bounds()
+        assert vx_NSIDC.rio.crs == vy_NSIDC.rio.crs
+
+        ids_rgi = glathida_rgi['GlaThiDa_ID'].unique().tolist()  # unique IDs
+
+        for i, id_rgi in tqdm(enumerate(ids_rgi), total=len(ids_rgi), desc=f"rgi {rgi} Glathida ID", leave=True):
+
+            glathida_id = glathida_rgi.loc[glathida_rgi['GlaThiDa_ID'] == id_rgi]  # collapse glathida_rgi to specific id
+            indexes_id = glathida_id.index.tolist()
+
+            eastings_id, northings_id = (Transformer.from_crs("EPSG:4326", vx_NSIDC.rio.crs)
+                                         .transform(glathida_id['POINT_LAT'], glathida_id['POINT_LON']))
+
+            eastings_rgi_id_ar = xarray.DataArray(eastings_id)
+            northings_rgi_id_ar = xarray.DataArray(northings_id)
+
+            minE, maxE = min(eastings_id), max(eastings_id)
+            minN, maxN = min(northings_id), max(northings_id)
+            #print(i, len(glathida_id), minE, maxE, minN, maxN, vx_NSIDC.rio.bounds())
+
+            ris_metre_nsidc = vx_NSIDC.rio.resolution()[0] #450m
+            eps = 15000
+            try:
+                vx_NSIDC_focus = vx_NSIDC.rio.clip_box(minx=minE - eps, miny=minN - eps, maxx=maxE + eps, maxy=maxN + eps)
+                vy_NSIDC_focus = vy_NSIDC.rio.clip_box(minx=minE - eps, miny=minN - eps, maxx=maxE + eps, maxy=maxN + eps)
+            except:
+                tqdm.write(f'{i} No NSIDC data for rgi {rgi} GlaThiDa_ID {id_rgi}')
+                continue
+
+            # Condition 1. Either v is .rio.nodata or it is zero or it is nan
+            cond0 = np.all(vx_NSIDC_focus.values == 0)
+            condnodata = np.all(np.abs(vx_NSIDC_focus.values - vx_NSIDC_focus.rio.nodata) < 1.e-6)
+            condnan = np.all(np.isnan(vx_NSIDC_focus.values))
+            all_zero_or_nodata = cond0 or condnodata or condnan
+
+            if all_zero_or_nodata:
+                tqdm.write(f'{i} Cond 1 triggered - No NSIDC vel data for rgi {rgi} GlaThiDa_ID {id_rgi}')
+                continue
+
+            # Condition no. 2. A fast and quick interpolation to see if points intercepts a valid raster region
+            vals_fast_interp = vx_NSIDC_focus.interp(y=xarray.DataArray(northings_id),
+                                               x=xarray.DataArray(eastings_id),
+                                               method='nearest').data
+
+            cond_valid_fast_interp = (np.isnan(vals_fast_interp).all() or
+                                      np.all(np.abs(vals_fast_interp - vx_NSIDC_focus.rio.nodata) < 1.e-6))
+
+            if cond_valid_fast_interp:
+                #fig, ax = plt.subplots()
+                #vx_NSIDC_focus.values[vx_NSIDC_focus.values == vx_NSIDC_focus.rio.nodata] = np.nan
+                #im = vx_NSIDC_focus.plot(ax=ax, cmap='binary', zorder=0)
+                #ax.scatter(x=eastings_id, y=northings_id, s=10, c='r', zorder=1)
+                #plt.show()
+                tqdm.write(f'{i} Cond 2 triggered - No NSIDC vel data for rgi {rgi} GlaThiDa_ID {id_rgi} around'
+                           f' {glathida_id['POINT_LAT'].mean():.2f} lat {glathida_id['POINT_LON'].mean():.2f} lon')
+                continue
+
+            # At this stage we should have a good interpolation
+            #vx_NSIDC_focus.values[vx_NSIDC_focus.values == vx_NSIDC_focus.rio.nodata] = np.nan
+            #vy_NSIDC_focus.values[vy_NSIDC_focus.values == vy_NSIDC_focus.rio.nodata] = np.nan
+            vx_NSIDC_focus.values = np.where((vx_NSIDC_focus.values == vx_NSIDC_focus.rio.nodata) | np.isinf(vx_NSIDC_focus.values),
+                                      np.nan, vx_NSIDC_focus.values)
+            vy_NSIDC_focus.values = np.where((vy_NSIDC_focus.values == vy_NSIDC_focus.rio.nodata) | np.isinf(vy_NSIDC_focus.values),
+                                      np.nan, vy_NSIDC_focus.values)
+            vx_NSIDC_focus.rio.write_nodata(np.nan, inplace=True)
+            vy_NSIDC_focus.rio.write_nodata(np.nan, inplace=True)
+
+            assert vx_NSIDC_focus.rio.bounds() == vy_NSIDC_focus.rio.bounds(), "NSIDC vx, vy bounds not the same"
+
+            # Note: for rgi 19 we do not interpolate NSIDC to remove nans.
+            tile_vx = vx_NSIDC_focus.squeeze()
+            tile_vy = vy_NSIDC_focus.squeeze()
+
+            # Calculate sigma in meters for adaptive gaussian fiter
+            sigma_af_min, sigma_af_max = 100.0, 2000.0
+            try:
+                area_id = glathida_rgi.loc[indexes_id, 'Area'].min()
+                lmax_id = glathida_rgi.loc[indexes_id, 'Lmax'].max()
+                # print('area', area_id, 'lmax', lmax_id)
+                # print(lats_rgi_k_id.min(), lats_rgi_k_id.max(), lons_rgi_k_id.min(), lons_rgi_k_id.max(), area_id)
+                # Each id_rgi may come with multiple area values and also nans (probably if all points outside glacier geometries)
+                # area_id = glathida_rgi_tile_id['Area'].min()  # km2
+                # lmax_id = glathida_rgi_tile_id['Lmax'].max()  # m
+                a = 1e6 * area_id / (np.pi * 0.5 * lmax_id)
+                sigma_af = int(min(max(a, sigma_af_min), sigma_af_max))
+                #print(area_id, lmax_id, a)
+            except Exception as e:
+                sigma_af = sigma_af_min
+            assert sigma_af_min <= sigma_af <= sigma_af_max, f"Value {sigma_af} is not within the range [{sigma_af_min}, {sigma_af_max}]"
+
+            # Calculate how many pixels I need for a resolution of xx
+            # Since NDIDC has res of 450 m, num pixels will can be very small.
+            num_px_sigma_50 = max(1, round(50 / ris_metre_nsidc))
+            num_px_sigma_100 = max(1, round(100 / ris_metre_nsidc))
+            num_px_sigma_150 = max(1, round(150 / ris_metre_nsidc))
+            num_px_sigma_300 = max(1, round(300 / ris_metre_nsidc))
+            num_px_sigma_450 = max(1, round(450 / ris_metre_nsidc))
+            num_px_sigma_af = max(1, round(sigma_af / ris_metre_nsidc))
+
+            kernel50 = Gaussian2DKernel(num_px_sigma_50, x_size=4 * num_px_sigma_50 + 1, y_size=4 * num_px_sigma_50 + 1)
+            kernel100 = Gaussian2DKernel(num_px_sigma_100, x_size=4 * num_px_sigma_100 + 1, y_size=4 * num_px_sigma_100 + 1)
+            kernel150 = Gaussian2DKernel(num_px_sigma_150, x_size=4 * num_px_sigma_150 + 1, y_size=4 * num_px_sigma_150 + 1)
+            kernel300 = Gaussian2DKernel(num_px_sigma_300, x_size=4 * num_px_sigma_300 + 1, y_size=4 * num_px_sigma_300 + 1)
+            kernel450 = Gaussian2DKernel(num_px_sigma_450, x_size=4 * num_px_sigma_450 + 1, y_size=4 * num_px_sigma_450 + 1)
+            kernelaf = Gaussian2DKernel(num_px_sigma_af, x_size=4 * num_px_sigma_af + 1, y_size=4 * num_px_sigma_af + 1)
+
+            tile_v = tile_vx.copy(deep=True, data=(tile_vx ** 2 + tile_vy ** 2) ** 0.5)
+
+            # A check to see if velocity modules is as expected
+            assert float(tile_v.sum()) > 0, "tile v is not as expected."
+
+            '''astropy'''
+            preserve_nans = True
+            focus_filter_v50 = convolve_fft(tile_v.values, kernel50, nan_treatment='interpolate',
+                                                    preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+            focus_filter_v100 = convolve_fft(tile_v.values, kernel100, nan_treatment='interpolate',
+                                             preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+            focus_filter_v150 = convolve_fft(tile_v.values, kernel150, nan_treatment='interpolate',
+                                             preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+            focus_filter_v300 = convolve_fft(tile_v.values, kernel300, nan_treatment='interpolate',
+                                             preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+            focus_filter_v450 = convolve_fft(tile_v.values, kernel450, nan_treatment='interpolate',
+                                             preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+            focus_filter_af = convolve_fft(tile_v.values, kernelaf, nan_treatment='interpolate',
+                                           preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+
+            #focus_filter_vx_50 = convolve_fft(tile_vx.values.squeeze(), kernel50, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+            #focus_filter_vx_100 = convolve_fft(tile_vx.values.squeeze(), kernel100, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+            #focus_filter_vx_150 = convolve_fft(tile_vx.values.squeeze(), kernel150, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+            #focus_filter_vx_300 = convolve_fft(tile_vx.values.squeeze(), kernel300, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+            #focus_filter_vx_450 = convolve_fft(tile_vx.values.squeeze(), kernel450, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+            #focus_filter_vx_af = convolve_fft(tile_vx.values.squeeze(), kernelaf, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+
+            #focus_filter_vy_50 = convolve_fft(tile_vy.values.squeeze(), kernel50, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+            #focus_filter_vy_100 = convolve_fft(tile_vy.values.squeeze(), kernel100, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+            #focus_filter_vy_150 = convolve_fft(tile_vy.values.squeeze(), kernel150, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+            #focus_filter_vy_300 = convolve_fft(tile_vy.values.squeeze(), kernel300, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+            #focus_filter_vy_450 = convolve_fft(tile_vy.values.squeeze(), kernel450, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+            #focus_filter_vy_af = convolve_fft(tile_vy.values.squeeze(), kernelaf, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+
+            '''old method with scipy'''
+            '''
+            # Apply filter to velocities
+            focus_filter_vx_50 = gaussian_filter_with_nans(U=tile_vx.values, sigma=num_px_sigma_50, trunc=3.0)
+            focus_filter_vx_100 = gaussian_filter_with_nans(U=tile_vx.values, sigma=num_px_sigma_100, trunc=3.0)
+            focus_filter_vx_150 = gaussian_filter_with_nans(U=tile_vx.values, sigma=num_px_sigma_150, trunc=3.0)
+            focus_filter_vx_300 = gaussian_filter_with_nans(U=tile_vx.values, sigma=num_px_sigma_300, trunc=3.0)
+            focus_filter_vx_450 = gaussian_filter_with_nans(U=tile_vx.values, sigma=num_px_sigma_450, trunc=3.0)
+            focus_filter_vx_af = gaussian_filter_with_nans(U=tile_vx.values, sigma=num_px_sigma_af, trunc=3.0)
+            focus_filter_vy_50 = gaussian_filter_with_nans(U=tile_vy.values, sigma=num_px_sigma_50, trunc=3.0)
+            focus_filter_vy_100 = gaussian_filter_with_nans(U=tile_vy.values, sigma=num_px_sigma_100, trunc=3.0)
+            focus_filter_vy_150 = gaussian_filter_with_nans(U=tile_vy.values, sigma=num_px_sigma_150, trunc=3.0)
+            focus_filter_vy_300 = gaussian_filter_with_nans(U=tile_vy.values, sigma=num_px_sigma_300, trunc=3.0)
+            focus_filter_vy_450 = gaussian_filter_with_nans(U=tile_vy.values, sigma=num_px_sigma_450, trunc=3.0)
+            focus_filter_vy_af = gaussian_filter_with_nans(U=tile_vy.values, sigma=num_px_sigma_af, trunc=3.0)
+
+            # Mask back the filtered arrays
+            focus_filter_vx_50 = np.where(np.isnan(tile_vx.values), np.nan, focus_filter_vx_50)
+            focus_filter_vx_100 = np.where(np.isnan(tile_vx.values), np.nan, focus_filter_vx_100)
+            focus_filter_vx_150 = np.where(np.isnan(tile_vx.values), np.nan, focus_filter_vx_150)
+            focus_filter_vx_300 = np.where(np.isnan(tile_vx.values), np.nan, focus_filter_vx_300)
+            focus_filter_vx_450 = np.where(np.isnan(tile_vx.values), np.nan, focus_filter_vx_450)
+            focus_filter_vx_af = np.where(np.isnan(tile_vx.values), np.nan, focus_filter_vx_af)
+            focus_filter_vy_50 = np.where(np.isnan(tile_vy.values), np.nan, focus_filter_vy_50)
+            focus_filter_vy_100 = np.where(np.isnan(tile_vy.values), np.nan, focus_filter_vy_100)
+            focus_filter_vy_150 = np.where(np.isnan(tile_vy.values), np.nan, focus_filter_vy_150)
+            focus_filter_vy_300 = np.where(np.isnan(tile_vy.values), np.nan, focus_filter_vy_300)
+            focus_filter_vy_450 = np.where(np.isnan(tile_vy.values), np.nan, focus_filter_vy_450)
+            focus_filter_vy_af = np.where(np.isnan(tile_vy.values), np.nan, focus_filter_vy_af)
+            '''
+
+            # create xarrays of filtered velocities
+            focus_filter_v50_ar = tile_v.copy(deep=True, data=focus_filter_v50)
+            focus_filter_v100_ar = tile_v.copy(deep=True, data=focus_filter_v100)
+            focus_filter_v150_ar = tile_v.copy(deep=True, data=focus_filter_v150)
+            focus_filter_v300_ar = tile_v.copy(deep=True, data=focus_filter_v300)
+            focus_filter_v450_ar = tile_v.copy(deep=True, data=focus_filter_v450)
+            focus_filter_vfa_ar = tile_v.copy(deep=True, data=focus_filter_af)
+
+            #focus_filter_vx_50_ar = tile_vx.copy(deep=True, data=focus_filter_vx_50)
+            #focus_filter_vx_100_ar = tile_vx.copy(deep=True, data=focus_filter_vx_100)
+            #focus_filter_vx_150_ar = tile_vx.copy(deep=True, data=focus_filter_vx_150)
+            #focus_filter_vx_300_ar = tile_vx.copy(deep=True, data=focus_filter_vx_300)
+            #focus_filter_vx_450_ar = tile_vx.copy(deep=True, data=focus_filter_vx_450)
+            #focus_filter_vx_af_ar = tile_vx.copy(deep=True, data=focus_filter_vx_af)
+            #focus_filter_vy_50_ar = tile_vy.copy(deep=True, data=focus_filter_vy_50)
+            #focus_filter_vy_100_ar = tile_vy.copy(deep=True, data=focus_filter_vy_100)
+            #focus_filter_vy_150_ar = tile_vy.copy(deep=True, data=focus_filter_vy_150)
+            #focus_filter_vy_300_ar = tile_vy.copy(deep=True, data=focus_filter_vy_300)
+            #focus_filter_vy_450_ar = tile_vy.copy(deep=True, data=focus_filter_vy_450)
+            #focus_filter_vy_af_ar = tile_vy.copy(deep=True, data=focus_filter_vy_af)
+
+            # Calculate the velocity gradients
+            #dvx_dx_ar, dvx_dy_ar = focus_filter_vx_300_ar.differentiate(
+            #    coord='x'), focus_filter_vx_300_ar.differentiate(coord='y')
+            #dvy_dx_ar, dvy_dy_ar = focus_filter_vy_300_ar.differentiate(
+            #    coord='x'), focus_filter_vy_300_ar.differentiate(coord='y')
+
+            # Interpolate (note: nans can be produced near boundaries)
+            v_data = tile_v.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar, method="nearest").data
+            v_filter_50_data = focus_filter_v50_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar, method='nearest').data
+            v_filter_100_data = focus_filter_v100_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar, method='nearest').data
+            v_filter_150_data = focus_filter_v150_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar, method='nearest').data
+            v_filter_300_data = focus_filter_v300_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar, method='nearest').data
+            v_filter_450_data = focus_filter_v450_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar, method='nearest').data
+            v_filter_af_data = focus_filter_vfa_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar, method='nearest').data
+
+            '''
+            vx_data = tile_vx.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar, method="nearest").data
+            vy_data = tile_vy.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar, method="nearest").data
+            vx_filter_50_data = focus_filter_vx_50_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar,
+                                                             method='nearest').data
+            vx_filter_100_data = focus_filter_vx_100_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar,
+                                                               method='nearest').data
+            vx_filter_150_data = focus_filter_vx_150_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar,
+                                                               method='nearest').data
+            vx_filter_300_data = focus_filter_vx_300_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar,
+                                                               method='nearest').data
+            vx_filter_450_data = focus_filter_vx_450_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar,
+                                                               method='nearest').data
+            vx_filter_af_data = focus_filter_vx_af_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar,
+                                                             method='nearest').data
+            vy_filter_50_data = focus_filter_vy_50_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar,
+                                                             method='nearest').data
+            vy_filter_100_data = focus_filter_vy_100_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar,
+                                                               method='nearest').data
+            vy_filter_150_data = focus_filter_vy_150_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar,
+                                                               method='nearest').data
+            vy_filter_300_data = focus_filter_vy_300_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar,
+                                                               method='nearest').data
+            vy_filter_450_data = focus_filter_vy_450_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar,
+                                                               method='nearest').data
+            vy_filter_af_data = focus_filter_vy_af_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar,
+                                                             method='nearest').data
+
+            dvx_dx_data = dvx_dx_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar, method='nearest').data
+            dvx_dy_data = dvx_dy_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar, method='nearest').data
+            dvy_dx_data = dvy_dx_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar, method='nearest').data
+            dvy_dy_data = dvy_dy_ar.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar, method='nearest').data
+            '''
+
+            # some checks
+            assert v_data.shape == v_filter_50_data.shape, "NSIDC interp something wrong!"
+            assert v_data.shape == v_filter_100_data.shape, "NSIDC interp something wrong!"
+            assert v_data.shape == v_filter_150_data.shape, "NSIDC interp something wrong!"
+            assert v_data.shape == v_filter_300_data.shape, "NSIDC interp something wrong!"
+            assert v_data.shape == v_filter_450_data.shape, "NSIDC interp something wrong!"
+            assert v_data.shape == v_filter_af_data.shape, "NSIDC interp something wrong!"
+
+
+            # Fill dataframe with NSIDC velocities
+            # Note this vectors may contain nans from interpolation close to margin/nunatak
+            glathida.loc[indexes_id, 'v50'] = v_filter_50_data
+            glathida.loc[indexes_id, 'v100'] = v_filter_100_data
+            glathida.loc[indexes_id, 'v150'] = v_filter_150_data
+            glathida.loc[indexes_id, 'v300'] = v_filter_300_data
+            glathida.loc[indexes_id, 'v450'] = v_filter_450_data
+            glathida.loc[indexes_id, 'vgfa'] = v_filter_af_data
+            #glathida.loc[indexes_id, 'vx'] = vx_data
+            #glathida.loc[indexes_id, 'vy'] = vy_data
+            #glathida.loc[indexes_id, 'vx_gf50'] = vx_filter_50_data
+            #glathida.loc[indexes_id, 'vx_gf100'] = vx_filter_100_data
+            #glathida.loc[indexes_id, 'vx_gf150'] = vx_filter_150_data
+            #glathida.loc[indexes_id, 'vx_gf300'] = vx_filter_300_data
+            #glathida.loc[indexes_id, 'vx_gf450'] = vx_filter_450_data
+            #glathida.loc[indexes_id, 'vx_gfa'] = vx_filter_af_data
+            #glathida.loc[indexes_id, 'vy_gf50'] = vy_filter_50_data
+            #glathida.loc[indexes_id, 'vy_gf100'] = vy_filter_100_data
+            #glathida.loc[indexes_id, 'vy_gf150'] = vy_filter_150_data
+            #glathida.loc[indexes_id, 'vy_gf300'] = vy_filter_300_data
+            #glathida.loc[indexes_id, 'vy_gf450'] = vy_filter_450_data
+            #glathida.loc[indexes_id, 'vy_gfa'] = vy_filter_af_data
+            #glathida.loc[indexes_id, 'dvx_dx'] = dvx_dx_data
+            #glathida.loc[indexes_id, 'dvx_dy'] = dvx_dy_data
+            #glathida.loc[indexes_id, 'dvy_dx'] = dvy_dx_data
+            #glathida.loc[indexes_id, 'dvy_dy'] = dvy_dy_data
+
+        "Now we can interpolate BedMachine to fill ith_m for rgi 19"
+        tqdm.write(f"Begin ice thickness for rgi {rgi}")
+
+        # get NSIDC
+        file_ith_NSIDC = f"{args.NSIDC_icethickness_folder_Antarctica}BedMachineAntarctica-v3.nc"
+
+        mosaic_ith_NSIDC = rioxarray.open_rasterio(file_ith_NSIDC, masked=False)
+
+        # Nb: ith_NSIDC nodata is 9.96921e+36. Also it contains zeros. All will to be converted to nans
+        ith_NSIDC = mosaic_ith_NSIDC.thickness
+
+        for i, id_rgi in tqdm(enumerate(ids_rgi), total=len(ids_rgi), desc=f"rgi {rgi} Glathida ID", leave=True):
+
+
+            glathida_id = glathida_rgi.loc[glathida_rgi['GlaThiDa_ID'] == id_rgi]
+            indexes_id = glathida_id.index.tolist()
+
+            eastings_id, northings_id = (Transformer.from_crs("EPSG:4326", vx_NSIDC.rio.crs)
+                                         .transform(glathida_id['POINT_LAT'], glathida_id['POINT_LON']))
+
+            eastings_rgi_id_ar = xarray.DataArray(eastings_id)
+            northings_rgi_id_ar = xarray.DataArray(northings_id)
+
+            minE, maxE = min(eastings_id), max(eastings_id)
+            minN, maxN = min(northings_id), max(northings_id)
+
+            ris_metre_nsidc = ith_NSIDC.rio.resolution()[0]  # 500m
+            eps = 15000
+
+            try:
+                ith_NSIDC_focus = ith_NSIDC.rio.clip_box(minx=minE - eps, miny=minN - eps, maxx=maxE + eps,
+                                                       maxy=maxN + eps)
+            except:
+                tqdm.write(f'{i} No ith NSIDC data for rgi {rgi} GlaThiDa_ID {id_rgi}')
+                continue
+
+            # Condition 1. Either v is .rio.nodata or it is zero or it is nan
+            cond0 = np.all(ith_NSIDC_focus.values == 0)
+            condnodata = np.all(np.abs(ith_NSIDC_focus.values - ith_NSIDC_focus.rio.nodata) < 1.e-6)
+            condnan = np.all(np.isnan(ith_NSIDC_focus.values))
+            all_zero_or_nodata = cond0 or condnodata or condnan
+
+            if all_zero_or_nodata:
+                tqdm.write(f'{i} Cond 1 triggered - No NSIDC ith data for rgi {rgi} GlaThiDa_ID {id_rgi}')
+                continue
+
+            # Condition no. 2. A fast and quick interpolation to see if points intercepts a valid raster region
+            vals_fast_interp = ith_NSIDC_focus.interp(y=xarray.DataArray(northings_id),
+                                                     x=xarray.DataArray(eastings_id),
+                                                     method='nearest').data
+
+            cond_valid_fast_interp = (np.all(vals_fast_interp == 0) or np.isnan(vals_fast_interp).all() or
+                                      np.all(np.abs(vals_fast_interp - ith_NSIDC_focus.rio.nodata) < 1.e-6))
+
+            if cond_valid_fast_interp:
+                tqdm.write(f'{i} Cond 2 triggered - No NSIDC ith data for rgi {rgi} GlaThiDa_ID {id_rgi}')
+                continue
+
+
+            #fig, ax = plt.subplots()
+            #ith_NSIDC_focus.values[ith_NSIDC_focus.values == ith_NSIDC_focus.rio.nodata] = np.nan
+            #ith_NSIDC_focus.values[ith_NSIDC_focus.values == 0.0] = np.nan
+            #im = ith_NSIDC_focus.plot(ax=ax, cmap='viridis', zorder=0)
+            #ax.scatter(x=eastings_id, y=northings_id, s=10, c='r', zorder=1)
+            #plt.show()
+
+            # At this stage we should have a good interpolation
+            #ith_NSIDC_focus.values[ith_NSIDC_focus.values == ith_NSIDC_focus.rio.nodata] = np.nan
+            ith_NSIDC_focus.values = np.where(
+                (ith_NSIDC_focus.values == ith_NSIDC_focus.rio.nodata) | np.isinf(ith_NSIDC_focus.values),
+                np.nan, ith_NSIDC_focus.values)
+            ith_NSIDC_focus.values[ith_NSIDC_focus.values == 0.0] = np.nan
+            ith_NSIDC_focus.rio.write_nodata(np.nan, inplace=True)
+
+            # Note: for rgi 19 we do not interpolate NSIDC to remove nans.
+            tile_ith = ith_NSIDC_focus.squeeze()
+
+            # Interpolate (note: nans can be produced).
+            ith_data = tile_ith.interp(y=northings_rgi_id_ar, x=eastings_rgi_id_ar, method="nearest").data
+
+            #fig, ax = plt.subplots()
+            #im = ith_NSIDC_focus.plot(ax=ax, cmap='viridis', zorder=0)
+            #ax.scatter(x=eastings_id, y=northings_id, s=20, c=ith_data, ec='r', vmin=ith_NSIDC_focus.min(), vmax=ith_NSIDC_focus.max(), zorder=1)
+            #plt.show()
+
+            # Fill dataframe with NSIDC ith
+            # Note this vectors may contain nans from interpolation close to margin/nunatak
+            glathida.loc[indexes_id, 'ith_m'] = ith_data
+
+        # How many nans we have produced from the interpolation
+        glathida_rgi_ = glathida.loc[glathida['RGI'] == rgi]
+        tqdm.write(
+            f"\t From rgi {rgi} the no. nans in vx/vy/ith/vx300/vy300/etc: {np.sum(np.isnan(glathida_rgi_['ith_m']))}/{np.sum(np.isnan(glathida_rgi_['v50']))}"
+            f"/{np.sum(np.isnan(glathida_rgi_['v100']))}/{np.sum(np.isnan(glathida_rgi_['v150']))}/{np.sum(np.isnan(glathida_rgi_['v300']))}/"
+            f"{np.sum(np.isnan(glathida_rgi_['v450']))}/{np.sum(np.isnan(glathida_rgi_['vgfa']))}")
+
+
+    for rgi in [5,]:
+
+        glathida_rgi = glathida.loc[glathida['RGI'] == rgi]
+
+        if len(glathida_rgi) == 0:
+            continue
+
+        tqdm.write(f'rgi: {rgi}, Total points: {len(glathida_rgi)}')
+
+        # get Millan files
+        file_vx = f"{args.millan_velocity_folder}RGI-{rgi}/greenland_vel_mosaic250_vx_v1.tif"
+        file_vy = f"{args.millan_velocity_folder}RGI-{rgi}/greenland_vel_mosaic250_vy_v1.tif"
+        files_ith = sorted(glob(f"{args.millan_icethickness_folder}RGI-{rgi}/THICKNESS_RGI-5*"))
+
+        # I need a dataframe for Millan with same indexes and lats lons
+        df_pointsM = glathida_rgi[['POINT_LAT', 'POINT_LON']].copy()
+        df_pointsM = df_pointsM.assign(**{col: pd.Series() for col in files_ith})
+
+        # Fill the dataframe for occupancy
+        tocc0 = time.time()
+        for i, file_ith in enumerate(files_ith):
+            #print(i, file_ith)
             tile_ith = rioxarray.open_rasterio(file_ith, masked=False)
 
-            """Rasterio detects the raster as in EPSG:32629. Millan says another thing (3414). Who should I believe ?
-            How does rasterio detects the EPSG, can he be wrong ? Is the file wrong ? Is the file correct but the EPSG is wrong ?
-            I should try reproject in 4326 and see how it looks. 
-            ith files are: EPSG:3413 Sea Ice Polar Stereographic North
-            Ok Millan mentions velocity should be this one, which does not fully cover the entire greenland
-            https://nsidc.org/data/nsidc-0646/versions/3
-            However, there is also this one from insar (should be better?) https://nsidc.org/data/nsidc-0478/versions/2
-            https://nsidc.org/data/nsidc-0481/versions/4
-            The spatial coverage however is still a mistery
-            https://nsidc.org/data/nsidc-0670/versions/1#anchor-1
-            https://nsidc.org/data/nsidc-0725/versions/5"""
-            if not file_ith=="/home/nico/PycharmProjects/skynet/Extra_Data/Millan/thickness/RGI-5/THICKNESS_RGI-5.2_2022February24.tif":
-                continue
-            print(file_vx, tile_vx.rio.crs)
-            print(file_vy, tile_vy.rio.crs)
-            print(file_ith, tile_ith.rio.crs)
-            print(tile_vx)
-            tile_ith.rio.reproject("EPSG:4326").plot(cmap='viridis')
-            plt.show()
-            exit('wait')
+            eastings, northings = Transformer.from_crs("EPSG:4326", tile_ith.rio.crs).transform(df_pointsM['POINT_LAT'],
+                                                                                               df_pointsM['POINT_LON'])
 
-            tile_vx.rio.write_nodata(np.nan, inplace=True)
-            tile_vy.rio.write_nodata(np.nan, inplace=True)
-            tile_ith.rio.write_nodata(np.nan, inplace=True)
+            df_pointsM['eastings'] = eastings
+            df_pointsM['northings'] = northings
 
-            assert tile_vx.rio.crs == tile_vy.rio.crs == tile_ith.rio.crs, "Tiles vx, vy, ith with different epsg."
-            assert tile_vx.rio.bounds() == tile_vy.rio.bounds(), "Tiles vx, vy bounds not the same. Super strange."
-            assert tile_vx.rio.resolution() == tile_vy.rio.resolution() == tile_ith.rio.resolution(), \
-                "Tiles vx, vy, ith have different resolution."
+            # Get the points inside the tile
+            left, bottom, right, top = tile_ith.rio.bounds()
 
-            # vx (and vy) and ith may have a bound difference for some reason (ask Millan).
-            # In such cases we reindex the ith tile to match the vx tile coordinates
-            if not tile_vx.rio.bounds() == tile_ith.rio.bounds():
+            within_bounds_mask = (
+                    (df_pointsM['eastings'] >= left) &
+                    (df_pointsM['eastings'] <= right) &
+                    (df_pointsM['northings'] >= bottom) &
+                    (df_pointsM['northings'] <= top))
+
+            df_pointsM.loc[within_bounds_mask, file_ith] = 1
+
+        df_pointsM.drop(columns=['eastings', 'northings'], inplace=True)
+        ncols = df_pointsM.shape[1]
+        print(f"Created dataframe of occupancies for all points in {time.time() - tocc0} s.")
+
+        # Grouping by ith occupancy. Each group will have an occupancy value
+        df_pointsM['ntiles_ith'] = df_pointsM.iloc[:, 2:].sum(axis=1)
+        print(df_pointsM['ntiles_ith'].value_counts())
+        groups_rgi5 = df_pointsM.groupby('ntiles_ith')  # Groups.
+        df_pointsM.drop(columns=['ntiles_ith'], inplace=True)  # Remove this column that we used to create groups
+        print(f"Num groups in Millan: {groups_rgi5.ngroups}")
+
+
+        # Loop over k groups
+        for k, (g_value, df_rgi_k) in enumerate(groups_rgi5):
+            print(f"Group {k + 1}/{groups_rgi5.ngroups} with {len(df_rgi_k)} measurements")
+
+            indexes_rgi_k = df_rgi_k.index
+
+            # Insert this column at the beginning since we need it (at the beginning)
+            # As a result df_rgi_k columns will be: |GlaThiDa_ID|POINT_LAT|POINT_LON|<ithtiles>|,
+            # there are 3 columns at the beginning and then the tiles
+            df_rgi_k.insert(0, 'GlaThiDa_ID', glathida_rgi.loc[indexes_rgi_k, 'GlaThiDa_ID'])
+
+            # Get unique IDs of ids_rgi_k
+            ids_rgi_k = df_rgi_k['GlaThiDa_ID'].unique().tolist()
+
+            # loop over the unique IDs of group k
+            for id_rgi_k in tqdm(ids_rgi_k, total=len(ids_rgi_k), desc=f"rgi {rgi} group {k+1}/{groups_rgi5.ngroups} Glathida ID",
+                               leave=True):
+
+                # FORCE AN ID FOR DEBUGGING
+                # id_rgi_k = 2752
+
+                # Get dataframe for group k and id
+                df_rgi_k_id = df_rgi_k.loc[df_rgi_k['GlaThiDa_ID'] == id_rgi_k]
+                indexes_rgi_k_id = df_rgi_k_id.index.tolist()
+
+                # Get the unique valid tiles for each id
+                unique_ith_tiles_k_id = df_rgi_k_id.iloc[:, 3:].columns[df_rgi_k_id.iloc[:, 3:].sum() != 0].tolist()
+
+                lats_rgi_k_id = np.array(df_rgi_k_id['POINT_LAT'])
+                lons_rgi_k_id = np.array(df_rgi_k_id['POINT_LON'])
+
+                valid_ith_tile_rgi_k_id = None
+
+                # Loop over tiles for group k and id
+                for t, file_ith in enumerate(unique_ith_tiles_k_id):
+                    #print(f"Tile {t}, {file_ith}")
+                    tile_ith = rioxarray.open_rasterio(file_ith, masked=False)
+
+                    if tile_ith.rio.nodata is None: tile_ith.rio.write_nodata(np.nan, inplace=True)
+
+                    eastings_rgi_k_id, northings_rgi_k_id = (Transformer.from_crs("EPSG:4326",tile_ith.rio.crs)
+                                                            .transform(lats_rgi_k_id, lons_rgi_k_id))
+                    minE, maxE = min(eastings_rgi_k_id), max(eastings_rgi_k_id)
+                    minN, maxN = min(northings_rgi_k_id), max(northings_rgi_k_id)
+                    # print(f"Boundaries measurements: {minE, minN, maxE, maxN}")
+                    # print(f"tile {t} bounds {tile_ith.rio.bounds()}")
+
+                    #fig, ax = plt.subplots()
+                    #tile_ith.plot(ax=ax, cmap='viridis')
+                    #ax.scatter(x=eastings_rgi_k_id, y=northings_rgi_k_id, c='k')
+                    #plt.show()
+
+                    epsM = 500
+                    try:
+                        tile_ith = tile_ith.rio.clip_box(minx=minE - epsM, miny=minN - epsM, maxx=maxE + epsM, maxy=maxN + epsM)
+
+                        # Condition 1. Either ith is .rio.nodata or it is zero or it is nan
+                        cond0 = np.all(tile_ith.values == 0)
+                        condnodata = np.all(np.abs(tile_ith.values - tile_ith.rio.nodata) < 1.e-6)
+                        condnan = np.all(np.isnan(tile_ith.values))
+                        #print(cond0, condnodata, condnan)
+                        #print(np.all(np.abs(tile_ith.values - tile_ith.rio.nodata) < 1.e-6))
+                        #print(tile_ith.rio.nodata)
+                        #all_zero_or_nodata = np.all(
+                        #    np.logical_or(tile_ith.values == 0, tile_ith.values == tile_ith.rio.nodata))
+                        all_zero_or_nodata = cond0 or condnodata or condnan
+
+                        #print(f"Tile {t} condition {all_zero_or_nodata} {np.sum(tile_ith.values)} {tile_ith.rio.nodata}")
+                        #input('wait')
+                        #fig, ax = plt.subplots()
+                        #tile_ith.plot(ax=ax, cmap='viridis')
+                        #plt.show()
+
+                        if all_zero_or_nodata:
+                            # The tile t is not valid. Go to next tile
+                            print('The tile t is not valid. Go to next tile')
+                            continue
+
+                        # Condition no. 2. A fast and quick interpolation to see if points intercepts a valid raster region
+                        vals_fast_interp = tile_ith.interp(y=xarray.DataArray(northings_rgi_k_id),
+                                                           x=xarray.DataArray(eastings_rgi_k_id),
+                                                           method='nearest').data
+
+                        cond_valid_fast_interp = (np.isnan(vals_fast_interp).all() or
+                            np.all(np.abs(vals_fast_interp - tile_ith.rio.nodata) < 1.e-6))
+
+                        if cond_valid_fast_interp:
+                            continue
+
+                        valid_ith_tile_rgi_k_id = tile_ith
+
+                    except:
+                        # The tile t could not include id_rgi_k data, go to next tile
+                        tqdm.write(f'No millan data for rgi {rgi} group {k} GlaThiDa_ID {id_rgi_k} tile {t}')
+                        continue
+
+                if valid_ith_tile_rgi_k_id is None:
+                    tqdm.write(f"Impossible to get valid tile for group {k} ID {id_rgi_k}, no. meas {len(df_rgi_k_id)}.", end = '\r')
+
+                else:
+                    # We should have found the valid tile if we have reached this point
+
+                    tile_ith = valid_ith_tile_rgi_k_id
+
+                    # Mask nodata and inf values with np.nan
+                    tile_ith.values = np.where((tile_ith.values == tile_ith.rio.nodata) | np.isinf(tile_ith.values),
+                                               np.nan, tile_ith.values)
+
+                    tile_ith.rio.write_nodata(np.nan, inplace=True)
+
+                    # Note: for rgi 5 we do not interpolate to remove nans.
+                    tile_ith = tile_ith.squeeze()
+
+                    eastings_rgi_k_id_ar = xarray.DataArray(eastings_rgi_k_id)
+                    northings_rgi_k_id_ar = xarray.DataArray(northings_rgi_k_id)
+
+                    # Interpolate (note: nans can be produced near boundaries).
+                    ith_data = tile_ith.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar, method="nearest").data
+
+                    #fig, ax = plt.subplots()
+                    #tile_ith.plot(ax=ax, cmap='viridis', vmin=tile_ith.min(), vmax=tile_ith.max())
+                    #ax.scatter(x=eastings_rgi_k_id_ar, y=northings_rgi_k_id_ar, s=20, ec='k', c=ith_data, vmin=tile_ith.min(), vmax=tile_ith.max())
+                    #plt.show()
+
+                    # Fill dataframe with ith_m
+                    glathida.loc[indexes_rgi_k_id, 'ith_m'] = ith_data
+
+
+                '''At this point I am ready to interpolate the NSIDC velocity'''
+                tile_vx = rioxarray.open_rasterio(file_vx, masked=False)
+                tile_vy = rioxarray.open_rasterio(file_vy, masked=False)
+                assert tile_vx.rio.bounds() == tile_vy.rio.bounds(), 'Different bounds found.'
+                assert tile_vx.rio.crs == tile_vy.rio.crs, 'Different crs found.'
+
+                for tile in [tile_vx, tile_vy]:
+                    if tile.rio.nodata is None:
+                        tile.rio.write_nodata(np.nan, inplace=True)
+
+                eastings_rgi_k_id, northings_rgi_k_id = (Transformer.from_crs("EPSG:4326", tile_ith.rio.crs)
+                                                         .transform(lats_rgi_k_id, lons_rgi_k_id))
+
+                eastings_rgi_k_id_ar = xarray.DataArray(eastings_rgi_k_id)
+                northings_rgi_k_id_ar = xarray.DataArray(northings_rgi_k_id)
+
+                minE, maxE = min(eastings_rgi_k_id), max(eastings_rgi_k_id)
+                minN, maxN = min(northings_rgi_k_id), max(northings_rgi_k_id)
+
+                epsNSIDC = 500
+                tile_vx = tile_vx.rio.clip_box(minx=minE - epsNSIDC, miny=minN - epsNSIDC, maxx=maxE + epsNSIDC, maxy=maxN + epsNSIDC)
+                tile_vy = tile_vy.rio.clip_box(minx=minE - epsNSIDC, miny=minN - epsNSIDC, maxx=maxE + epsNSIDC, maxy=maxN + epsNSIDC)
+
+                # Condition for NSIDC v
+                tile_vx_is_all_nodata = np.all(tile_vx.values == tile_vx.rio.nodata)
+
+                # If we have some NSIDC data
+                if not tile_vx_is_all_nodata:
+                    tile_vx.values = np.where((tile_vx.values == tile_vx.rio.nodata) | np.isinf(tile_vx.values),
+                                               np.nan, tile_vx.values)
+                    tile_vy.values = np.where((tile_vy.values == tile_vy.rio.nodata) | np.isinf(tile_vy.values),
+                                               np.nan, tile_vy.values)
+                    #tile_vx.values[tile_vx.values == tile_vx.rio.nodata] = np.nan
+                    #tile_vy.values[tile_vy.values == tile_vy.rio.nodata] = np.nan
+                    tile_vx.rio.write_nodata(np.nan, inplace=True)
+                    tile_vy.rio.write_nodata(np.nan, inplace=True)
+
+                    assert tile_vx.rio.crs == tile_vy.rio.crs == tile_ith.rio.crs, "NSIDC tiles vx, vy with different epsg."
+                    assert tile_vx.rio.resolution() == tile_vy.rio.resolution(), "NSIDC vx, vy have different resolution."
+                    assert tile_vx.rio.bounds() == tile_vy.rio.bounds(), "NSIDC vx, vy bounds not the same"
+
+                    # Note: for rgi 5 we do not interpolate NSIDC to remove nans.
+                    tile_vx = tile_vx.squeeze()
+                    tile_vy = tile_vy.squeeze()
+
+                    ris_metre_nsidc = tile_vx.rio.resolution()[0]  # 250m
+
+                    # Calculate sigma in meters for adaptive gaussian fiter
+                    sigma_af_min, sigma_af_max = 100.0, 2000.0
+                    try:
+                        area_id = glathida_rgi.loc[indexes_rgi_k_id, 'Area'].min()
+                        lmax_id = glathida_rgi.loc[indexes_rgi_k_id, 'Lmax'].max()
+                        #print('area', area_id, 'lmax', lmax_id)
+                        # print(lats_rgi_k_id.min(), lats_rgi_k_id.max(), lons_rgi_k_id.min(), lons_rgi_k_id.max(), area_id)
+                        # Each id_rgi may come with multiple area values and also nans (probably if all points outside glacier geometries)
+                        # area_id = glathida_rgi_tile_id['Area'].min()  # km2
+                        # lmax_id = glathida_rgi_tile_id['Lmax'].max()  # m
+                        a = 1e6 * area_id / (np.pi * 0.5 * lmax_id)
+                        sigma_af = int(min(max(a, sigma_af_min), sigma_af_max))
+                        # print(area_id, lmax_id, a, value)
+                    except Exception as e:
+                        sigma_af = sigma_af_min
+                    # Ensure that our value correctly in range [50.0, 2000.0]
+                    assert sigma_af_min <= sigma_af <= sigma_af_max, f"Value {sigma_af} is not within the range [{sigma_af_min}, {sigma_af_max}]"
+                    # print(f"Adaptive gaussian filter with sigma = {value} meters.")
+
+                    # Calculate how many pixels I need for a resolution of xx
+                    # Since NDIDC has res of 250 m, num pixels will can be very small.
+                    num_px_sigma_50 = max(1, round(50 / ris_metre_nsidc))
+                    num_px_sigma_100 = max(1, round(100 / ris_metre_nsidc))
+                    num_px_sigma_150 = max(1, round(150 / ris_metre_nsidc))
+                    num_px_sigma_300 = max(1, round(300 / ris_metre_nsidc))
+                    num_px_sigma_450 = max(1, round(450 / ris_metre_nsidc))
+                    num_px_sigma_af = max(1, round(sigma_af / ris_metre_nsidc))
+
+                    kernel50 = Gaussian2DKernel(num_px_sigma_50, x_size=4 * num_px_sigma_50 + 1, y_size=4 * num_px_sigma_50 + 1)
+                    kernel100 = Gaussian2DKernel(num_px_sigma_100, x_size=4 * num_px_sigma_100 + 1, y_size=4 * num_px_sigma_100 + 1)
+                    kernel150 = Gaussian2DKernel(num_px_sigma_150, x_size=4 * num_px_sigma_150 + 1, y_size=4 * num_px_sigma_150 + 1)
+                    kernel300 = Gaussian2DKernel(num_px_sigma_300, x_size=4 * num_px_sigma_300 + 1, y_size=4 * num_px_sigma_300 + 1)
+                    kernel450 = Gaussian2DKernel(num_px_sigma_450, x_size=4 * num_px_sigma_450 + 1, y_size=4 * num_px_sigma_450 + 1)
+                    kernelaf = Gaussian2DKernel(num_px_sigma_af, x_size=4 * num_px_sigma_af + 1, y_size=4 * num_px_sigma_af + 1)
+
+                    tile_v = tile_vx.copy(deep=True, data=(tile_vx ** 2 + tile_vy ** 2) ** 0.5)
+
+                    # A check to see if velocity modules is as expected
+                    assert float(tile_v.sum()) > 0, "tile v is not as expected."
+
+                    '''astropy'''
+                    preserve_nans = True
+                    focus_filter_v50 = convolve_fft(tile_v.values, kernel50, nan_treatment='interpolate',
+                                                    preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                    focus_filter_v100 = convolve_fft(tile_v.values, kernel100, nan_treatment='interpolate',
+                                                     preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                    focus_filter_v150 = convolve_fft(tile_v.values, kernel150, nan_treatment='interpolate',
+                                                     preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                    focus_filter_v300 = convolve_fft(tile_v.values, kernel300, nan_treatment='interpolate',
+                                                     preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                    focus_filter_v450 = convolve_fft(tile_v.values, kernel450, nan_treatment='interpolate',
+                                                     preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                    focus_filter_af = convolve_fft(tile_v.values, kernelaf, nan_treatment='interpolate',
+                                                   preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+
+                    #focus_filter_vx_50 = convolve_fft(tile_vx.values.squeeze(), kernel50, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                    #focus_filter_vx_100 = convolve_fft(tile_vx.values.squeeze(), kernel100, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                    #focus_filter_vx_150 = convolve_fft(tile_vx.values.squeeze(), kernel150, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                    #focus_filter_vx_300 = convolve_fft(tile_vx.values.squeeze(), kernel300, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                    #focus_filter_vx_450 = convolve_fft(tile_vx.values.squeeze(), kernel450, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                    #focus_filter_vx_af = convolve_fft(tile_vx.values.squeeze(), kernelaf, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+
+                    #focus_filter_vy_50 = convolve_fft(tile_vy.values.squeeze(), kernel50, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                    #focus_filter_vy_100 = convolve_fft(tile_vy.values.squeeze(), kernel100, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                    #focus_filter_vy_150 = convolve_fft(tile_vy.values.squeeze(), kernel150, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                    #focus_filter_vy_300 = convolve_fft(tile_vy.values.squeeze(), kernel300, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                    #focus_filter_vy_450 = convolve_fft(tile_vy.values.squeeze(), kernel450, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                    #focus_filter_vy_af = convolve_fft(tile_vy.values.squeeze(), kernelaf, nan_treatment='interpolate', preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+
+                    '''old method with scipy'''
+                    '''
+                    # Apply filter to velocities
+                    focus_filter_vx_50 = gaussian_filter_with_nans(U=tile_vx.values, sigma=num_px_sigma_50, trunc=3.0)
+                    focus_filter_vx_100 = gaussian_filter_with_nans(U=tile_vx.values, sigma=num_px_sigma_100, trunc=3.0)
+                    focus_filter_vx_150 = gaussian_filter_with_nans(U=tile_vx.values, sigma=num_px_sigma_150, trunc=3.0)
+                    focus_filter_vx_300 = gaussian_filter_with_nans(U=tile_vx.values, sigma=num_px_sigma_300, trunc=3.0)
+                    focus_filter_vx_450 = gaussian_filter_with_nans(U=tile_vx.values, sigma=num_px_sigma_450, trunc=3.0)
+                    focus_filter_vx_af = gaussian_filter_with_nans(U=tile_vx.values, sigma=num_px_sigma_af, trunc=3.0)
+                    focus_filter_vy_50 = gaussian_filter_with_nans(U=tile_vy.values, sigma=num_px_sigma_50, trunc=3.0)
+                    focus_filter_vy_100 = gaussian_filter_with_nans(U=tile_vy.values, sigma=num_px_sigma_100, trunc=3.0)
+                    focus_filter_vy_150 = gaussian_filter_with_nans(U=tile_vy.values, sigma=num_px_sigma_150, trunc=3.0)
+                    focus_filter_vy_300 = gaussian_filter_with_nans(U=tile_vy.values, sigma=num_px_sigma_300, trunc=3.0)
+                    focus_filter_vy_450 = gaussian_filter_with_nans(U=tile_vy.values, sigma=num_px_sigma_450, trunc=3.0)
+                    focus_filter_vy_af = gaussian_filter_with_nans(U=tile_vy.values, sigma=num_px_sigma_af, trunc=3.0)
+
+                    # Mask back the filtered arrays
+                    focus_filter_vx_50 = np.where(np.isnan(tile_vx.values), np.nan, focus_filter_vx_50)
+                    focus_filter_vx_100 = np.where(np.isnan(tile_vx.values), np.nan, focus_filter_vx_100)
+                    focus_filter_vx_150 = np.where(np.isnan(tile_vx.values), np.nan, focus_filter_vx_150)
+                    focus_filter_vx_300 = np.where(np.isnan(tile_vx.values), np.nan, focus_filter_vx_300)
+                    focus_filter_vx_450 = np.where(np.isnan(tile_vx.values), np.nan, focus_filter_vx_450)
+                    focus_filter_vx_af = np.where(np.isnan(tile_vx.values), np.nan, focus_filter_vx_af)
+                    focus_filter_vy_50 = np.where(np.isnan(tile_vy.values), np.nan, focus_filter_vy_50)
+                    focus_filter_vy_100 = np.where(np.isnan(tile_vy.values), np.nan, focus_filter_vy_100)
+                    focus_filter_vy_150 = np.where(np.isnan(tile_vy.values), np.nan, focus_filter_vy_150)
+                    focus_filter_vy_300 = np.where(np.isnan(tile_vy.values), np.nan, focus_filter_vy_300)
+                    focus_filter_vy_450 = np.where(np.isnan(tile_vy.values), np.nan, focus_filter_vy_450)
+                    focus_filter_vy_af = np.where(np.isnan(tile_vy.values), np.nan, focus_filter_vy_af)
+                    '''
+
+                    # create xarrays of filtered velocities
+                    focus_filter_v50_ar = tile_v.copy(deep=True, data=focus_filter_v50)
+                    focus_filter_v100_ar = tile_v.copy(deep=True, data=focus_filter_v100)
+                    focus_filter_v150_ar = tile_v.copy(deep=True, data=focus_filter_v150)
+                    focus_filter_v300_ar = tile_v.copy(deep=True, data=focus_filter_v300)
+                    focus_filter_v450_ar = tile_v.copy(deep=True, data=focus_filter_v450)
+                    focus_filter_vfa_ar = tile_v.copy(deep=True, data=focus_filter_af)
+
+                    #focus_filter_vx_50_ar = tile_vx.copy(deep=True, data=focus_filter_vx_50)
+                    #focus_filter_vx_100_ar = tile_vx.copy(deep=True, data=focus_filter_vx_100)
+                    #focus_filter_vx_150_ar = tile_vx.copy(deep=True, data=focus_filter_vx_150)
+                    #focus_filter_vx_300_ar = tile_vx.copy(deep=True, data=focus_filter_vx_300)
+                    #focus_filter_vx_450_ar = tile_vx.copy(deep=True, data=focus_filter_vx_450)
+                    #focus_filter_vx_af_ar = tile_vx.copy(deep=True, data=focus_filter_vx_af)
+                    #focus_filter_vy_50_ar = tile_vy.copy(deep=True, data=focus_filter_vy_50)
+                    #focus_filter_vy_100_ar = tile_vy.copy(deep=True, data=focus_filter_vy_100)
+                    #focus_filter_vy_150_ar = tile_vy.copy(deep=True, data=focus_filter_vy_150)
+                    #focus_filter_vy_300_ar = tile_vy.copy(deep=True, data=focus_filter_vy_300)
+                    #focus_filter_vy_450_ar = tile_vy.copy(deep=True, data=focus_filter_vy_450)
+                    #focus_filter_vy_af_ar = tile_vy.copy(deep=True, data=focus_filter_vy_af)
+
+                    # Calculate the velocity gradients
+                    #dvx_dx_ar, dvx_dy_ar = focus_filter_vx_300_ar.differentiate(
+                    #    coord='x'), focus_filter_vx_300_ar.differentiate(coord='y')
+                    #dvy_dx_ar, dvy_dy_ar = focus_filter_vy_300_ar.differentiate(
+                    #    coord='x'), focus_filter_vy_300_ar.differentiate(coord='y')
+
+                    # Interpolate (note: nans can be produced near boundaries)
+                    v_data = tile_v.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar, method="nearest").data
+                    v_filter_50_data = focus_filter_v50_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                  method='nearest').data
+                    v_filter_100_data = focus_filter_v100_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                    method='nearest').data
+                    v_filter_150_data = focus_filter_v150_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                    method='nearest').data
+                    v_filter_300_data = focus_filter_v300_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                    method='nearest').data
+                    v_filter_450_data = focus_filter_v450_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                    method='nearest').data
+                    v_filter_af_data = focus_filter_vfa_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                  method='nearest').data
+                    '''
+                    vx_data = tile_vx.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar, method="nearest").data
+                    vy_data = tile_vy.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar, method="nearest").data
+                    vx_filter_50_data = focus_filter_vx_50_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                     method='nearest').data
+                    vx_filter_100_data = focus_filter_vx_100_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                       method='nearest').data
+                    vx_filter_150_data = focus_filter_vx_150_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                       method='nearest').data
+                    vx_filter_300_data = focus_filter_vx_300_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                       method='nearest').data
+                    vx_filter_450_data = focus_filter_vx_450_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                       method='nearest').data
+                    vx_filter_af_data = focus_filter_vx_af_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                     method='nearest').data
+                    vy_filter_50_data = focus_filter_vy_50_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                     method='nearest').data
+                    vy_filter_100_data = focus_filter_vy_100_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                       method='nearest').data
+                    vy_filter_150_data = focus_filter_vy_150_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                       method='nearest').data
+                    vy_filter_300_data = focus_filter_vy_300_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                       method='nearest').data
+                    vy_filter_450_data = focus_filter_vy_450_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                       method='nearest').data
+                    vy_filter_af_data = focus_filter_vy_af_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                     method='nearest').data
+
+                    dvx_dx_data = dvx_dx_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar, method='nearest').data
+                    dvx_dy_data = dvx_dy_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar, method='nearest').data
+                    dvy_dx_data = dvy_dx_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar, method='nearest').data
+                    dvy_dy_data = dvy_dy_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar, method='nearest').data
+                    '''
+
+                    # some checks
+                    assert v_data.shape == v_filter_50_data.shape, "NSIDC interp something wrong!"
+                    assert v_data.shape == v_filter_100_data.shape, "NSIDC interp something wrong!"
+                    assert v_data.shape == v_filter_150_data.shape, "NSIDC interp something wrong!"
+                    assert v_data.shape == v_filter_300_data.shape, "NSIDC interp something wrong!"
+                    assert v_data.shape == v_filter_450_data.shape, "NSIDC interp something wrong!"
+                    assert v_data.shape == v_filter_af_data.shape, "NSIDC interp something wrong!"
+
+
+                    # Fill dataframe with NSIDC velocities
+                    glathida.loc[indexes_rgi_k_id, 'v50'] = v_filter_50_data
+                    glathida.loc[indexes_rgi_k_id, 'v100'] = v_filter_100_data
+                    glathida.loc[indexes_rgi_k_id, 'v150'] = v_filter_150_data
+                    glathida.loc[indexes_rgi_k_id, 'v300'] = v_filter_300_data
+                    glathida.loc[indexes_rgi_k_id, 'v450'] = v_filter_450_data
+                    glathida.loc[indexes_rgi_k_id, 'vgfa'] = v_filter_af_data
+                    #glathida.loc[indexes_rgi_k_id, 'vx'] = vx_data
+                    #glathida.loc[indexes_rgi_k_id, 'vy'] = vy_data
+                    #glathida.loc[indexes_rgi_k_id, 'vx_gf50'] = vx_filter_50_data
+                    #glathida.loc[indexes_rgi_k_id, 'vx_gf100'] = vx_filter_100_data
+                    #glathida.loc[indexes_rgi_k_id, 'vx_gf150'] = vx_filter_150_data
+                    #glathida.loc[indexes_rgi_k_id, 'vx_gf300'] = vx_filter_300_data
+                    #glathida.loc[indexes_rgi_k_id, 'vx_gf450'] = vx_filter_450_data
+                    #glathida.loc[indexes_rgi_k_id, 'vx_gfa'] = vx_filter_af_data
+                    #glathida.loc[indexes_rgi_k_id, 'vy_gf50'] = vy_filter_50_data
+                    #glathida.loc[indexes_rgi_k_id, 'vy_gf100'] = vy_filter_100_data
+                    #glathida.loc[indexes_rgi_k_id, 'vy_gf150'] = vy_filter_150_data
+                    #glathida.loc[indexes_rgi_k_id, 'vy_gf300'] = vy_filter_300_data
+                    #glathida.loc[indexes_rgi_k_id, 'vy_gf450'] = vy_filter_450_data
+                    #glathida.loc[indexes_rgi_k_id, 'vy_gfa'] = vy_filter_af_data
+                    #glathida.loc[indexes_rgi_k_id, 'dvx_dx'] = dvx_dx_data
+                    #glathida.loc[indexes_rgi_k_id, 'dvx_dy'] = dvx_dy_data
+                    #glathida.loc[indexes_rgi_k_id, 'dvy_dx'] = dvy_dx_data
+                    #glathida.loc[indexes_rgi_k_id, 'dvy_dy'] = dvy_dy_data
+
+
+        # How many nans we have produced from the interpolation
+        glathida_rgi_ = glathida.loc[glathida['RGI'] == rgi]
+        tqdm.write(
+            f"\t From rgi {rgi} the no. nans in ith/v50/v100/v150/etc: {np.sum(np.isnan(glathida_rgi_['ith_m']))}/{np.sum(np.isnan(glathida_rgi_['v50']))}"
+            f"/{np.sum(np.isnan(glathida_rgi_['v100']))}/{np.sum(np.isnan(glathida_rgi_['v150']))}/{np.sum(np.isnan(glathida_rgi_['v300']))}/"
+            f"{np.sum(np.isnan(glathida_rgi_['v450']))}/{np.sum(np.isnan(glathida_rgi_['vgfa']))}")
+
+
+
+    for rgi in [1,2,3,4,6,7,8,9,10,11,12,13,14,15,16,17,18]:
+    #for rgi in [2,]:
+
+        glathida_rgi = glathida.loc[glathida['RGI'] == rgi]
+        if len(glathida_rgi) == 0:
+            continue
+
+        tqdm.write(f'rgi: {rgi}, Total points: {len(glathida_rgi)}')
+
+        # get Millan files
+        if rgi in (1, 2):
+            files_vx = sorted(glob(f"{args.millan_velocity_folder}RGI-1-2/VX_RGI-1-2*"))
+            files_vy = sorted(glob(f"{args.millan_velocity_folder}RGI-1-2/VY_RGI-1-2*"))
+            files_ith = sorted(glob(f"{args.millan_icethickness_folder}RGI-1-2/THICKNESS_RGI-1-2*"))
+        elif rgi in (13, 14, 15):
+            files_vx = sorted(glob(f"{args.millan_velocity_folder}RGI-13-15/VX_RGI-13-15*.tif"))
+            files_vy = sorted(glob(f"{args.millan_velocity_folder}RGI-13-15/VY_RGI-13-15*.tif"))
+            files_ith = sorted(glob(f"{args.millan_icethickness_folder}RGI-13-15/THICKNESS_RGI-13-15*.tif"))
+        else:
+            files_vx = sorted(glob(f"{path_millan_velocity}RGI-{rgi}/VX_RGI-{rgi}*.tif"))
+            files_vy = sorted(glob(f"{path_millan_velocity}RGI-{rgi}/VY_RGI-{rgi}*.tif"))
+            files_ith = sorted(glob(f"{path_millan_icethickness}RGI-{rgi}/THICKNESS_RGI-{rgi}*.tif"))
+
+        n_rgi_tiles = len(files_vx)
+
+        # I need a dataframe for Millan with same indexes and lats lons
+        df_pointsM = glathida_rgi[['POINT_LAT', 'POINT_LON']].copy()
+        df_pointsM = df_pointsM.assign(**{col: pd.Series() for col in files_vx})
+        df_pointsM = df_pointsM.assign(**{col: pd.Series() for col in files_ith})
+
+        # Fill the dataframe for occupancy
+        for i, (file_vx, file_vy, file_ith) in enumerate(zip(files_vx, files_vy, files_ith)):
+            tile_vx = rioxarray.open_rasterio(file_vx, masked=False)
+            tile_vy = rioxarray.open_rasterio(file_vy, masked=False)  # may relax this
+            tile_ith = rioxarray.open_rasterio(file_ith, masked=False)
+
+            if not tile_vx.rio.bounds() == tile_vy.rio.bounds() == tile_ith.rio.bounds():
                 tile_ith = tile_ith.reindex_like(tile_vx, method="nearest", tolerance=50., fill_value=np.nan)
-            assert tile_vx.rio.bounds() == tile_vy.rio.bounds() == tile_vx.rio.bounds(), "All tiles bounds not the same"
 
-            # Mask ice thickness based on velocity map
-            tile_ith = tile_ith.where(tile_vx.notnull())
+            assert tile_vx.rio.bounds() == tile_vy.rio.bounds() == tile_ith.rio.bounds(), 'Different bounds found.'
+            assert tile_vx.rio.crs == tile_vy.rio.crs == tile_ith.rio.crs, 'Different crs found.'
 
-            # Convert tile boundaries to lat lon
-            tran_to_4326 = Transformer.from_crs(tile_vx.rio.crs, "EPSG:4326")
-            lat0, lon0 = tran_to_4326.transform(tile_vx.rio.bounds()[0], tile_vx.rio.bounds()[1])
-            lat1, lon1 = tran_to_4326.transform(tile_vx.rio.bounds()[2], tile_vx.rio.bounds()[3])
-            #print(f"Tile {i, file_vx} bounds {lat0, lon0, lat1, lon1}")
+            eastings, northings = Transformer.from_crs("EPSG:4326", tile_vx.rio.crs).transform(df_pointsM['POINT_LAT'],
+                                                                                               df_pointsM['POINT_LON'])
+            df_pointsM['eastings'] = eastings
+            df_pointsM['northings'] = northings
 
-            # Select data inside the tile
-            condition1 = glathida_rgi['POINT_LAT']>lat0
-            condition2 = glathida_rgi['POINT_LAT']<lat1
-            condition3 = glathida_rgi['POINT_LON']>lon0
-            condition4 = glathida_rgi['POINT_LON']<lon1
+            # Get the points inside the tile
+            left, bottom, right, top = tile_vx.rio.bounds()
 
-            tile_condition = condition1 & condition2 & condition3 & condition4
-            glathida_rgi_tile = glathida_rgi[tile_condition]
+            within_bounds_mask = (
+                    (df_pointsM['eastings'] >= left) &
+                    (df_pointsM['eastings'] <= right) &
+                    (df_pointsM['northings'] >= bottom) &
+                    (df_pointsM['northings'] <= top))
 
-            tqdm.write(f"\t No. points found in tile {i+1}/{n_rgi_tiles}: {len(glathida_rgi_tile)}/{len(glathida_rgi)}")
+            df_pointsM.loc[within_bounds_mask, file_vx] = 1
+            df_pointsM.loc[within_bounds_mask, file_ith] = 1
 
-            # If no point in tile go to next tile
-            if len(glathida_rgi_tile)==0:
-                continue
+        df_pointsM.drop(columns=['eastings', 'northings'], inplace=True)
+        ncols = df_pointsM.shape[1] # 2 + num tiles vx + num tiles ith
+        print(f"Millan method: created dataframe of occupancies for all points of shape {df_pointsM.shape}")
 
-            ids_rgi = glathida_rgi_tile['GlaThiDa_ID'].unique().tolist()  # unique IDs in rgi tile
+        # Sanity check that all points are contained in the same way in vx and ith tiles
+        n_tiles_occupancy_vx = df_pointsM.iloc[:, 2:2 + (ncols - 2) // 2].sum().sum()
+        n_tiles_occupancy_ith = df_pointsM.iloc[:, 2 + (ncols - 2) // 2:].sum().sum()
+        assert n_tiles_occupancy_vx == n_tiles_occupancy_ith, "Mismatch between vx and ith coverage."
 
-            trans_to_crs = Transformer.from_crs("EPSG:4326", tile_vx.rio.crs)
-            ris_metre_millan = tile_vx.rio.resolution()[0]
-            eps_millan = 10 * ris_metre_millan
+        # Grouping by vx occupancy
+        df_pointsM['ntiles_vx'] = df_pointsM.iloc[:, 2:2 + (ncols - 2) // 2].sum(axis=1)
+        groups_rgi = df_pointsM.groupby('ntiles_vx')  # Groups. Each group will have an occupancy value
+        df_pointsM.drop(columns=['ntiles_vx'], inplace=True)  # Remove this column that we used to create groups
 
-            # loop over the unique IDs
-            for id_rgi in tqdm(ids_rgi, total=len(ids_rgi), desc=f"rgi {rgi} tile {i+1}/{n_rgi_tiles} Glathida ID", leave=True):
-                glathida_rgi_tile_id = glathida_rgi_tile.loc[glathida_rgi_tile['GlaThiDa_ID'] == id_rgi]
-                indexes_rgi_tile_id = glathida_rgi_tile_id.index.tolist()
+        print(f"Num groups in Millan: {groups_rgi.ngroups}")
 
-                lats = np.array(glathida_rgi_tile_id['POINT_LAT'])
-                lons = np.array(glathida_rgi_tile_id['POINT_LON'])
+        # Loop over k groups
+        for k, (g_value, df_rgi_k) in enumerate(groups_rgi):
 
-                lons_crs, lats_crs = trans_to_crs.transform(lats, lons)
-                swlat = np.amin(lats_crs)
-                swlon = np.amin(lons_crs)
-                nelat = np.amax(lats_crs)
-                nelon = np.amax(lons_crs)
-                deltalat = np.abs(swlat - nelat)
-                deltalon = np.abs(swlon - nelon)
+            # These are the valid tiles in group k
+            # but these are useless i think, as we want to loop over the tiles for each id
+            unique_vx_tiles_k = df_rgi_k.iloc[:, 2:2 + (ncols - 2) // 2].columns[df_rgi_k.iloc[:, 2:2 + (ncols - 2) // 2].sum() != 0].tolist()
+            unique_ith_tiles_k = df_rgi_k.iloc[:, 2 + (ncols - 2) // 2:].columns[df_rgi_k.iloc[:, 2 + (ncols - 2) // 2:].sum() != 0].tolist()
+            print(f"Group {k + 1}/{groups_rgi.ngroups} with {len(df_rgi_k)} measurements")
 
-                # clip millan mosaic
-                try:
-                    focus_vx0 = tile_vx.rio.clip_box(minx=swlon-deltalon-eps_millan, miny=swlat-deltalat-eps_millan,
-                                                          maxx=nelon+deltalon+eps_millan, maxy=nelat+deltalat+eps_millan)
+            indexes_rgi_k = df_rgi_k.index
 
-                    focus_vy0 = tile_vy.rio.clip_box(minx=swlon-deltalon-eps_millan, miny=swlat-deltalat-eps_millan,
-                                                          maxx=nelon+deltalon+eps_millan, maxy=nelat+deltalat+eps_millan)
+            # Insert this column at the beginning since we need it (at the beginning)
+            # As a result df_rgi_k columns will be: |GlaThiDa_ID|POINT_LAT|POINT_LON|<vtiles>|<ithtiles>|,
+            # there are 3 columns at the beginning and then the tiles
+            df_rgi_k.insert(0, 'GlaThiDa_ID', glathida_rgi.loc[indexes_rgi_k, 'GlaThiDa_ID'])
+            #df_rgi_k['GlaThiDa_ID'] = glathida_rgi.loc[indexes_rgi_k, 'GlaThiDa_ID']
 
-                    focus_ith = tile_ith.rio.clip_box(minx=swlon-deltalon-eps_millan, miny=swlat-deltalat-eps_millan,
-                                                          maxx=nelon+deltalon+eps_millan, maxy=nelat+deltalat+eps_millan)
-                except:
-                    tqdm.write(f'No millan data for rgi {rgi} GlaThiDa_ID {id_rgi} ')
-                    # print(swlon - deltalon - eps, nelon + deltalon + eps, swlat - deltalat - eps, nelat + deltalat + eps)
+            # Get unique IDs of ids_rgi_k
+            ids_rgi_k = df_rgi_k['GlaThiDa_ID'].unique().tolist()
+
+
+            # loop over the unique IDs of group k
+            for id_rgi_k in tqdm(ids_rgi_k, total=len(ids_rgi_k), desc=f"rgi {rgi} group {k+1}/{groups_rgi.ngroups} Glathida ID",
+                               leave=True):
+
+
+                # Get dataframe for group k and id
+                df_rgi_k_id = df_rgi_k.loc[df_rgi_k['GlaThiDa_ID'] == id_rgi_k]
+                indexes_rgi_k_id = df_rgi_k_id.index.tolist()
+
+                # Get the unique valid tiles for each id
+                unique_vx_tiles_k_id =  df_rgi_k_id.iloc[:, 3:3 + (ncols - 2) // 2].columns[df_rgi_k_id.iloc[:, 3:3 + (ncols - 2) // 2].sum() != 0].tolist()
+                unique_ith_tiles_k_id =  df_rgi_k_id.iloc[:, 3 + (ncols - 2) // 2:].columns[df_rgi_k_id.iloc[:, 3 + (ncols - 2) // 2:].sum() != 0].tolist()
+                #print(unique_vx_tiles_k_id, unique_ith_tiles_k_id)
+
+                lats_rgi_k_id = np.array(df_rgi_k_id['POINT_LAT'])
+                lons_rgi_k_id = np.array(df_rgi_k_id['POINT_LON'])
+
+                valid_vx_tile_rgi_k_id = None
+                valid_vy_tile_rgi_k_id = None
+                valid_ith_tile_rgi_k_id = None
+
+                # Loop over tiles for group k and id
+                for t, (file_vx, file_ith) in enumerate(zip(unique_vx_tiles_k_id, unique_ith_tiles_k_id)):
+                    file_vy = file_vx.replace('VX', 'VY')
+                    tile_vx = rioxarray.open_rasterio(file_vx, masked=False)
+                    tile_vy = rioxarray.open_rasterio(file_vy, masked=False)
+                    tile_ith = rioxarray.open_rasterio(file_ith, masked=False)
+
+
+                    # Sometimes the attribute no data is not defined in Millans tiles
+                    for tile in [tile_vx, tile_vy, tile_ith]:
+                        if tile.rio.nodata is None:
+                            tile.rio.write_nodata(np.nan, inplace=True)
+
+                    if not tile_vx.rio.bounds() == tile_vy.rio.bounds() == tile_ith.rio.bounds():
+                        tile_ith = tile_ith.reindex_like(tile_vx, method="nearest", tolerance=50., fill_value=np.nan)
+
+                    assert tile_vx.rio.crs == tile_vy.rio.crs == tile_ith.rio.crs, 'Different crs found.'
+                    assert tile_vx.rio.bounds() == tile_vy.rio.bounds() == tile_ith.rio.bounds(), 'Different bounds found.'
+
+                    eastings_rgi_k_id, northings_rgi_k_id = Transformer.from_crs("EPSG:4326", tile_vx.rio.crs).transform(lats_rgi_k_id, lons_rgi_k_id)
+                    minE, maxE = min(eastings_rgi_k_id), max(eastings_rgi_k_id)
+                    minN, maxN = min(northings_rgi_k_id), max(northings_rgi_k_id)
+                    #print(f"Boundaries measurements: {minE, minN, maxE, maxN}")
+                    #print(f"tile {t} bounds {tile_vx.rio.bounds()}")
+
+                    epsM = 500
+                    try:
+                        tile_vx = tile_vx.rio.clip_box(minx=minE - epsM, miny=minN - epsM, maxx=maxE + epsM, maxy=maxN + epsM)
+                        tile_vy = tile_vy.rio.clip_box(minx=minE - epsM, miny=minN - epsM, maxx=maxE + epsM, maxy=maxN + epsM)
+                        tile_ith = tile_ith.rio.clip_box(minx=minE - epsM, miny=minN - epsM, maxx=maxE + epsM, maxy=maxN + epsM)
+                        #print('si', 'ID', id_rgi_k, 'tile', t, lats_rgi_k_id.min(), lats_rgi_k_id.max(),
+                        #      lons_rgi_k_id.min(), lons_rgi_k_id.max())
+                        #fig, ax = plt.subplots()
+                        #tile_vx.plot(ax=ax, cmap="viridis")
+                        #ax.scatter(x=eastings_rgi_k_id, y=northings_rgi_k_id, s=10)
+                        #plt.show()
+
+                        # Either ith is .rio.nodata or it is zero
+                        # Note these conditions are on ith_m. Misteriously it may happen that the
+                        # v is empty but ith is not, e.g. rgi=2 id_rgi_k = 2084. I dont know how this can be possible
+                        cond0 = np.all(tile_ith.values == 0)
+                        condnodata = np.all(np.abs(tile_ith.values - tile_ith.rio.nodata) < 1.e-6)
+                        condnan = np.all(np.isnan(tile_ith.values))
+                        all_zero_or_nodata = cond0 or condnodata or condnan
+
+                        if all_zero_or_nodata:
+                            # The tile t is not valid. Go to next tile
+                            continue
+                        else:
+                            #print(t, file_vx, file_ith)
+                            valid_vx_tile_rgi_k_id = tile_vx
+                            valid_vy_tile_rgi_k_id = tile_vy
+                            valid_ith_tile_rgi_k_id = tile_ith
+
+                    except:
+                        # The tile t could not include id_rgi_k data, go to next tile
+                        tqdm.write(f'No millan data for rgi {rgi} group {k} GlaThiDa_ID {id_rgi_k} tile {t}')
+                        continue
+
+                if valid_ith_tile_rgi_k_id is None:
+                    # These are very few points in rgi 4
+                    print(f"Impossible to get valid tile for group {k} ID {id_rgi_k}, no. meas {len(df_rgi_k_id)}. Go to next ID")
+                    #print(lats_rgi_k_id.min(), lats_rgi_k_id.max(), lons_rgi_k_id.min(), lons_rgi_k_id.max())
                     continue
 
-                # Interpolate vx, vy to remove nans (as much as possible). On the other hand we keep the nans
-                # in the ice thickness ith.
-                focus_vx = focus_vx0.rio.interpolate_na(method='linear').squeeze()
-                focus_vy = focus_vy0.rio.interpolate_na(method='linear').squeeze()
-                focus_ith = focus_ith.squeeze()
 
-                plot_Millan_interpolated_tiles = False
-                if plot_Millan_interpolated_tiles:
-                    fig, axes = plt.subplots(1, 3)
-                    ax1, ax2, ax3 = axes.flatten()
-                    im1 = focus_vx0.plot(ax=ax1, cmap='viridis')
-                    im2 = focus_vx.plot(ax=ax2, cmap='viridis')
-                    s2 = ax2.scatter(x=lons_crs, y=lats_crs, s=20, c='k', alpha=.1, zorder=1)
-                    im3 = focus_ith.plot(ax=ax3, cmap='viridis')
-                    plt.show()
+                # We should have found the valid tile if we have reached this point
+                tile_vx = valid_vx_tile_rgi_k_id
+                tile_vy = valid_vy_tile_rgi_k_id
+                tile_ith = valid_ith_tile_rgi_k_id
+
+                #print(minE, maxE, minN, maxN)
+                #fig, ax = plt.subplots()
+                #tile_ith.plot(ax=ax, cmap='viridis')
+                #ax.scatter(x=eastings_rgi_k_id, y=northings_rgi_k_id, s=10)
+                #plt.show()
+
+                tile_vx.values = np.where(tile_vx.values == tile_vx.rio.nodata, np.nan, tile_vx.values)
+                tile_vy.values = np.where(tile_vy.values == tile_vy.rio.nodata, np.nan, tile_vy.values)
+                tile_ith.values = np.where(tile_ith.values == tile_ith.rio.nodata, np.nan, tile_ith.values)
+
+                tile_vx.rio.write_nodata(np.nan, inplace=True)
+                tile_vy.rio.write_nodata(np.nan, inplace=True)
+                tile_ith.rio.write_nodata(np.nan, inplace=True)
+
+                assert tile_vx.rio.crs == tile_vy.rio.crs == tile_ith.rio.crs, "Tiles vx, vy, ith with different epsg."
+                assert tile_vx.rio.resolution() == tile_vy.rio.resolution() == tile_ith.rio.resolution(), \
+                    "Tiles vx, vy, ith have different resolution."
+
+                if not tile_vx.rio.bounds() == tile_ith.rio.bounds():
+                    tile_ith = tile_ith.reindex_like(tile_vx, method="nearest", tolerance=50., fill_value=np.nan)
+
+                assert tile_vx.rio.bounds() == tile_vy.rio.bounds() == tile_ith.rio.bounds(), "All tiles bounds not the same"
+
+                ris_metre_millan = tile_vx.rio.resolution()[0]
 
                 # Calculate sigma in meters for adaptive gaussian fiter
                 sigma_af_min, sigma_af_max = 100.0, 2000.0
                 try:
+                    area_id = glathida_rgi.loc[indexes_rgi_k_id, 'Area'].min()
+                    lmax_id = glathida_rgi.loc[indexes_rgi_k_id, 'Lmax'].max()
+                    #print(lats_rgi_k_id.min(), lats_rgi_k_id.max(), lons_rgi_k_id.min(), lons_rgi_k_id.max(), area_id)
                     # Each id_rgi may come with multiple area values and also nans (probably if all points outside glacier geometries)
-                    area_id = glathida_rgi_tile_id['Area'].min()  # km2
-                    lmax_id = glathida_rgi_tile_id['Lmax'].max()  # m
+                    #area_id = glathida_rgi_tile_id['Area'].min()  # km2
+                    #lmax_id = glathida_rgi_tile_id['Lmax'].max()  # m
                     a = 1e6 * area_id / (np.pi * 0.5 * lmax_id)
                     sigma_af = int(min(max(a, sigma_af_min), sigma_af_max))
                     # print(area_id, lmax_id, a, value)
@@ -764,129 +1703,129 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
                 # Ensure that our value correctly in range [50.0, 2000.0]
                 assert sigma_af_min <= sigma_af <= sigma_af_max, f"Value {sigma_af} is not within the range [{sigma_af_min}, {sigma_af_max}]"
                 # print(f"Adaptive gaussian filter with sigma = {value} meters.")
-                #print(sigma_af)
-
-
+                # print(sigma_af)
 
                 # Calculate how many pixels I need for a resolution of 50, 100, 150, 300 meters
                 num_px_sigma_50 = max(1, round(50 / ris_metre_millan))  # 1
                 num_px_sigma_100 = max(1, round(100 / ris_metre_millan))  # 2
                 num_px_sigma_150 = max(1, round(150 / ris_metre_millan))  # 3
                 num_px_sigma_300 = max(1, round(300 / ris_metre_millan))  # 6
-                num_px_sigma_450 = max(1, round(450 / ris_metre_millan))  # 6
+                num_px_sigma_450 = max(1, round(450 / ris_metre_millan))
                 num_px_sigma_af = max(1, round(sigma_af / ris_metre_millan))
 
-                # Apply filter to velocities
-                focus_filter_vx_50 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_50, trunc=4.0)
-                focus_filter_vx_100 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_100, trunc=4.0)
-                focus_filter_vx_150 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_150, trunc=4.0)
-                focus_filter_vx_300 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_300, trunc=4.0)
-                focus_filter_vx_450 = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_450, trunc=4.0)
-                focus_filter_vx_af = gaussian_filter_with_nans(U=focus_vx.values, sigma=num_px_sigma_af, trunc=3.0)
+                kernel50 = Gaussian2DKernel(num_px_sigma_50, x_size=4 * num_px_sigma_50 + 1, y_size=4 * num_px_sigma_50 + 1)
+                kernel100 = Gaussian2DKernel(num_px_sigma_100, x_size=4 * num_px_sigma_100 + 1, y_size=4 * num_px_sigma_100 + 1)
+                kernel150 = Gaussian2DKernel(num_px_sigma_150, x_size=4 * num_px_sigma_150 + 1, y_size=4 * num_px_sigma_150 + 1)
+                kernel300 = Gaussian2DKernel(num_px_sigma_300, x_size=4 * num_px_sigma_300 + 1, y_size=4 * num_px_sigma_300 + 1)
+                kernel450 = Gaussian2DKernel(num_px_sigma_450, x_size=4 * num_px_sigma_450 + 1, y_size=4 * num_px_sigma_450 + 1)
+                kernelaf = Gaussian2DKernel(num_px_sigma_af, x_size=4 * num_px_sigma_af + 1, y_size=4 * num_px_sigma_af + 1)
 
-                focus_filter_vy_50 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_50, trunc=4.0)
-                focus_filter_vy_100 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_100, trunc=4.0)
-                focus_filter_vy_150 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_150, trunc=4.0)
-                focus_filter_vy_300 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_300, trunc=4.0)
-                focus_filter_vy_450 = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_450, trunc=4.0)
-                focus_filter_vy_af = gaussian_filter_with_nans(U=focus_vy.values, sigma=num_px_sigma_af, trunc=3.0)
+                #fig, ax = plt.subplots()
+                #tile_vy.plot(ax=ax, cmap='viridis')
+                #ax.scatter(x=eastings_rgi_k_id, y=northings_rgi_k_id, s=10)
+                #plt.show()
+
+                # Points for interpolatetion
+                eastings_rgi_k_id_ar = xarray.DataArray(eastings_rgi_k_id)
+                northings_rgi_k_id_ar = xarray.DataArray(northings_rgi_k_id)
+
+                # Deal with ith first
+                focus_ith = tile_ith.squeeze()
+                ith_data = focus_ith.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar, method="nearest").data
+
+                # Fill dataframe with ith_m
+                if not np.all(np.isnan(ith_data)):
+                    glathida.loc[indexes_rgi_k_id, 'ith_m'] = ith_data
+
+                    # If we have successfully filled ith_m we can proceed with velocity
+                    tile_v = tile_vx.copy(deep=True, data=(tile_vx ** 2 + tile_vy ** 2) ** 0.5)
+                    tile_v = tile_v.squeeze()
+
+                    #fig, (ax1, ax2, ax3) = plt.subplots(1,3)
+                    #tile_vx.plot(ax=ax1)
+                    #tile_ith.plot(ax=ax2)
+                    #tile_v.plot(ax=ax3)
+                    #plt.show()
+
+                    # If velocity exist
+                    if float(tile_v.sum()) > 0:
+
+                        preserve_nans = True
+                        # What may happen is that the tile actually contains some data (maybe from neighboring glaciers)
+                        # but so little that interpolation fails. Or it can be also that the current glacier is not even
+                        # covered by the tile
+                        focus_filter_v50 = convolve_fft(tile_v.values, kernel50, nan_treatment='interpolate',
+                                                        preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                        focus_filter_v100 = convolve_fft(tile_v.values, kernel100, nan_treatment='interpolate',
+                                                         preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                        focus_filter_v150 = convolve_fft(tile_v.values, kernel150, nan_treatment='interpolate',
+                                                         preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                        focus_filter_v300 = convolve_fft(tile_v.values, kernel300, nan_treatment='interpolate',
+                                                         preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                        focus_filter_v450 = convolve_fft(tile_v.values, kernel450, nan_treatment='interpolate',
+                                                         preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+                        focus_filter_af = convolve_fft(tile_v.values, kernelaf, nan_treatment='interpolate',
+                                                       preserve_nan=preserve_nans, boundary='fill', fill_value=np.nan)
+
+                        # create xarrays of filtered velocities
+                        focus_filter_v50_ar = tile_v.copy(deep=True, data=focus_filter_v50)
+                        focus_filter_v100_ar = tile_v.copy(deep=True, data=focus_filter_v100)
+                        focus_filter_v150_ar = tile_v.copy(deep=True, data=focus_filter_v150)
+                        focus_filter_v300_ar = tile_v.copy(deep=True, data=focus_filter_v300)
+                        focus_filter_v450_ar = tile_v.copy(deep=True, data=focus_filter_v450)
+                        focus_filter_vfa_ar = tile_v.copy(deep=True, data=focus_filter_af)
+
+                        # Interpolate
+                        v_data = tile_v.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar, method="nearest").data
+                        v_filter_50_data = focus_filter_v50_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                      method='nearest').data
+                        v_filter_100_data = focus_filter_v100_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                        method='nearest').data
+                        v_filter_150_data = focus_filter_v150_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                        method='nearest').data
+                        v_filter_300_data = focus_filter_v300_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                        method='nearest').data
+                        v_filter_450_data = focus_filter_v450_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                        method='nearest').data
+                        v_filter_af_data = focus_filter_vfa_ar.interp(y=northings_rgi_k_id_ar, x=eastings_rgi_k_id_ar,
+                                                                      method='nearest').data
 
 
-                # Mask back the filtered arrays
-                focus_filter_vx_50 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_50)
-                focus_filter_vx_100 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_100)
-                focus_filter_vx_150 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_150)
-                focus_filter_vx_300 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_300)
-                focus_filter_vx_450 = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_450)
-                focus_filter_vx_af = np.where(np.isnan(focus_vx.values), np.nan, focus_filter_vx_af)
-                focus_filter_vy_50 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_50)
-                focus_filter_vy_100 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_100)
-                focus_filter_vy_150 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_150)
-                focus_filter_vy_300 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_300)
-                focus_filter_vy_450 = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_450)
-                focus_filter_vy_af = np.where(np.isnan(focus_vy.values), np.nan, focus_filter_vy_af)
+                        # some checks
+                        assert ith_data.shape == v_data.shape == v_filter_50_data.shape, "Millan interp something wrong!"
+                        assert v_filter_50_data.shape == v_filter_100_data.shape, "Millan interp something wrong!"
+                        assert v_filter_50_data.shape == v_filter_150_data.shape, "Millan interp something wrong!"
+                        assert v_filter_50_data.shape == v_filter_300_data.shape, "Millan interp something wrong!"
+                        assert v_filter_50_data.shape == v_filter_450_data.shape, "Millan interp something wrong!"
+                        assert v_filter_50_data.shape == v_filter_af_data.shape, "Millan interp something wrong!"
 
-                # create xarrays of filtered velocities
-                focus_filter_vx_50_ar = focus_vx.copy(deep=True, data=focus_filter_vx_50)
-                focus_filter_vx_100_ar = focus_vx.copy(deep=True, data=focus_filter_vx_100)
-                focus_filter_vx_150_ar = focus_vx.copy(deep=True, data=focus_filter_vx_150)
-                focus_filter_vx_300_ar = focus_vx.copy(deep=True, data=focus_filter_vx_300)
-                focus_filter_vx_450_ar = focus_vx.copy(deep=True, data=focus_filter_vx_450)
-                focus_filter_vx_af_ar = focus_vx.copy(deep=True, data=focus_filter_vx_af)
-                focus_filter_vy_50_ar = focus_vy.copy(deep=True, data=focus_filter_vy_50)
-                focus_filter_vy_100_ar = focus_vy.copy(deep=True, data=focus_filter_vy_100)
-                focus_filter_vy_150_ar = focus_vy.copy(deep=True, data=focus_filter_vy_150)
-                focus_filter_vy_300_ar = focus_vy.copy(deep=True, data=focus_filter_vy_300)
-                focus_filter_vy_450_ar = focus_vy.copy(deep=True, data=focus_filter_vy_450)
-                focus_filter_vy_af_ar = focus_vy.copy(deep=True, data=focus_filter_vy_af)
+                        # Fill dataframe
+                        glathida.loc[indexes_rgi_k_id, 'v50'] = v_filter_50_data
+                        glathida.loc[indexes_rgi_k_id, 'v100'] = v_filter_100_data
+                        glathida.loc[indexes_rgi_k_id, 'v150'] = v_filter_150_data
+                        glathida.loc[indexes_rgi_k_id, 'v300'] = v_filter_300_data
+                        glathida.loc[indexes_rgi_k_id, 'v450'] = v_filter_450_data
+                        glathida.loc[indexes_rgi_k_id, 'vgfa'] = v_filter_af_data
 
-                # Calculate the velocity gradients
-                dvx_dx_ar, dvx_dy_ar = focus_filter_vx_300_ar.differentiate(coord='x'), focus_filter_vx_300_ar.differentiate(coord='y')
-                dvy_dx_ar, dvy_dy_ar = focus_filter_vy_300_ar.differentiate(coord='x'), focus_filter_vy_300_ar.differentiate(coord='y')
 
-                # Interpolate (note: nans can be produced near boundaries). This should be removed at the end.
-                lons_crs = xarray.DataArray(lons_crs)
-                lats_crs = xarray.DataArray(lats_crs)
-
-                ith_data = focus_ith.interp(y=lats_crs, x=lons_crs, method="nearest").data
-                vx_data = focus_vx.interp(y=lats_crs, x=lons_crs, method="nearest").data
-                vy_data = focus_vy.interp(y=lats_crs, x=lons_crs, method="nearest").data
-                vx_filter_50_data = focus_filter_vx_50_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-                vx_filter_100_data = focus_filter_vx_100_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-                vx_filter_150_data = focus_filter_vx_150_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-                vx_filter_300_data = focus_filter_vx_300_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-                vx_filter_450_data = focus_filter_vx_450_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-                vx_filter_af_data = focus_filter_vx_af_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-                vy_filter_50_data = focus_filter_vy_50_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-                vy_filter_100_data = focus_filter_vy_100_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-                vy_filter_150_data = focus_filter_vy_150_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-                vy_filter_300_data = focus_filter_vy_300_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-                vy_filter_450_data = focus_filter_vy_450_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-                vy_filter_af_data = focus_filter_vy_af_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-
-                dvx_dx_data = dvx_dx_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-                dvx_dy_data = dvx_dy_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-                dvy_dx_data = dvy_dx_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-                dvy_dy_data = dvy_dy_ar.interp(y=lats_crs, x=lons_crs, method='nearest').data
-
-                # some checks
-                assert ith_data.shape == vx_data.shape == vy_data.shape, "Millan interp something wrong!"
-                assert vx_filter_150_data.shape == vy_filter_150_data.shape, "Millan interp something wrong!"
-                assert vx_filter_150_data.shape == vy_filter_300_data.shape, "Millan interp something wrong!"
-                assert vx_filter_300_data.shape == vy_filter_150_data.shape, "Millan interp something wrong!"
-                assert vx_filter_450_data.shape == vy_filter_450_data.shape, "Millan interp something wrong!"
-                assert vx_filter_af_data.shape == vy_filter_af_data.shape, "Millan interp something wrong!"
-                assert dvx_dx_data.shape == dvx_dy_data.shape, "Millan interp something wrong!"
-                assert dvy_dx_data.shape == dvy_dy_data.shape, "Millan interp something wrong!"
-
-                # Fill dataframe
-                # add ith_m, vx, vy data to dataframe
-                glathida.loc[indexes_rgi_tile_id, 'ith_m'] = ith_data
-                glathida.loc[indexes_rgi_tile_id, 'vx'] = vx_data
-                glathida.loc[indexes_rgi_tile_id, 'vy'] = vy_data
-                glathida.loc[indexes_rgi_tile_id, 'vx_gf50'] = vx_filter_50_data
-                glathida.loc[indexes_rgi_tile_id, 'vx_gf100'] = vx_filter_100_data
-                glathida.loc[indexes_rgi_tile_id, 'vx_gf150'] = vx_filter_150_data
-                glathida.loc[indexes_rgi_tile_id, 'vx_gf300'] = vx_filter_300_data
-                glathida.loc[indexes_rgi_tile_id, 'vx_gf450'] = vx_filter_450_data
-                glathida.loc[indexes_rgi_tile_id, 'vx_gfa'] = vx_filter_af_data
-                glathida.loc[indexes_rgi_tile_id, 'vy_gf50'] = vy_filter_50_data
-                glathida.loc[indexes_rgi_tile_id, 'vy_gf100'] = vy_filter_100_data
-                glathida.loc[indexes_rgi_tile_id, 'vy_gf150'] = vy_filter_150_data
-                glathida.loc[indexes_rgi_tile_id, 'vy_gf300'] = vy_filter_300_data
-                glathida.loc[indexes_rgi_tile_id, 'vy_gf450'] = vy_filter_450_data
-                glathida.loc[indexes_rgi_tile_id, 'vy_gfa'] = vy_filter_af_data
-                glathida.loc[indexes_rgi_tile_id, 'dvx_dx'] = dvx_dx_data
-                glathida.loc[indexes_rgi_tile_id, 'dvx_dy'] = dvx_dy_data
-                glathida.loc[indexes_rgi_tile_id, 'dvy_dx'] = dvy_dx_data
-                glathida.loc[indexes_rgi_tile_id, 'dvy_dy'] = dvy_dy_data
+                # debug
+                #if np.isnan(ith_data).sum()>0:
+                    #df_rgi_k.loc[df_rgi_k['GlaThiDa_ID'] == id_rgi_k]
+                    #rgiid = df_rgi_k['RGIId']
+                    #print(len(df_rgi_k_id), df_rgi_k_id)
+                    #print(id_rgi_k, np.isnan(vx_data).sum(), np.isnan(ith_data).sum(),
+                    #     min(lons_rgi_k_id), max(lons_rgi_k_id), min(lats_rgi_k_id), max(lats_rgi_k_id))
 
                 # Plot
                 ifplot_millan = False
-                if ifplot_millan and np.any(np.isnan(vx_data)): ifplot_millan = True
-                else: ifplot_millan = False
+                if ifplot_millan and np.any(np.isnan(vx_data)):
+                    ifplot_millan = True
+                else:
+                    ifplot_millan = False
                 if ifplot_millan:
-                    lons_crs, lats_crs = lons_crs.to_numpy(), lats_crs.to_numpy()
+                    lons_crs, lats_crs = eastings_rgi_k_id, northings_rgi_k_id
+                    #lons_crs, lats_crs = lons_crs.to_numpy(), lats_crs.to_numpy()
+
                     fig, axes = plt.subplots(3, 3, figsize=(10, 5))
                     ax1, ax2, ax3, ax4, ax5, ax6, ax7, ax8, ax9 = axes.flatten()
 
@@ -895,30 +1834,37 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
                     s1 = ax1.scatter(x=lons_crs, y=lats_crs, s=15, c=vx_data, ec=(0, 0, 0, 0.3), cmap='viridis',
                                      vmin=np.nanmin(focus_vx), vmax=np.nanmax(focus_vx), zorder=1)
 
-                    s1_1 = ax1.scatter(x=lons_crs[np.argwhere(np.isnan(vx_data))], y=lats_crs[np.argwhere(np.isnan(vx_data))],
+                    s1_1 = ax1.scatter(x=lons_crs[np.argwhere(np.isnan(vx_data))],
+                                       y=lats_crs[np.argwhere(np.isnan(vx_data))],
                                        s=15, c='magenta', zorder=1)
 
                     im2 = focus_vy.plot(ax=ax2, cmap='viridis', vmin=np.nanmin(focus_vy), vmax=np.nanmax(focus_vy))
                     s2 = ax2.scatter(x=lons_crs, y=lats_crs, s=15, c=vy_data, ec=(0, 0, 0, 0.3), cmap='viridis',
                                      vmin=np.nanmin(focus_vy), vmax=np.nanmax(focus_vy), zorder=1)
-                    s2_1 = ax2.scatter(x=lons_crs[np.argwhere(np.isnan(vy_data))], y=lats_crs[np.argwhere(np.isnan(vy_data))],
+                    s2_1 = ax2.scatter(x=lons_crs[np.argwhere(np.isnan(vy_data))],
+                                       y=lats_crs[np.argwhere(np.isnan(vy_data))],
                                        s=15, c='magenta', zorder=1)
 
                     im3 = focus_ith.plot(ax=ax3, cmap='viridis', vmin=0, vmax=np.nanmax(ith_data))
                     s3 = ax3.scatter(x=lons_crs, y=lats_crs, s=15, c=ith_data, ec=(0, 0, 0, 0.3), cmap='viridis',
                                      vmin=0, vmax=np.nanmax(ith_data), zorder=1)
-                    s3_1 = ax3.scatter(x=lons_crs[np.argwhere(np.isnan(ith_data))], y=lats_crs[np.argwhere(np.isnan(ith_data))],
+                    s3_1 = ax3.scatter(x=lons_crs[np.argwhere(np.isnan(ith_data))],
+                                       y=lats_crs[np.argwhere(np.isnan(ith_data))],
                                        s=15, c='magenta', zorder=1)
 
-                    im4 = focus_filter_vx_150_ar.plot(ax=ax4, cmap='viridis', vmin=np.nanmin(focus_vx), vmax=np.nanmax(focus_vx))
-                    s4 = ax4.scatter(x=lons_crs, y=lats_crs, s=15, c=vx_filter_150_data, ec=(0, 0, 0, 0.3), cmap='viridis',
+                    im4 = focus_filter_vx_150_ar.plot(ax=ax4, cmap='viridis', vmin=np.nanmin(focus_vx),
+                                                      vmax=np.nanmax(focus_vx))
+                    s4 = ax4.scatter(x=lons_crs, y=lats_crs, s=15, c=vx_filter_150_data, ec=(0, 0, 0, 0.3),
+                                     cmap='viridis',
                                      vmin=np.nanmin(focus_vx), vmax=np.nanmax(focus_vx), zorder=1)
                     s4_1 = ax4.scatter(x=lons_crs[np.argwhere(np.isnan(vx_filter_150_data))],
-                                       y=lats_crs[np.argwhere(np.isnan(vx_filter_150_data))], s=15, c='magenta', zorder=1)
+                                       y=lats_crs[np.argwhere(np.isnan(vx_filter_150_data))], s=15, c='magenta',
+                                       zorder=1)
 
                     im5 = focus_filter_vy_150_ar.plot(ax=ax5, cmap='viridis', vmin=np.nanmin(focus_vy),
                                                       vmax=np.nanmax(focus_vy))
-                    s5 = ax5.scatter(x=lons_crs, y=lats_crs, s=15, c=vy_filter_150_data, ec=(0, 0, 0, 0.3), cmap='viridis',
+                    s5 = ax5.scatter(x=lons_crs, y=lats_crs, s=15, c=vy_filter_150_data, ec=(0, 0, 0, 0.3),
+                                     cmap='viridis',
                                      vmin=np.nanmin(focus_vy), vmax=np.nanmax(focus_vy), zorder=1)
                     s5_1 = ax5.scatter(x=lons_crs[np.argwhere(np.isnan(vy_filter_150_data))],
                                        y=lats_crs[np.argwhere(np.isnan(vy_filter_150_data))], s=15,
@@ -942,129 +1888,17 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
         # How many nans we have produced from the interpolation
         glathida_rgi_ = glathida.loc[glathida['RGI'] == rgi]
         tqdm.write(
-            f"\t From rgi {rgi} the no. nans in vx/vy/ith/vx300/vy300/etc: {np.sum(np.isnan(glathida_rgi_['vx']))}/{np.sum(np.isnan(glathida_rgi_['vy']))}"
-            f"/{np.sum(np.isnan(glathida_rgi_['ith_m']))}/{np.sum(np.isnan(glathida_rgi_['vx_gf300']))}/{np.sum(np.isnan(glathida_rgi_['vy_gf300']))}/"
-            f"{np.sum(np.isnan(glathida_rgi_['dvx_dx']))}/{np.sum(np.isnan(glathida_rgi_['dvx_dy']))}/{np.sum(np.isnan(glathida_rgi_['dvy_dx']))}/"
-            f"{np.sum(np.isnan(glathida_rgi_['dvy_dy']))}")
-
+            f"\t From rgi {rgi} the no. nans in ith/v50/v100/v150/etc: {np.sum(np.isnan(glathida_rgi_['ith_m']))}/{np.sum(np.isnan(glathida_rgi_['v50']))}"
+            f"/{np.sum(np.isnan(glathida_rgi_['v100']))}/{np.sum(np.isnan(glathida_rgi_['v150']))}/{np.sum(np.isnan(glathida_rgi_['v300']))}/"
+            f"{np.sum(np.isnan(glathida_rgi_['v450']))}/{np.sum(np.isnan(glathida_rgi_['vgfa']))}")
 
     print(f"Millan done in {(time.time()-tm)/60} min.")
-    return glathida
-
-"""Add distance from border using Millan's velocity"""
-def add_dist_from_border_in_out(glathida, path_millan_velocity):
-    print("Adding distance to border...")
-
-    if ('dist_from_border_km' in list(glathida) or 'outsider' in list(glathida)):
-        print('Variable already in dataframe.')
-        return glathida
-
-    glathida['dist_from_border_km'] = [np.nan]*len(glathida)
-    glathida['outsider'] = [np.nan]*len(glathida)
-    col_index_dist = glathida.columns.get_loc('dist_from_border_km')
-    col_index_outsider = glathida.columns.get_loc('outsider')
-
-    regions=[3, 7, 8, 11, 18]
-
-    for rgi in tqdm(regions, total=len(regions), leave=True):
-        tqdm.write(f'rgi: {rgi}')
-
-        files_v = glob(path_millan_velocity + 'RGI-{}/V_RGI-{}*'.format(rgi, rgi))
-        # merge v files to create vy mosaic
-        xds_4326 = []
-        for tiffile in files_v:
-            xds = rioxarray.open_rasterio(tiffile, masked=False)
-            xds.rio.write_nodata(np.nan, inplace=True)
-            xds_4326.append(xds.rio.reproject("EPSG:4326")) #todo: need to change reproject resampling method
-        mosaic_v = merge.merge_arrays(xds_4326)
-        #mosaic_v.plot()
-        #plt.show()
-
-        ris_ang = mosaic_v.rio.resolution()[0]
-        eps = 40 * ris_ang
-
-        glathida_rgi = glathida.loc[glathida['RGI'] == rgi] # collapse glathida to specific rgi
-        indexes_all = glathida_rgi.index.tolist()
-
-        lats = np.array(glathida_rgi['POINT_LAT'])
-        lons = np.array(glathida_rgi['POINT_LON'])
-
-        # loop over indexes of specific rgi
-        for n, index in tqdm(enumerate(indexes_all), total=len(lats), leave=True):
-
-            # get lat lon of measurement
-            lon = lons[n]
-            lat = lats[n]
-
-            # clip millan mosaic
-            count_resize = 1
-            deltalat = eps
-            deltalon = eps
-            try:
-                focus = mosaic_v.rio.clip_box(minx=lon - deltalon - eps, miny=lat - deltalat - eps,
-                                              maxx=lon + deltalon + eps, maxy=lat + deltalat + eps)
-            except:
-                tqdm.write(f'non ci sono dati di millan per rgi: {rgi} index: {index} lat: {lat} lon: {lon}')
-                continue
-
-            dataxarray = focus.data.squeeze()
-            nanpos = np.argwhere(np.isnan(dataxarray)).T
-
-            # if no nan are present clip a bigger region until we find nans
-            while not nanpos.size:
-                count_resize += 1
-                deltalat = 2 * deltalat
-                deltalon = 2 * deltalon
-                focus = mosaic_v.rio.clip_box(minx=lon - deltalon - eps, miny=lat - deltalat - eps,
-                                              maxx=lon + deltalon + eps, maxy=lat + deltalat + eps)
-                dataxarray = focus.data.squeeze()
-                nanpos = np.argwhere(np.isnan(dataxarray)).T
-
-            coordx = focus.coords['x'].to_numpy()[nanpos[1]]
-            coordy = focus.coords['y'].to_numpy()[nanpos[0]]
-            A = np.array([coordx, coordy]).T
-            ris_ang = np.abs(focus.rio.resolution()[0])
-
-            kdtree = spatial.KDTree(A).query(np.array([lon, lat]).T)
-
-            if kdtree[0] > ris_ang / np.sqrt(2):
-                nnpt = A[kdtree[1]]
-                dist = haversine(lon, lat, nnpt[0], nnpt[1])
-                outsider = 0
-            else: # se il punto trovato e' di fatto fuori al campo di velocita'
-                dist = np.nan
-                outsider = 1
-
-            #tqdm.write(f'rgi:{rgi} n:{n} index:{index} A size: {A.shape}focus size:{focus.rio.width}x{focus.rio.height} '
-            #           f'risized times: {count_resize} dist:{dist:.3f} km')
-
-            # add dist and outsider to dataframe
-            glathida.iat[index, col_index_dist] = dist
-            glathida.iat[index, col_index_outsider] = outsider
-            # check if the calculated distance has been added to the dataframe correctly
-            #print(glathida['POINT_LAT'].iloc[index], glathida['POINT_LAT'].iloc[index], glathida['dist_from_border_km'].iloc[index])
-
-            # plot randomly
-            ifplot = False
-            #p = random.randrange(0, 10000, 1)
-            #if p == 50: ifplot = True
-            #if dist>3: ifplot = True
-            if ifplot:
-                fig, ax1 = plt.subplots()
-                im1 = focus.plot(cmap='Blues', vmin=focus.min(), vmax=focus.max())
-                if outsider == 0:
-                    s_measurement = ax1.scatter(x=lon, y=lat, s=30, c='magenta')
-                    s_closest     = ax1.scatter(x=nnpt[0], y=nnpt[1], s=30, c='lime')
-                elif outsider == 1:
-                    s_measurement = ax1.scatter(x=lon, y=lat, s=30, c='k')
-                plt.show()
 
     return glathida
 
 """Add distance from border using glacier geometries"""
 def add_dist_from_boder_using_geometries(glathida):
     print("Adding distance to border using a geometrical approach...")
-    # Note that if the point is inside a nunatak the distance will be set to nan.
 
     if ('dist_from_border_km_geom' in list(glathida)):
         print('Variable already in dataframe.')
@@ -1092,14 +1926,17 @@ def add_dist_from_boder_using_geometries(glathida):
         if (len(neighbors1)) ==1: return None
         else: return neighbors1
 
-    regions = [1,3,4,7,8,11,18]
+    regions = list(range(1, 20))#[1,2,3,4,6,7,8,9,10,11,12,13,14,15,16,17,18] #[1,3,4,7,8,11,18] #list(range(1, 20)) #
 
     # loop over regions
-    for rgi in tqdm(regions, total=len(regions), desc='RGI',  leave=True):
+    for rgi in tqdm(regions, total=len(regions), desc='Distances in RGI',  leave=True):
         t_ = time.time()
 
         glathida_rgi = glathida.loc[glathida['RGI'] == rgi]
-        tqdm.write(f"Region RGI: {rgi}, {len(glathida_rgi['RGIId'].dropna())} points")
+
+        if len(glathida_rgi)==0:
+            continue
+        #tqdm.write(f"Region RGI: {rgi}, {len(glathida_rgi['RGIId'].dropna())} points")
 
         rgi_ids = glathida_rgi['RGIId'].dropna().unique().tolist()
         # print(f"We have {len(rgi_ids)} valid glaciers and {len(glathida_rgi)} rows "
@@ -1115,7 +1952,7 @@ def add_dist_from_boder_using_geometries(glathida):
         # loop over glaciers
         # Note: It is important to note that since rgi_ids do not contain nans, looping over it automatically
         # selects only the points inside glaciers (and not those outside)
-        for rgi_id in tqdm(rgi_ids, total=len(rgi_ids), desc=f"Glaciers in rgi {rgi}", leave=True):
+        for rgi_id in tqdm(rgi_ids, total=len(rgi_ids), desc=f"Glaciers in rgi {rgi}", leave=False, position=0):
 
             multipolygon = False
 
@@ -1209,11 +2046,16 @@ def add_dist_from_boder_using_geometries(glathida):
 
             if method_KDTree_spatial_index:
                 # 1. Extract all coordinates from the GeoSeries geometries for the current glacier
+                #if (rgi in (5, 19) and len(geoseries_geometries_epsg) > 1):
+                    # In rgi 5 and 19 given that we have an ice sheet we remove cluster external geometry from calculation
+                    # geoms_coords_array = np.concatenate([np.array(geom.coords) for geom in geoseries_geometries_epsg[1:].geometry])
+                #else:
                 geoms_coords_array = np.concatenate([np.array(geom.coords) for geom in geoseries_geometries_epsg.geometry])
+
                 # 2. instantiate kdtree
                 kdtree = KDTree(geoms_coords_array)
 
-            for i, (idx, lon, lat) in tqdm(enumerate(zip(glathida_id.index, lons, lats)), total=len(lons), desc='Points', leave=False):
+            for i, (idx, lon, lat) in tqdm(enumerate(zip(glathida_id.index, lons, lats)), total=len(lons), desc='Points', leave=False, position=0):
 
                 # Make check 0.
                 make_check0 = False
@@ -1398,12 +2240,13 @@ def add_dist_from_boder_using_geometries(glathida):
 def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
     # Note: points that are outside any glaciers will have nan to RGIId (and the other features)
 
-    print("Adding OGGM's stats method...")
+    print("Adding OGGM's stats method and Hugonnet dmdtda")
     if (any(ele in list(glathida) for ele in ['RGIId', 'Area'])):
         print('Variables RGIId/Area etc already in dataframe.')
         return glathida
 
     glathida['RGIId'] = [np.nan] * len(glathida)
+    glathida['RGIId'] = glathida['RGIId'].astype(object)
     glathida['Area'] = [np.nan] * len(glathida)
     glathida['Zmin'] = [np.nan] * len(glathida) # -999 are bad values
     glathida['Zmax'] = [np.nan] * len(glathida) # -999 are bad values
@@ -1413,37 +2256,38 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
     glathida['Form'] = [np.nan] * len(glathida) # 9 Not assigned
     glathida['TermType'] = [np.nan] * len(glathida) # 9 Not assigned
     glathida['Aspect'] = [np.nan] * len(glathida) # -9 bad values
+    glathida['dmdtda_hugo'] = [np.nan] * len(glathida)
 
     # Define this function for the parallelization
     def check_contains(point, geometry):
         return geometry.contains(point)
 
-    regions = [1,3,4,7,8,11,18]
+    # Setup Hugonnet product
+    mbdf = utils.get_geodetic_mb_dataframe()
+    mbdf = mbdf.loc[mbdf['period'] == '2000-01-01_2020-01-01']
+
+    regions = list(range(1, 20))#[1,2,3,4,6,7,8,9,10,11,12,13,14,15,16,17,18]#[1,3,4,7,8,11,18]
+    #regions = [19,]
 
     for rgi in regions:
         # get OGGM's dataframe of rgi glaciers
         oggm_rgi_shp = glob(f'{path_OGGM_folder}/rgi/RGIV62/{rgi:02d}*/{rgi:02d}*.shp')[0]
         oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)
-        #pd.set_option('display.max_columns', None)
-        #print(oggm_rgi_glaciers.describe())
-        #print(oggm_rgi_glaciers['Form'].value_counts())
-        #print(oggm_rgi_glaciers['Aspect'].value_counts())
-        #fig, ax = plt.subplots()
-        #ax.hist(oggm_rgi_glaciers['Aspect'], bins=400)
-        #plt.show()
-        #print(oggm_rgi_glaciers['TermType'].value_counts())
-        #print(oggm_rgi_glaciers['Surging'].value_counts())
-        #input('wait')
-        #print(oggm_rgi_glaciers.head(5))
 
-        #print(f'rgi: {rgi}. Imported OGGMs {oggm_rgi_shp} dataframe of {len(oggm_rgi_glaciers)} glaciers')
+        # get Hugonnet dmdtda of rgi glaciers
+        mbdf_rgi = mbdf.loc[mbdf['reg'] == rgi]
 
         # Glathida
         glathida_rgi = glathida.loc[glathida['RGI'] == rgi]
 
+        if len(glathida_rgi)==0:
+            print(f"rgi {rgi} there are no points. We go to next region")
+            continue
+
         # loop sui ghiacciai di oggm
         for i, ind in tqdm(enumerate(oggm_rgi_glaciers.index), total=len(oggm_rgi_glaciers), desc=f"glaciers in rgi {rgi}", leave=True, position=0):
 
+            # Oggm variables
             glacier_geometry = oggm_rgi_glaciers.at[ind, 'geometry']
             glacier_RGIId = oggm_rgi_glaciers.at[ind, 'RGIId']
             glacier_area = oggm_rgi_glaciers.at[ind, 'Area']
@@ -1455,6 +2299,14 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
             glacier_form = oggm_rgi_glaciers.at[ind, 'Form']
             glacier_termtype = oggm_rgi_glaciers.at[ind, 'TermType']
             glacier_aspect = oggm_rgi_glaciers.at[ind, 'Aspect']
+            glacier_cenLon = oggm_rgi_glaciers.at[ind, 'CenLon']
+            glacier_cenLat = oggm_rgi_glaciers.at[ind, 'CenLat']
+
+            # Hugonnet mass balance
+            try:
+                glacier_dmdtda = mbdf_rgi.at[glacier_RGIId, 'dmdtda']
+            except: # impute the mean
+                glacier_dmdtda = mbdf_rgi['dmdtda'].median()
 
             # calculate the area using pyproj and shapely for comparison with oggm
             # area_pyproj = abs(Geod(ellps="WGS84").geometry_area_perimeter(shapely.wkt.loads(str(glacier_geometry)))[0])*1.e-6 #km2
@@ -1503,13 +2355,25 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
             # some checks before returning values to dataframe
             assert glacier_zmin != -999, "Zmin should not be -999"
             assert glacier_zmax != -999, "Zmax should not be -999"
-            assert glacier_zmed != -999, "Zmed should not be -999"
-            assert glacier_lmax != -9, "Lmax should not be -9"
+            #assert glacier_zmed != -999, "Zmed should not be -999"
+            #assert glacier_lmax != -9, "Lmax should not be -9"
             assert glacier_form != 9, "Form should not be 9 (not assigned)"
             assert glacier_termtype != 9, "TermType should not be 9 (not assigned)"
             #assert glacier_aspect != -9, "Aspect should not be -9"
 
-            # Data imputation (found needed for Greenland)
+            # Data imputation for glacier_lmax (found needed 6 times in rgi 19)
+            if glacier_lmax == -9:
+                gl_geom_ext = Polygon(glacier_geometry.exterior)
+                gl_geom_ext_gdf = gpd.GeoDataFrame(geometry=[gl_geom_ext], crs="EPSG:4326")
+                _, _, _, _, glacier_epsg = from_lat_lon_to_utm_and_epsg(glacier_cenLat, glacier_cenLon)
+                glacier_lmax = lmax_imputer(gl_geom_ext_gdf, glacier_epsg)
+                #print(glacier_RGIId, glacier_cenLat, glacier_cenLon, glacier_lmax)
+
+            # Data imputation for zmed (found needed for Antarctica, rgi 19)
+            if glacier_zmed == -999:
+                glacier_zmed = 0.5*(glacier_zmin+glacier_zmax)
+
+            # Data imputation for aspect (found needed for Greenland)
             if glacier_aspect == -9: glacier_aspect = 0
 
             assert not np.any(np.isnan(np.array([glacier_area, glacier_zmin, glacier_zmax,
@@ -1528,6 +2392,7 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
             glathida.loc[df_poins_in_glacier.index, 'Form'] = glacier_form
             glathida.loc[df_poins_in_glacier.index, 'TermType'] = glacier_termtype
             glathida.loc[df_poins_in_glacier.index, 'Aspect'] = glacier_aspect
+            glathida.loc[df_poins_in_glacier.index, 'dmdtda_hugo'] = glacier_dmdtda
 
     return glathida
 
@@ -1541,19 +2406,21 @@ def add_farinotti_ith(glathida, path_farinotti_icethickness):
 
     glathida['ith_f'] = [np.nan] * len(glathida)
 
-    regions = [1,3,4,7,8,11,18]
+    regions = list(range(1, 20))
 
     for rgi in tqdm(regions, total=len(regions), leave=True):
 
+        glathida_rgi = glathida.loc[glathida['RGI'] == rgi]
+
+        if len(glathida_rgi)==0:
+            continue
+
         # get dataframe of rgi glaciers from oggm
-        oggm_rgi_shp = glob(f'/home/nico/OGGM/rgi/RGIV62/{rgi:02d}*/{rgi:02d}*.shp')[0]
+        oggm_rgi_shp = glob(f"{args.oggm}rgi/RGIV62/{rgi:02d}*/{rgi:02d}*.shp")[0]
         oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)
         oggm_rgi_glaciers_geoms = oggm_rgi_glaciers['geometry']
-        print(f'rgi: {rgi}. Imported OGGMs {oggm_rgi_shp} dataframe of {len(oggm_rgi_glaciers_geoms)} glaciers')
+        tqdm.write(f"rgi: {rgi}. Imported OGGMs {oggm_rgi_shp} dataframe of {len(oggm_rgi_glaciers_geoms)} glaciers")
 
-        # Glathida
-        glathida_rgi = glathida.loc[glathida['RGI'] == rgi]
-        indexes_all = glathida_rgi.index.tolist()
         lats = np.array(glathida_rgi['POINT_LAT'])
         lons = np.array(glathida_rgi['POINT_LON'])
         lats_xar = xarray.DataArray(lats)
@@ -1562,10 +2429,11 @@ def add_farinotti_ith(glathida, path_farinotti_icethickness):
         tqdm.write(f'rgi: {rgi}. Glathida: {len(lats)} points')
 
         # Import farinotti ice thickness files
-        files_names_farinotti = sorted(glob(path_farinotti_icethickness + f'composite_thickness_RGI60-{rgi:02d}/RGI60-{rgi:02d}/*'))
+        files_names_farinotti = sorted(glob(f"{path_farinotti_icethickness}RGI60-{rgi:02d}/*"))
         list_glaciers_farinotti_4326 = []
 
-        for n, tiffile in tqdm(enumerate(files_names_farinotti), total=len(files_names_farinotti), leave=True):
+        for n, tiffile in tqdm(enumerate(files_names_farinotti), total=len(files_names_farinotti),
+                               desc=f"rgi {rgi}", leave=True, position=0):
 
             glacier_name = tiffile.split('/')[-1].replace('_thickness.tif', '')
             try:
@@ -1573,15 +2441,14 @@ def add_farinotti_ith(glathida, path_farinotti_icethickness):
                 # See page 28 of https://www.glims.org/RGI/00_rgi60_TechnicalNote.pdf
                 glacier_geometry = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name, 'geometry'].item()
             except ValueError:
-                tqdm.write(f"{glacier_name} not present in OGGM's RGI v6.")
+                tqdm.write(f"{glacier_name} not present in OGGM's RGI v62.")
                 continue
 
             file_glacier_farinotti = rioxarray.open_rasterio(tiffile, masked=False)
             file_glacier_farinotti = file_glacier_farinotti.where(file_glacier_farinotti != 0.0) # set to nan outside glacier
             file_glacier_farinotti.rio.write_nodata(np.nan, inplace=True)
 
-            #todo: need to likely change reproject resampling method
-            file_glacier_farinotti_4326 = file_glacier_farinotti.rio.reproject("EPSG:4326")
+            file_glacier_farinotti_4326 = file_glacier_farinotti.rio.reproject("EPSG:4326", resampling=rasterio.enums.Resampling.bilinear)
             file_glacier_farinotti_4326.rio.write_nodata(np.nan, inplace=True)
             bounds_4326 = file_glacier_farinotti_4326.rio.bounds()
 
@@ -1676,12 +2543,16 @@ if __name__ == '__main__':
         #glathida = pd.read_csv(args.path_ttt_csv, low_memory=False)
         #glathida = add_rgi(glathida, args.path_O1Regions_shp)
         #glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
+        #glathida.to_csv("/media/maffe/nvme/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata_rgi_oggm.csv", index=False)
+        #glathida = pd.read_csv("/media/maffe/nvme/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata12.csv", low_memory=False)
         #glathida = add_slopes_elevation(glathida, args.mosaic)
+        #glathida = add_smb(glathida, args.RACMO_folder)
         #glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
         #glathida = add_dist_from_boder_using_geometries(glathida)
         #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
 
-        glathida = pd.read_csv(args.path_ttt_rgi_csv.replace('TTT_rgi.csv', 'metadata5.csv'), low_memory=False)
+        glathida = pd.read_csv(args.path_ttt_rgi_csv.replace('TTT_rgi.csv', 'metadata27.csv'), low_memory=False)
+        #glathida = add_smb(glathida, args.RACMO_folder)
         #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
         #glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
         #glathida = add_dist_from_boder_using_geometries(glathida)
