@@ -151,6 +151,7 @@ def velocity_median_rgi(rgi=None):
     """
     median velocities for each rgi
     Note: rgi 6, 9, 14, 15, 18 are taken from other rgis
+    returns vector of median velocities
     """
     df = pd.DataFrame(index=range(1, 20), columns=['v50', 'v100', 'v150', 'v300', 'v450', 'vgfa'])
     df.loc[1, df.columns] = np.array([50.29, 50.56, 50.71, 51.40, 51.91, 55.85])
@@ -175,15 +176,7 @@ def velocity_median_rgi(rgi=None):
     df.loc[18, df.columns] = df.loc[11]
 
     rgi_median_velocities = df.loc[rgi].to_numpy()
+
     return rgi_median_velocities
-
-
-
-
-
-
-
-
-
 
 
