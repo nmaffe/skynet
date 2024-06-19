@@ -89,8 +89,9 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
     oggm_rgi_shp = utils.get_rgi_region_file(f"{rgi:02d}", version='62') # get rgi region shp
     oggm_rgi_intersects_shp = utils.get_rgi_intersects_region_file(f"{rgi:02d}", version='62') # get rgi intersect shp file
 
-    oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)             # get rgi dataset of glaciers
-    oggm_rgi_intersects =  gpd.read_file(oggm_rgi_intersects_shp) # get rgi dataset of glaciers intersects
+    # Note this takes a few seconds. Cannot do that for each glacier.
+    oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp, engine='pyogrio')             # get rgi dataset of glaciers.
+    oggm_rgi_intersects =  gpd.read_file(oggm_rgi_intersects_shp, engine='pyogrio') # get rgi dataset of glaciers intersects
 
     def add_new_neighbors(neigbords, df):
         """ I give a list of neighbors and I should return a new list with added neighbors"""
@@ -1283,8 +1284,6 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
     #focus_filter_xarray_300_utm.plot(ax=ax2, cmap='terrain')
     #plt.show()
 
-
-
     # create xarray slopes
     #dz_dlat_xar, dz_dlon_xar = focus_utm.differentiate(coord='y'), focus_utm.differentiate(coord='x')
     #dz_dlat_filter_xar_50, dz_dlon_filter_xar_50 = focus_filter_xarray_50_utm.differentiate(coord='y'), focus_filter_xarray_50_utm.differentiate(coord='x')
@@ -2024,14 +2023,14 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
 
 if __name__ == "__main__":
 
-    glacier_name =  'RGI60-05.10315'# 'RGI60-11.01450'# 'RGI60-19.01882' RGI60-02.05515
+    glacier_name =  'RGI60-14.06794'# 'RGI60-11.01450'# 'RGI60-19.01882' RGI60-02.05515
     # ultra weird: RGI60-02.03411 millan ha ith ma non ha velocita
     # 'RGI60-05.10315'
 
     #dem_rgi = fetch_dem(folder_mosaic=args.mosaic, rgi=rgi)
     generated_points_dataframe = populate_glacier_with_metadata(
                                             glacier_name=glacier_name,
-                                            n=60000,
+                                            n=10000,
                                             seed=42,
                                             verbose=True)
 
