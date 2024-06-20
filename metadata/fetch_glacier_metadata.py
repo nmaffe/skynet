@@ -57,7 +57,8 @@ Note the following policy for Millan special cases to produce vx, vy, v, ith_m:
     2) In case the interpolation of Millan's fields yields nan because points are either too close to the margins. 
     I keep the nans that will be however removed before returning the dataset.   
 """
-
+# todo: model needs improvements here RGI60-19.01882 (very high predictions for on the ice shelf)
+# todo: need improving convolve_fft for velocity (e.g. test case RGI60-03.01710 has boundary nans)
 # todo for speedup for geometry distance calculation: decrease k when i call distances, indices = kdtree.query
 
 parser = argparse.ArgumentParser()
@@ -217,12 +218,6 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
         lmax = lmax_imputer(gl_geom_ext_gdf, glacier_epsg)
         points_df['Lmax'] = lmax
 
-    # Data imputation attempt for zmed (found needed for rgi 3, 19)
-    # e.g. RGI60-03.04044, RGI60-03.04047
-    #if gl_df['Zmed'].item() == -999:
-        #    glacier_zmed = 0.5 * (gl_df['Zmin'].item() + gl_df['Zmax'].item())
-        #    points_df['Zmed'] = glacier_zmed
-
     # Data imputation for the aspect (found needed for Greenland)
     if gl_df['Aspect'].item() == -9: points_df['Aspect'] = 0
 
@@ -373,6 +368,10 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
                 tile_v = tile_vx.copy(deep=True, data=(tile_vx ** 2 + tile_vy ** 2) ** 0.5)
                 tile_v = tile_v.squeeze()
 
+                #fig, ax = plt.subplots()
+                #tile_v.plot(ax=ax)
+                #plt.show()
+
                 # A check to see if velocity modules is as expected
                 assert float(tile_v.sum()) > 0, "tile v is not as expected."
 
@@ -406,6 +405,9 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
                 focus_filter_v450_ar = tile_v.copy(deep=True, data=focus_filter_v450)
                 focus_filter_vfa_ar = tile_v.copy(deep=True, data=focus_filter_af)
 
+                #fig, ax = plt.subplots()
+                #focus_filter_v50_ar.plot(ax=ax)
+                #plt.show()
 
                 # Interpolate
                 v_data = tile_v.interp(y=northings_ar, x=eastings_ar, method="nearest").data
@@ -870,6 +872,36 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
             points_df['v450'] = v_filter_450_data
             points_df['vgfa'] = v_filter_af_data
 
+        plot_nsidc_green_4paper = False
+        if plot_nsidc_green_4paper:
+            # Note this works for a greenland glacier with EPSG:3413
+            fig, (ax1, ax2) = plt.subplots(1,2, figsize=(5.7,3))
+            nuns = gl_geom_nunataks_gdf.to_crs(crs="EPSG:3413")
+            ext = gl_geom_ext_gdf.to_crs(crs="EPSG:3413")
+            ext.plot(ax=ax1, edgecolor='k', facecolor='none', linewidth=1, zorder=2)
+            nuns.plot(ax=ax1, edgecolor='k', facecolor='none', linewidth=1, zorder=2)
+            norm = LogNorm(vmin=1, vmax=4000)
+            im = focus_filter_v50_ar.plot(ax=ax1, cmap='jet', alpha=1, norm=norm, add_colorbar=False)
+
+            s = ax2.scatter(x=all_eastings_ar, y=all_northings_ar, c=points_df['v50'],
+                           cmap='jet', s=1, ec=None, norm=norm, alpha=1, zorder=1)
+            ext.plot(ax=ax2, edgecolor='k', facecolor='none', linewidth=1, zorder=2)
+            nuns.plot(ax=ax2, edgecolor='k', facecolor='none', linewidth=1, zorder=2)
+            cbar1 = plt.colorbar(im, ax=ax1, fraction=0.062, pad=0.04)
+            cbar2 = plt.colorbar(s, ax=ax2, fraction=0.062, pad=0.04)
+            cbar1.set_label('Ice surface velocity (m/yr)')
+            cbar2.set_label('Ice surface velocity (m/yr)')
+
+            ax1.set_xlim(ax2.get_xlim())
+            ax1.set_ylim(ax2.get_ylim())
+            ax1.set_title('')
+            ax1.set_xlabel('Eastings (m)')
+            ax1.set_ylabel('Northings (m)')
+            ax2.set_title('')
+            ax2.set_xlabel('Eastings (m)')
+            ax2.set_ylabel('Northings (m)')
+            plt.tight_layout()
+            plt.show()
 
         plot_nsidc_green = False
         if plot_nsidc_green:
@@ -1077,6 +1109,8 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
 
                     # If velocity exist
                     if float(tile_v.sum()) > 0 :
+
+                        # Note: if the kernel is too small for the nan area, zeros will result (not sure why)
                         preserve_nans = False
 
                         focus_filter_v50 = convolve_fft(tile_v.values, kernel50, nan_treatment='interpolate',
@@ -1110,7 +1144,6 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
                         #fig, ax = plt.subplots()
                         #focus_filter_v50_ar.plot(ax=ax)
                         #plt.show()
-
 
                         # Interpolate
                         #ith_data = focus_ith.interp(y=group_northings_ar, x=group_eastings_ar, method="nearest").data
@@ -1969,7 +2002,7 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
         plot_velocity_field = False
         if plot_velocity_field:
             fig, ax = plt.subplots()
-            s = ax.scatter(x=points_df['lons'], y=points_df['lats'], c=points_df['v50'], norm=LogNorm(), s=2)
+            s = ax.scatter(x=points_df['lons'], y=points_df['lats'], c=points_df['v50'], s=2) #norm=LogNorm(),
             cbar = plt.colorbar(s)
             plt.show()
 
@@ -2023,14 +2056,14 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
 
 if __name__ == "__main__":
 
-    glacier_name =  'RGI60-14.06794'# 'RGI60-11.01450'# 'RGI60-19.01882' RGI60-02.05515
+    glacier_name =  'RGI60-05.13501'# 'RGI60-11.01450'# 'RGI60-19.01882' RGI60-02.05515
     # ultra weird: RGI60-02.03411 millan ha ith ma non ha velocita
     # 'RGI60-05.10315'
 
     #dem_rgi = fetch_dem(folder_mosaic=args.mosaic, rgi=rgi)
     generated_points_dataframe = populate_glacier_with_metadata(
                                             glacier_name=glacier_name,
-                                            n=10000,
+                                            n=30000,
                                             seed=42,
                                             verbose=True)
 
