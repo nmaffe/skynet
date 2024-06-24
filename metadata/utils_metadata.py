@@ -1,9 +1,10 @@
 import utm
 import scipy
-import math
+import random
 import numpy as np
 import geopandas as gpd
 from sklearn.neighbors import KDTree
+from oggm import utils
 
 def haversine(lon1, lat1, lon2, lat2):
     """
@@ -71,3 +72,78 @@ def calc_volume_glacier(points_thickness, area=0):
     N = len(points_thickness)
     volume = np.sum(points_thickness) * 0.001 * area / N
     return volume
+
+
+def get_random_glacier_rgiid(name=None, rgi=11, area=None, seed=None):
+    """Provide a rgi number and seed. This method returns a
+    random glacier rgiid name.
+    If not rgi is passed, any rgi region is good.
+    """
+    # setup oggm version
+    utils.get_rgi_dir(version='62')
+    utils.get_rgi_intersects_dir(version='62')
+
+    if name is not None: return name
+    if seed is not None:
+        np.random.seed(seed)
+    if rgi is not None:
+        oggm_rgi_shp = utils.get_rgi_region_file(f"{rgi:02d}", version='62')
+        oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp, engine='pyogrio')
+    if area is not None:
+        oggm_rgi_glaciers = oggm_rgi_glaciers[oggm_rgi_glaciers['Area'] > area]
+    rgi_ids = oggm_rgi_glaciers['RGIId'].dropna().unique().tolist()
+    rgiid = np.random.choice(rgi_ids)
+    return rgiid
+
+
+def create_train_test(df, rgi=None, frac=0.1, full_shuffle=None, seed=None):
+    """
+    - rgi se voglio creare il test in una particolare regione
+    - frac: quanto lo voglio grande in percentuale alla grandezza del rgi
+    """
+    if seed is not None:
+        random.seed(seed)
+
+    if rgi is not None and full_shuffle is True:
+        df_rgi = df[df['RGI'] == rgi]
+        test = df_rgi.sample(frac=frac, random_state=seed)
+        train = df.drop(test.index)
+        return train, test
+
+    if full_shuffle is True:
+        test = df.sample(frac=frac, random_state=seed)
+        train = df.drop(test.index)
+        return train, test
+
+    # create test based on rgi
+    if rgi is not None:
+        df_rgi = df[df['RGI']==rgi]
+    else:
+        df_rgi = df
+
+    minimum_test_size = round(frac * len(df_rgi))
+
+    unique_glaciers = df_rgi['RGIId'].unique()
+    random.shuffle(unique_glaciers)
+    selected_glaciers = []
+    n_total_points = 0
+    #print(unique_glaciers)
+
+    for glacier_name in unique_glaciers:
+        if n_total_points < minimum_test_size:
+            selected_glaciers.append(glacier_name)
+            n_points = df_rgi[df_rgi['RGIId'] == glacier_name].shape[0]
+            n_total_points += n_points
+            #print(glacier_name, n_points, n_total_points)
+        else:
+            #print('Finished with', n_total_points, 'points, and', len(selected_glaciers), 'glaciers.')
+            break
+
+    test = df_rgi[df_rgi['RGIId'].isin(selected_glaciers)]
+    train = df.drop(test.index)
+    #print(test['RGI'].value_counts())
+    #print(test['RGIId'].value_counts())
+    #print('Total test size: ', len(test))
+    #print(train.describe().T)
+    #input('wait')
+    return train, test
