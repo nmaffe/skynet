@@ -6,7 +6,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import earthpy.spatial
-#import earthpy.plot
 import geopandas as gpd
 from glob import glob
 import xarray, rioxarray
@@ -28,7 +27,7 @@ import optuna
 import shap
 from fetch_glacier_metadata import populate_glacier_with_metadata
 from create_rgi_mosaic_tanxedem import create_glacier_tile_dem_mosaic
-from utils_metadata import calc_volume_glacier
+from utils_metadata import calc_volume_glacier, get_random_glacier_rgiid, create_train_test
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -37,7 +36,7 @@ pd.set_option('display.max_rows', None)
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--metadata_file', type=str, default="/media/maffe/nvme/glathida/glathida-3.1.0/"
-                        +"glathida-3.1.0/data/metadata28_hmineq0.0_tmin20050000_mean_grid_100.csv", help="Training dataset.")
+                        +"glathida-3.1.0/data/metadata32_hmineq0.0_tmin20050000_mean_grid_100.csv", help="Training dataset.")
 parser.add_argument('--farinotti_icethickness_folder', type=str,default="/media/maffe/nvme/Farinotti/composite_thickness_RGI60-all_regions/",
                     help="Path to Farinotti ice thickness data")
 parser.add_argument('--mosaic', type=str,default="/media/maffe/nvme/Tandem-X-EDEM/", help="Path to Tandem-X-EDEM")
@@ -53,13 +52,13 @@ utils.get_rgi_dir(version='62')
 utils.get_rgi_intersects_dir(version='62')
 
 class CFG:
-    features_not_used = ['sia']
+    features_not_used = ['sia', 'lats', 'RGI', ]
 
-    featuresSmall = ['RGI', 'Area', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'Form', 'TermType', 'Aspect',
+    featuresSmall = ['Area', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'Form', 'TermType', 'Aspect',
                 'elevation', 'elevation_from_zmin', 'dist_from_border_km_geom',
                   'slope50', 'slope75', 'slope100', 'slope125', 'slope150', 'slope300', 'slope450', 'slopegfa',
-                'curv_50', 'curv_300', 'curv_gfa', 'aspect_50', 'aspect_300', 'aspect_gfa', 'lats', 'dmdtda_hugo', 'smb',
-                     ]
+                'curv_50', 'curv_300', 'curv_gfa', 'aspect_50', 'aspect_300', 'aspect_gfa', 'dmdtda_hugo',
+                     'smb', 't2m']
 
     featuresBig = featuresSmall + ['v50', 'v100', 'v150', 'v300', 'v450', 'vgfa', ]
 
@@ -67,21 +66,23 @@ class CFG:
     millan = 'ith_m'
     farinotti = 'ith_f'
     #model = lgb.LGBMRegressor(num_leaves=40, n_jobs=-1, loss='l2', verbose=-1) #num_leaves=28, 40
-    xgb_loss = 'reg:squarederror' #'reg:squarederror' #'reg:absoluteerror'
-    xgb_params = {'lambda': 0.0832200463578115,
-                    'alpha': 6.296986987802592,
-                    'colsample_bytree': 0.6995472160,
-                    'subsample': 0.7687278029948124,
-                    'learning_rate': 0.0323799185617,
-                    'n_estimators': 537,
-                    'max_depth': 15,
-                    'min_child_weight': 10,
-                    'gamma': 0.0803458919901354,}
+    xgb_params = {'objective': 'reg:squarederror',
+                  'tree_method': "gpu_hist",
+                    'lambda': 0.00878,
+                    'alpha': 6.3,
+                    'colsample_bytree': 0.8459,
+                    'subsample': 0.809,
+                    'learning_rate': 0.07,
+                    'n_estimators': 537, #537
+                    'max_depth': 15, # 15
+                    'min_child_weight': 3,
+                    'gamma': 0.0803458919901354,
+                    }
     #model = xgb.XGBRegressor(n_estimators=537, max_depth=15, learning_rate=0.07, min_child_weight=8,
     #                        subsample=0.808, gamma=2.303, alpha=0.698, reg_lambda=5.009,
     #                         objective=xgbloss, tree_method="gpu_hist")
-    n_rounds = 1
-    n_points_regression = 10000
+    n_rounds = 100
+    n_points_regression = 30000
     use_log_transform = False
     run_feature_importance = False
     run_umap_tsne = False
@@ -106,6 +107,17 @@ s2 = ax.scatter(x=glathida_nan['POINT_LON'], y=glathida_nan['POINT_LAT'], s=2, c
 cbar = plt.colorbar(s1)
 plt.show()
 
+# Regional statistics for Millan and Farinotti
+calc_regional_stats_millan_and_farinotti = False
+if calc_regional_stats_millan_and_farinotti:
+    for rgi in sorted(glathida_rgis['RGI'].unique()):
+        df = glathida_rgis.loc[glathida_rgis['RGI']==rgi]
+
+        rmse_millan = np.sqrt(((df['THICKNESS'] - df['ith_m']) ** 2).mean())
+        rmse_farinotti = np.sqrt(((df['THICKNESS'] - df['ith_f']) ** 2).mean())
+
+        print(f"{rgi}\t{rmse_millan:.2f}\t{rmse_farinotti:.2f}")
+
 
 # Filter out some portion of it
 #glathida_rgis = glathida_rgis.loc[glathida_rgis['THICKNESS']>=CFG.min_thick_value_train]
@@ -115,14 +127,6 @@ plt.show()
 
 # Add some features
 glathida_rgis['lats'] = glathida_rgis['POINT_LAT']
-glathida_rgis['slope50'] = np.sqrt(glathida_rgis['slope_lon_gf50']**2 + glathida_rgis['slope_lat_gf50']**2)
-glathida_rgis['slope75'] = np.sqrt(glathida_rgis['slope_lon_gf75']**2 + glathida_rgis['slope_lat_gf75']**2)
-glathida_rgis['slope100'] = np.sqrt(glathida_rgis['slope_lon_gf100']**2 + glathida_rgis['slope_lat_gf100']**2)
-glathida_rgis['slope125'] = np.sqrt(glathida_rgis['slope_lon_gf125']**2 + glathida_rgis['slope_lat_gf125']**2)
-glathida_rgis['slope150'] = np.sqrt(glathida_rgis['slope_lon_gf150']**2 + glathida_rgis['slope_lat_gf150']**2)
-glathida_rgis['slope300'] = np.sqrt(glathida_rgis['slope_lon_gf300']**2 + glathida_rgis['slope_lat_gf300']**2)
-glathida_rgis['slope450'] = np.sqrt(glathida_rgis['slope_lon_gf450']**2 + glathida_rgis['slope_lat_gf450']**2)
-glathida_rgis['slopegfa'] = np.sqrt(glathida_rgis['slope_lon_gfa']**2 + glathida_rgis['slope_lat_gfa']**2)
 glathida_rgis['elevation_from_zmin'] = glathida_rgis['elevation'] - glathida_rgis['Zmin']
 #glathida_rgis['hbahrm'] = 0.03*(glathida_rgis['Area']**0.375)*1000 # Bahr's approximation: h in meters
 #glathida_rgis['hbahrm2'] = glathida_rgis['dist_from_border_km_geom']*np.sqrt(glathida_rgis['Area'])
@@ -132,9 +136,8 @@ rho, g = 917., 9.81
 glathida_rgis['sia'] = glathida_rgis['v100']/(glathida_rgis['slope100']**3)
 
 # Remove nans (this is an overkill - i want ideally to remove nans only in the training features)
-glathida_rgis = glathida_rgis.dropna()
-#glathida_rgis = glathida_rgis.dropna(subset=CFG.features + ['THICKNESS'])
-print(len(glathida_rgis))
+#glathida_rgis = glathida_rgis.dropna()
+glathida_rgis = glathida_rgis.dropna(subset=CFG.features + ['THICKNESS'])
 
 print(f"Overall dataset: {len(glathida_rgis)} rows, {glathida_rgis['RGI'].value_counts()} regions and {glathida_rgis['RGIId'].nunique()} glaciers.")
 
@@ -161,68 +164,31 @@ if CFG.run_umap_tsne:
     input('wait')
 
 
-def create_test(df, rgi=None, frac=0.1, full_shuffle=True, seed=None):
-    """
-    - rgi se voglio creare il test in una particolare regione
-    - frac: quanto lo voglio grande in percentuale alla grandezza del rgi
-    """
-    if seed is not None:
-        random.seed(seed)
-
-    if rgi is not None and full_shuffle is True:
-        df_rgi = df[df['RGI'] == rgi]
-        test = df_rgi.sample(frac=frac, random_state=seed)
-        train = df.drop(test.index)
-        return train, test
-
-    if full_shuffle is True:
-        test = df.sample(frac=frac, random_state=seed)
-        train = df.drop(test.index)
-        return train, test
-
-    # create test based on rgi
-    if rgi is not None:
-        df_rgi = df[df['RGI']==rgi]
-    else:
-        df_rgi = df
-
-    minimum_test_size = round(frac * len(df_rgi))
-
-    unique_glaciers = df_rgi['RGIId'].unique()
-    random.shuffle(unique_glaciers)
-    selected_glaciers = []
-    n_total_points = 0
-    #print(unique_glaciers)
-
-    for glacier_name in unique_glaciers:
-        if n_total_points < minimum_test_size:
-            selected_glaciers.append(glacier_name)
-            n_points = df_rgi[df_rgi['RGIId'] == glacier_name].shape[0]
-            n_total_points += n_points
-            #print(glacier_name, n_points, n_total_points)
-        else:
-            #print('Finished with', n_total_points, 'points, and', len(selected_glaciers), 'glaciers.')
-            break
-
-    test = df_rgi[df_rgi['RGIId'].isin(selected_glaciers)]
-    train = df.drop(test.index)
-    #print(test['RGI'].value_counts())
-    #print(test['RGIId'].value_counts())
-    #print('Total test size: ', len(test))
-    #print(train.describe().T)
-    #input('wait')
-    return train, test
-
 def compute_scores(y, predictions, verbose=False):
-    mae = mean_absolute_error(y, predictions)
-    mse = mean_squared_error(y, predictions)
-    rmse = np.sqrt(mean_squared_error(y, predictions))
-    r_squared = r2_score(y, predictions)
-    slope, intercept, r_value, p_value, std_err = stats.linregress(y,predictions)
-    res = {'MAE': mae, 'MSE': mse, 'RMSE': rmse, 'R-SQUARED': r_squared, 'm': slope, 'q': intercept, 'r': r_value}
+    '''returns mae, rmse, mu, med, std, slope, intercept'''
+    if np.isnan(predictions).all():
+        res = {'mae': np.nan, 'rmse': np.nan, 'mu': np.nan, 'med': np.nan, 'std': np.nan, 'mfit': np.nan, 'qfit': np.nan}
+
+    else:
+        # Remove NaNs from both vectors
+        mask = ~np.isnan(y) & ~np.isnan(predictions)
+
+        # Filter the vectors
+        y = y[mask]
+        predictions = predictions[mask]
+
+        mae = mean_absolute_error(y, predictions)
+        mse = mean_squared_error(y, predictions)
+        rmse = mean_squared_error(y, predictions, squared=False)
+        mu = np.mean(y - predictions)
+        med = np.median(y - predictions)
+        std = np.std(y - predictions)
+        r_squared = r2_score(y, predictions)
+        slope, intercept, r_value, p_value, std_err = stats.linregress(y,predictions)
+        res = {'mae': mae, 'rmse': rmse, 'mu': mu, 'med': med, 'std': std, 'mfit': slope, 'qfit': intercept}
     if verbose:
         for key in res: print(f"{key}: {res[key]:.2f}", end=", ")
-    return res
+    return tuple(res.values())
 
 def objective(trial):
 
@@ -230,23 +196,24 @@ def objective(trial):
     params = {
         # To select which parameters to optimize, please look at the XGBoost documentation:
         # https://xgboost.readthedocs.io/en/latest/parameter.html
-        "objective": CFG.xgb_loss,
-        "n_estimators": trial.suggest_int("n_estimators", 1, 2000),
+        "objective": 'reg:squarederror',
+        'tree_method': "gpu_hist",
+        "n_estimators": 1000, #trial.suggest_int("n_estimators", 1, 2000),
         "verbosity": 0,
         'lambda': trial.suggest_loguniform('lambda', 1e-3, 10.0),
-        'alpha': trial.suggest_loguniform('alpha', 7.0, 17.0),
+        #'alpha': trial.suggest_loguniform('alpha', 7.0, 17.0), # some say either lambda or alpha is enough
         "learning_rate": trial.suggest_float("learning_rate", 1e-3, 0.1, log=True),
         "max_depth": trial.suggest_int("max_depth", 1, 20),
-        "subsample": trial.suggest_float("subsample", 0.05, 1.0),
-        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.05, 1.0),
-        "min_child_weight": trial.suggest_int("min_child_weight", 1, 20),
+        "subsample": trial.suggest_float("subsample", 0.3, 1.0), # [0.7, 1] are usually the best
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.3, 1.0), # [0.5,1] usually seem to work best
+        "min_child_weight": trial.suggest_int("min_child_weight", 1, 200), # some say [1, 200]
     }
 
     train, test = create_test(glathida_rgis, rgi=None, full_shuffle=True, frac=.2, seed=42) #important to decide
     y_train, y_test = train[CFG.target], test[CFG.target]
     X_train, X_test = train[CFG.features], test[CFG.features]
 
-    model = xgb.XGBRegressor(**params, tree_method="gpu_hist")
+    model = xgb.XGBRegressor(**params)
     model.fit(X_train, y_train, eval_set=[(X_test, y_test)], early_stopping_rounds=100, verbose=False)
     y_preds = model.predict(X_test)
 
@@ -256,7 +223,7 @@ def objective(trial):
 optune_optimize = False
 if optune_optimize:
     study = optuna.create_study(direction='minimize')
-    study.optimize(objective, n_trials=100)
+    study.optimize(objective, n_trials=200)
 
     print('Best hyperparameters:', study.best_params)
     print('Best RMSE:', study.best_value)
@@ -268,13 +235,12 @@ stds_Mil, meds_Mil, slopes_Mil, rmses_Mil = [], [], [], []
 stds_Far, meds_Far, slopes_Far, rmses_Far = [], [], [], []
 
 best_model = None
-best_slope = -999
 best_rmse = 9999
 
 for i in range(CFG.n_rounds):
 
     # Train, val, and test
-    train, test = create_test(glathida_rgis, rgi=1, full_shuffle=True, frac=.1, seed=None)
+    train, test = create_train_test(glathida_rgis, rgi=3, full_shuffle=True, frac=0.2, seed=None)
 
     create_val = False
     if create_val:
@@ -305,7 +271,7 @@ for i in range(CFG.n_rounds):
     y_test_f = test[CFG.farinotti]
 
     ### initializa the model
-    model = xgb.XGBRegressor(**CFG.xgb_params, objective=CFG.xgb_loss, tree_method="gpu_hist")
+    model = xgb.XGBRegressor(**CFG.xgb_params)
     #model = CFG.model
 
     if CFG.use_log_transform:
@@ -318,18 +284,17 @@ for i in range(CFG.n_rounds):
 
     else:
         #model.fit(X_train, y_train)
-        model.fit(X_train, y_train, eval_set=[(X_test, y_test)], early_stopping_rounds=100, verbose=False)
+        model.fit(X_train, y_train, eval_set=[(X_test, y_test)], early_stopping_rounds=50, verbose=False)
         y_preds = model.predict(X_test)
 
         # Shap Analysis
         if CFG.run_shap:
             #explainer = shap.Explainer(model)
             explainer = shap.explainers.GPUTree(model, X_train)
-            shap_values = explainer(X_train.sample(2000))
+            shap_values = explainer(X_train.sample(2000), check_additivity=False)
             shap.plots.bar(shap_values, max_display=len(CFG.features))
             #shap.plots.beeswarm(shap_values, max_display=len(CFG.features))
             plt.show()
-
 
     # Run feature importance
     if CFG.run_feature_importance:
@@ -337,55 +302,31 @@ for i in range(CFG.n_rounds):
         plt.show()
 
     # benchmarks
-    model_metrics = compute_scores(y_test, y_preds, verbose=False)
+    mae_ML, rmse_ML, mu_ML, med_ML, std_ML, mfit_ML, qfit_ML = compute_scores(y_test, y_preds, verbose=False)
+    mae_mil, rmse_mil, mu_mil, med_mil, std_mil, mfit_mil, qfit_mil = compute_scores(y_test, y_test_m, verbose=False)
+    mae_far, rmse_far, mu_far, med_far, std_far, mfit_far, qfit_far = compute_scores(y_test, y_test_f, verbose=False)
 
     #*** Note: here it is very important since this is the policy to decide which model will be selected for deploy
-    rmse = model_metrics['RMSE']
-    if rmse < best_rmse:
-        best_rmse = rmse
+    #rmse = model_metrics_ML['rmse']
+    if rmse_ML < best_rmse:
+        best_rmse = rmse_ML
         best_model = model
 
-    # stats
-    mu_ML = np.mean(y_test-y_preds)
-    med_ML = np.median(y_test-y_preds)
-    std_ML = np.std(y_test-y_preds)
-    rmse_ML = np.sqrt(mean_squared_error(y_test, y_preds))
-
-    mu_millan = np.mean(y_test-y_test_m)
-    med_millan = np.median(y_test-y_test_m)
-    std_millan = np.std(y_test-y_test_m)
-    if np.isnan(y_test_m).all() is True:
-        rmse_millan = np.nan
-    else:
-        rmse_millan = np.sqrt(mean_squared_error(y_test, y_test_m))
-
-    mu_farinotti = np.mean(y_test-y_test_f)
-    med_farinotti = np.median(y_test-y_test_f)
-    std_farinotti = np.std(y_test-y_test_f)
-    if np.isnan(y_test_f).all() is True:
-        rmse_farinotti = np.nan
-    else:
-        rmse_farinotti = np.sqrt(mean_squared_error(y_test, y_test_f))
-
-    print(f'{i} Benchmarks ML, Millan and Farinotti: {rmse_ML:.2f} {rmse_millan:.2f} {rmse_farinotti:.2f}')
-
-    # fits
-    m_ML, q_ML, _, _, _ = stats.linregress(y_test, y_preds)
-    m_millan, q_millan, _, _, _ = stats.linregress(y_test, y_test_m)
-    m_farinotti, q_farinotti, _, _, _ = stats.linregress(y_test, y_test_f)
+    print(f'{i} Benchmarks ML, Millan and Farinotti: {rmse_ML:.2f} {rmse_mil:.2f} {rmse_far:.2f}')
 
     stds_ML.append(std_ML)
     meds_ML.append(med_ML)
-    slopes_ML.append(m_ML)
+    slopes_ML.append(mfit_ML)
     rmses_ML.append(rmse_ML)
-    stds_Mil.append(std_millan)
-    meds_Mil.append(med_millan)
-    slopes_Mil.append(m_millan)
-    rmses_Mil.append(rmse_millan)
-    stds_Far.append(std_farinotti)
-    meds_Far.append(med_farinotti)
-    slopes_Far.append(m_farinotti)
-    rmses_Far.append(rmse_farinotti)
+    stds_Mil.append(std_mil)
+    meds_Mil.append(med_mil)
+    slopes_Mil.append(mfit_mil)
+    rmses_Mil.append(rmse_mil)
+    stds_Far.append(std_far)
+    meds_Far.append(med_far)
+    slopes_Far.append(mfit_far)
+    rmses_Far.append(rmse_far)
+
 
 print(f"Res. medians {np.mean(meds_ML):.2f}({np.std(meds_ML):.2f}) {np.mean(meds_Mil):.2f}({np.std(meds_Mil):.2f}) {np.mean(meds_Far):.2f}({np.std(meds_Far):.2f})")
 print(f"Res. stdevs {np.mean(stds_ML):.2f}({np.std(stds_ML):.2f}) {np.mean(stds_Mil):.2f}({np.std(stds_Mil):.2f}) {np.mean(stds_Far):.2f}({np.std(stds_Far):.2f})")
@@ -395,45 +336,48 @@ print(f"Rmse {100*(np.nanmean(rmses_Mil)-np.nanmean(rmses_ML))/np.nanmean(rmses_
 print(f"Rmse {100*(np.nanmean(rmses_Far)-np.nanmean(rmses_ML))/np.nanmean(rmses_Far):.1f}% better than Farinotti")
 
 print(f"At the end of cv the best rmse is {best_rmse}")
+
 # ************************************
 # plot
 # ************************************
-fig, (ax1, ax2) = plt.subplots(1,2, figsize=(8,4))
-s1 = ax1.scatter(x=y_test, y=test['ith_m'], s=5, c='g', alpha=.3)
-s1 = ax1.scatter(x=y_test, y=test['ith_f'], s=5, c='r', alpha=.3)
-s1 = ax1.scatter(x=y_test, y=y_preds, s=5, c='aliceblue', ec='b', alpha=.5)
+plot_last_cv_iteration = False
+if plot_last_cv_iteration:
+    fig, (ax1, ax2) = plt.subplots(1,2, figsize=(8,4))
+    s1 = ax1.scatter(x=y_test, y=test['ith_m'], s=5, c='g', alpha=.3)
+    s1 = ax1.scatter(x=y_test, y=test['ith_f'], s=5, c='r', alpha=.3)
+    s1 = ax1.scatter(x=y_test, y=y_preds, s=5, c='aliceblue', ec='b', alpha=.5)
 
-xmax = max(np.max(y_test), np.max(y_preds), np.max(y_test_m), np.max(y_test_f))
+    xmax = max(np.max(y_test), np.max(y_preds), np.max(y_test_m), np.max(y_test_f))
 
-fit_ML_plot = ax1.plot([0.0, xmax], [q_ML, q_ML+xmax*m_ML], c='b')
-fit_millan_plot = ax1.plot([0.0, xmax], [q_millan, q_millan+xmax*m_millan], c='lime')
-fit_farinotti_plot = ax1.plot([0.0, xmax], [q_farinotti, q_farinotti+xmax*m_farinotti], c='r')
-s2 = ax1.plot([0.0, xmax], [0.0, xmax], c='k')
-ax1.axis([None, xmax, None, xmax])
+    fit_ML_plot = ax1.plot([0.0, xmax], [qfit_ML, qfit_ML+xmax*mfit_ML], c='b')
+    fit_millan_plot = ax1.plot([0.0, xmax], [qfit_mil, qfit_mil+xmax*mfit_mil], c='lime')
+    fit_farinotti_plot = ax1.plot([0.0, xmax], [qfit_far, qfit_far+xmax*mfit_far], c='r')
+    s2 = ax1.plot([0.0, xmax], [0.0, xmax], c='k')
+    ax1.axis([None, xmax, None, xmax])
 
-ax2.hist(y_test-y_preds, bins=np.arange(-xmax, xmax, 10), label='ML', color='lightblue', ec='blue', alpha=.4, zorder=2)
-ax2.hist(y_test-y_test_m, bins=np.arange(-xmax, xmax, 10), label='Millan', color='green', ec='green', alpha=.3, zorder=1)
-ax2.hist(y_test-y_test_f, bins=np.arange(-xmax, xmax, 10), label='Farinotti', color='red', ec='red', alpha=.3, zorder=1)
+    ax2.hist(y_test-y_preds, bins=np.arange(-xmax, xmax, 10), label='ML', color='lightblue', ec='blue', alpha=.4, zorder=2)
+    ax2.hist(y_test-y_test_m, bins=np.arange(-xmax, xmax, 10), label='Millan', color='green', ec='green', alpha=.3, zorder=1)
+    ax2.hist(y_test-y_test_f, bins=np.arange(-xmax, xmax, 10), label='Farinotti', color='red', ec='red', alpha=.3, zorder=1)
 
-# text
-text_ml = f"ML\n$\\mu$ = {mu_ML:.1f}\nmed = {med_ML:.1f}\n$\\sigma$ = {std_ML:.1f}"
-text_millan = f"Millan\n$\\mu$ = {mu_millan:.1f}\nmed = {med_millan:.1f}\n$\\sigma$ = {std_millan:.1f}"
-text_farinotti = f"Farinotti\n$\\mu$ = {mu_farinotti:.1f}\nmed = {med_farinotti:.1f}\n$\\sigma$ = {std_farinotti:.1f}"
-# text boxes
-props_ML = dict(boxstyle='round', facecolor='lightblue', ec='blue', alpha=0.4)
-props_millan = dict(boxstyle='round', facecolor='lime', ec='green', alpha=0.4)
-props_farinotti = dict(boxstyle='round', facecolor='salmon', ec='red', alpha=0.4)
-ax2.text(0.05, 0.95, text_ml, transform=ax2.transAxes, fontsize=10, verticalalignment='top', bbox=props_ML)
-ax2.text(0.05, 0.7, text_millan, transform=ax2.transAxes, fontsize=10, verticalalignment='top', bbox=props_millan)
-ax2.text(0.05, 0.45, text_farinotti, transform=ax2.transAxes, fontsize=10, verticalalignment='top', bbox=props_farinotti)
+    # text
+    text_ml = f"ML\n$\\mu$ = {mu_ML:.1f}\nmed = {med_ML:.1f}\n$\\sigma$ = {std_ML:.1f}"
+    text_millan = f"Millan\n$\\mu$ = {mu_mil:.1f}\nmed = {med_mil:.1f}\n$\\sigma$ = {std_mil:.1f}"
+    text_farinotti = f"Farinotti\n$\\mu$ = {mu_far:.1f}\nmed = {med_far:.1f}\n$\\sigma$ = {std_far:.1f}"
+    # text boxes
+    props_ML = dict(boxstyle='round', facecolor='lightblue', ec='blue', alpha=0.4)
+    props_millan = dict(boxstyle='round', facecolor='lime', ec='green', alpha=0.4)
+    props_farinotti = dict(boxstyle='round', facecolor='salmon', ec='red', alpha=0.4)
+    ax2.text(0.05, 0.95, text_ml, transform=ax2.transAxes, fontsize=10, verticalalignment='top', bbox=props_ML)
+    ax2.text(0.05, 0.7, text_millan, transform=ax2.transAxes, fontsize=10, verticalalignment='top', bbox=props_millan)
+    ax2.text(0.05, 0.45, text_farinotti, transform=ax2.transAxes, fontsize=10, verticalalignment='top', bbox=props_farinotti)
 
-ax1.set_xlabel('GT ice thickness (m)')
-ax1.set_ylabel('Modelled ice thickness (m)')
-ax2.set_xlabel('GT - Model (m)')
-ax2.legend(loc='best')
+    ax1.set_xlabel('GT ice thickness (m)')
+    ax1.set_ylabel('Modelled ice thickness (m)')
+    ax2.set_xlabel('GT - Model (m)')
+    ax2.legend(loc='best')
 
-plt.tight_layout()
-plt.show()
+    plt.tight_layout()
+    plt.show()
 
 plot_spatial_test_predictions = False
 if plot_spatial_test_predictions:
@@ -446,7 +390,7 @@ if plot_spatial_test_predictions:
     for glacier_name in test_glaciers_names:
         rgi = glacier_name[6:8]
         oggm_rgi_shp = glob(f"{args.oggm}rgi/RGIV62/{rgi}*/{rgi}*.shp")[0]
-        oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)
+        oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp, engine='pyogrio')
         glacier_geometry = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId'] == glacier_name]['geometry'].item()
         # print(glacier_geometry)
         glacier_geometries.append(glacier_geometry)
@@ -488,134 +432,11 @@ if plot_spatial_test_predictions:
 
     plt.show()
 
-# *********************************************
-# Train the model with full set of available data
-# *********************************************
-# Import the training dataset
-glathida_full = pd.read_csv(args.metadata_file, low_memory=False)
 
-# Replace zeros
-glathida_full.loc[glathida_full['THICKNESS'] == 0, 'THICKNESS'] = glathida_full.loc[glathida_full['THICKNESS'] == 0, ['ith_m', 'ith_f']].mean(axis=1, skipna=True)
-
-#glathida_full = glathida_full[~glathida_full['RGI'].isin([19])]
-#glathida_full = glathida_full[glathida_full['RGIId'] != 'RGI60-05.13567']
-
-glathida_full['lats'] = glathida_full['POINT_LAT']
-#glathida_full['v50'] = np.sqrt(glathida_full['vx_gf50']**2 + glathida_full['vy_gf50']**2)
-#glathida_full['v100'] = np.sqrt(glathida_full['vx_gf100']**2 + glathida_full['vy_gf100']**2)
-#glathida_full['v150'] = np.sqrt(glathida_full['vx_gf150']**2 + glathida_full['vy_gf150']**2)
-#glathida_full['v300'] = np.sqrt(glathida_full['vx_gf300']**2 + glathida_full['vy_gf300']**2)
-#glathida_full['v450'] = np.sqrt(glathida_full['vx_gf450']**2 + glathida_full['vy_gf450']**2)
-#glathida_full['vgfa'] = np.sqrt(glathida_full['vx_gfa']**2 + glathida_full['vy_gfa']**2)
-glathida_full['slope50'] = np.sqrt(glathida_full['slope_lon_gf50']**2 + glathida_full['slope_lat_gf50']**2)
-glathida_full['slope75'] = np.sqrt(glathida_full['slope_lon_gf75']**2 + glathida_full['slope_lat_gf75']**2)
-glathida_full['slope100'] = np.sqrt(glathida_full['slope_lon_gf100']**2 + glathida_full['slope_lat_gf100']**2)
-glathida_full['slope125'] = np.sqrt(glathida_full['slope_lon_gf125']**2 + glathida_full['slope_lat_gf125']**2)
-glathida_full['slope150'] = np.sqrt(glathida_full['slope_lon_gf150']**2 + glathida_full['slope_lat_gf150']**2)
-glathida_full['slope300'] = np.sqrt(glathida_full['slope_lon_gf300']**2 + glathida_full['slope_lat_gf300']**2)
-glathida_full['slope450'] = np.sqrt(glathida_full['slope_lon_gf450']**2 + glathida_full['slope_lat_gf450']**2)
-glathida_full['slopegfa'] = np.sqrt(glathida_full['slope_lon_gfa']**2 + glathida_full['slope_lat_gfa']**2)
-glathida_full['elevation_from_zmin'] = glathida_full['elevation'] - glathida_full['Zmin']
-#glathida_full['sia'] = ((glathida_full['v100']*(3+1))/(2*A*(rho*g*glathida_full['slope100'])**3))**(1./4)
-glathida_full['sia'] = glathida_full['v100']/(glathida_full['slope100']**3)
-
-
-# Remove nans (that remained from trying to replace zeros)
-glathida_full = glathida_full.dropna(subset=CFG.features + ['THICKNESS'])
-
-print(f"Full dataset: {len(glathida_full)} rows, {glathida_full['RGI'].value_counts()} regions and {glathida_full['RGIId'].nunique()} glaciers.")
-#print('nans in full dataset: ', glathida_full.isna().sum())
-
-
-stds_ML, meds_ML, slopes_ML, rmses_ML, maes_ML = [], [], [], [], []
-best_model = None
-best_slope = -999
-best_rmse = 9999
-
-for i in range(CFG.n_rounds):
-
-    # Train, val, and test
-    train, test = create_test(glathida_full, rgi=None, full_shuffle=True, frac=.1, seed=None)
-
-    create_val = False
-    if create_val:
-        val = glathida_full.drop(test.index).sample(n=500)
-        train = glathida_full.drop(test.index).drop(val.index)
-
-    print(f"Iter {i} Train/Test: {len(train)}/{len(test)}")
-
-    y_train, y_test = train[CFG.target], test[CFG.target]
-    X_train, X_test = train[CFG.features], test[CFG.features]
-    print(f'Dataset sizes: {X_train.shape}, {X_test.shape}, {y_train.shape}, {y_test.shape}')
-
-    ### initializa the model
-    model = xgb.XGBRegressor(**CFG.xgb_params, objective=CFG.xgb_loss, tree_method="gpu_hist")
-    #model = CFG.model
-
-    model.fit(X_train, y_train, eval_set=[(X_test, y_test)], early_stopping_rounds=100, verbose=False)
-    #model.fit(X_train, y_train)
-    y_preds = model.predict(X_test)
-
-    # benchmarks
-    model_metrics = compute_scores(y_test, y_preds, verbose=True)
-
-    # *** Note: here it is very important since this is the policy to decide which model will be selected for deploy
-    # This is critical. If I choose the test set in a way that it is not random but has only glaciers with shallow
-    # thickness, the rmse will be much smaller and I will select the model for this particular dataset.
-    # I should have a mechanism that selects the best model based not on the choice of the test dataset.
-    # E.g. with create_test full_shuffle=False, RGI60-05.13501 glacier with and without its own points is predicted
-    # much differently.
-    rmse = model_metrics['RMSE']
-    if rmse < best_rmse:
-        best_rmse = rmse
-        best_model = model
-
-    # stats
-    mu_ML = np.mean(y_test - y_preds)
-    med_ML = np.median(y_test - y_preds)
-    std_ML = np.std(y_test - y_preds)
-    rmse_ML = model_metrics['RMSE']
-    mae_ML = model_metrics['MAE']
-
-    print(f'{i} Full data Benchmarks ML: {rmse_ML:.2f}')
-
-    # fits
-    m_ML, q_ML, _, _, _ = stats.linregress(y_test, y_preds)
-
-    stds_ML.append(std_ML)
-    meds_ML.append(med_ML)
-    slopes_ML.append(m_ML)
-    rmses_ML.append(rmse_ML)
-    maes_ML.append(mae_ML)
-
-print(f"Full data Res. medians {np.mean(meds_ML):.2f}({np.std(meds_ML):.2f})")
-print(f"Full data Res. stdevs {np.mean(stds_ML):.2f}({np.std(stds_ML):.2f})")
-print(f"Full data Res. slopes {np.mean(slopes_ML):.2f}({np.std(slopes_ML):.2f})")
-print(f"Full data Rmse {np.mean(rmses_ML):.2f}({np.std(rmses_ML):.2f})")
-print(f"Full data Mae {np.mean(maes_ML):.2f}({np.std(maes_ML):.2f})")
-
-print(f"At the end of cv the best full data rmse is {best_rmse}")
 # *********************************************
 # Model deploy
 # *********************************************
-def get_random_glacier_rgiid(name=None, rgi=11, area=None, seed=None):
-    """Provide a rgi number and seed. This method returns a
-    random glacier rgiid name.
-    If not rgi is passed, any rgi region is good.
-    """
-    if name is not None: return name
-    if seed is not None:
-        np.random.seed(seed)
-    if rgi is not None:
-        oggm_rgi_shp = utils.get_rgi_region_file(f"{rgi:02d}", version='62')
-        oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)
-    if area is not None:
-        oggm_rgi_glaciers = oggm_rgi_glaciers[oggm_rgi_glaciers['Area'] > area]
-    rgi_ids = oggm_rgi_glaciers['RGIId'].dropna().unique().tolist()
-    rgiid = np.random.choice(rgi_ids)
-    return rgiid
-
-glacier_name_for_generation = get_random_glacier_rgiid(name='RGI60-03.01710', rgi=3, area=20, seed=None)
+glacier_name_for_generation = get_random_glacier_rgiid(name='RGI60-05.13501', rgi=3, area=20, seed=None)
 #'RGI60-13.37753', RGI60-13.43528 RGI60-13.54431
 #glacier_name_for_generation = 'RGI60-07.00228' #RGI60–07.00027 'RGI60-11.01450' RGI60-07.00552,
 #glacier_name_for_generation = 'RGI60-07.00832' very nice
@@ -678,7 +499,7 @@ bedrock_elevations_Far = test_glacier['elevation'] - y_test_glacier_f
 
 # Begin to extract all necessary things to plot the result
 oggm_rgi_shp = glob(f"{args.oggm}rgi/RGIV62/{test_glacier_rgi}*/{test_glacier_rgi}*.shp")[0]
-oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp)
+oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp, engine='pyogrio')
 glacier_geometry = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name_for_generation]['geometry'].item()
 glacier_area = oggm_rgi_glaciers.loc[oggm_rgi_glaciers['RGIId']==glacier_name_for_generation]['Area'].item()
 exterior_ring = glacier_geometry.exterior  # shapely.geometry.polygon.LinearRing
@@ -754,7 +575,7 @@ if plot_fancy_ML_prediction:
     dx, dy = x1 - x0, y1 - y0
     hillshade = copy.deepcopy(focus)
     hillshade.values = earthpy.spatial.hillshade(focus, azimuth=315, altitude=0)
-    hillshade = hillshade.rio.clip_box(minx=x0-dx/2, miny=y0-dy/2, maxx=x1+dx/2, maxy=y1+dy/2)
+    hillshade = hillshade.rio.clip_box(minx=x0-dx/4, miny=y0-dy/4, maxx=x1+dx/4, maxy=y1+dy/4)
 
     im = hillshade.plot(ax=ax, cmap='grey', alpha=0.9, zorder=0, add_colorbar=False)
     #im = ax.imshow(hillshade, cmap='grey', alpha=0.9, zorder=0)
@@ -764,8 +585,8 @@ if plot_fancy_ML_prediction:
     # y_preds_glacier
     s1 = ax.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=1, c=y_preds_glacier,
                      cmap='jet', label='ML', zorder=1, vmin=vmin,vmax=vmax)
-    s_glathida = ax.scatter(x=glathida_full['POINT_LON'], y=glathida_full['POINT_LAT'], c=glathida_full['THICKNESS'],
-                            cmap='jet', ec='k', s=40, vmin=vmin,vmax=vmax)
+    s_glathida = ax.scatter(x=glathida_rgis['POINT_LON'], y=glathida_rgis['POINT_LAT'], c=glathida_rgis['THICKNESS'],
+                            cmap='jet', ec='grey', lw=0.5, s=20, vmin=vmin,vmax=vmax)
 
     cbar = plt.colorbar(s1, ax=ax)
     cbar.mappable.set_clim(vmin=vmin,vmax=vmax)
@@ -843,7 +664,7 @@ def run_rgi_simulation(rgi):
     print("Begin regional simulation ")
     oggm_rgi_shp = utils.get_rgi_region_file(f"{rgi:02d}", version='62')
     # Get glaciers and order them in decreasing order by Area. First glaciers will be bigger and slower to process.
-    oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp).sort_values(by='Area', ascending=False)
+    oggm_rgi_glaciers = gpd.read_file(oggm_rgi_shp, engine='pyogrio').sort_values(by='Area', ascending=False)
     # Main loop over glaciers
     for i, gl_id in tqdm(enumerate(oggm_rgi_glaciers['RGIId']), total=len(oggm_rgi_glaciers), desc=f"rgi {rgi} Glaciers", leave=True):
         # Fetch glacier data
@@ -852,4 +673,4 @@ def run_rgi_simulation(rgi):
 
 run_rgi_simulation_YN = False
 if run_rgi_simulation_YN:
-    run_rgi_simulation(5)
+    run_rgi_simulation(11)
