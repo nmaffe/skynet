@@ -20,7 +20,7 @@ from sklearn.neighbors import KDTree
 import shapely
 from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union, nearest_points
-from pyproj import Transformer
+from pyproj import Transformer, Geod
 from joblib import Parallel, delayed
 from create_rgi_mosaic_tanxedem import create_glacier_tile_dem_mosaic
 from utils_metadata import from_lat_lon_to_utm_and_epsg, gaussian_filter_with_nans, haversine, lmax_imputer
@@ -74,18 +74,20 @@ parser.add_argument('--RACMO_folder', type=str,default="/media/maffe/nvme/racmo"
 parser.add_argument('--path_ERA5_t2m_folder', type=str,default="/media/maffe/nvme/ERA5/", help="Path to ERA5 folder")
 parser.add_argument('--save', type=int, default=0, help="Save final dataset or not.")
 parser.add_argument('--save_outname', type=str,
-            default="/media/maffe/nvme/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata32.csv",
+            default="/media/maffe/nvme/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata34",
             help="Saved dataframe name.")
 
 #todo: whenever i call clip_box i need to check if there is only 1 measurement !
 #todo: change all reprojecting method from nearest to something else, like bisampling. Also in all .to_crs(...)
 # todo: Slope from oggm: worth thicking of calculating it myself ?
 
+# todo: replace .csv with .parquet ?
+
 # todo:
 #  1) Bonus: add feature slope interpolation at closest point.
 #  2) zmin, zmax, zmed are currently imported from oggm. I think using tandemx could be better ?
 #  3) Add connectivity to ice sheet ? that may help glaciers in rgi 5, 19
-#  4) Add curvature at same resolution than slope !!
+#  4) Curvature: c50 and cgfa are pretty useless. I would rather delete those and add c450.
 #  5) add length of glacier perimeter
 #  6) add glacier nunatak area ratio to total
 
@@ -661,7 +663,7 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
 
     if (any(ele in list(glathida) for ele in ['ith_m', 'v50', 'v100'])):
         print('Variable already in dataframe.')
-        #return glathida
+        return glathida
 
     glathida['ith_m'] = [np.nan] * len(glathida)
     glathida['v50'] = [np.nan] * len(glathida)
@@ -689,6 +691,7 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
     #glathida['dvy_dx'] = [np.nan] * len(glathida)
     #glathida['dvy_dy'] = [np.nan] * len(glathida)
 
+    # I believe in rgi 19 I do not contemplate Millan tiles since GlaThiDa GT data are not present outside the ice sheet.
     for rgi in [19,]:
         glathida_rgi = glathida.loc[glathida['RGI'] == rgi]  # glathida to specific rgi
 
@@ -1090,7 +1093,7 @@ def add_millan_vx_vy_ith(glathida, path_millan_velocity, path_millan_icethicknes
         # get Millan files
         file_vx = f"{args.millan_velocity_folder}RGI-{rgi}/greenland_vel_mosaic250_vx_v1.tif"
         file_vy = f"{args.millan_velocity_folder}RGI-{rgi}/greenland_vel_mosaic250_vy_v1.tif"
-        files_ith = sorted(glob(f"{args.millan_icethickness_folder}RGI-{rgi}/THICKNESS_RGI-5*"))
+        # files_ith = sorted(glob(f"{args.millan_icethickness_folder}RGI-{rgi}/THICKNESS_RGI-5*")) # we dont use millan
         file_ith_bedmacv5 = f"{args.NSIDC_icethickness_folder_Greenland}BedMachineGreenland-v5.nc"
 
         ''' BEDMACHINEV5 ITH '''
@@ -2119,7 +2122,7 @@ def add_dist_from_boder_using_geometries(glathida):
         if (len(neighbors1)) ==1: return None
         else: return neighbors1
 
-    regions = list(range(1, 20))#[1,2,3,4,6,7,8,9,10,11,12,13,14,15,16,17,18] #[1,3,4,7,8,11,18] #list(range(1, 20)) #
+    regions = list(range(1, 20))
 
     # loop over regions
     for rgi in tqdm(regions, total=len(regions), desc='Distances in RGI',  leave=True):
@@ -2436,11 +2439,13 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
     print("Adding OGGM's stats method and Hugonnet dmdtda")
     if (any(ele in list(glathida) for ele in ['RGIId', 'Area'])):
         print('Variables RGIId/Area etc already in dataframe.')
-        return glathida
+        #return glathida
 
     glathida['RGIId'] = [np.nan] * len(glathida)
     glathida['RGIId'] = glathida['RGIId'].astype(object)
     glathida['Area'] = [np.nan] * len(glathida)
+    glathida['Area_icefree'] = [np.nan] * len(glathida)
+    glathida['Perimeter'] = [np.nan] * len(glathida)
     glathida['Zmin'] = [np.nan] * len(glathida) # -999 are bad values
     glathida['Zmax'] = [np.nan] * len(glathida) # -999 are bad values
     glathida['Zmed'] = [np.nan] * len(glathida) # -999 are bad values
@@ -2460,7 +2465,6 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
     mbdf = mbdf.loc[mbdf['period'] == '2000-01-01_2020-01-01']
 
     regions = list(range(1, 20))#[1,2,3,4,6,7,8,9,10,11,12,13,14,15,16,17,18]#[1,3,4,7,8,11,18]
-    #regions = [19,]
 
     for rgi in regions:
         # get OGGM's dataframe of rgi glaciers
@@ -2483,7 +2487,7 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
             # Oggm variables
             glacier_geometry = oggm_rgi_glaciers.at[ind, 'geometry']
             glacier_RGIId = oggm_rgi_glaciers.at[ind, 'RGIId']
-            glacier_area = oggm_rgi_glaciers.at[ind, 'Area']
+            #glacier_area = oggm_rgi_glaciers.at[ind, 'Area']
             glacier_zmin = oggm_rgi_glaciers.at[ind, 'Zmin']
             glacier_zmax = oggm_rgi_glaciers.at[ind, 'Zmax']
             glacier_zmed = oggm_rgi_glaciers.at[ind, 'Zmed']
@@ -2494,6 +2498,19 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
             glacier_aspect = oggm_rgi_glaciers.at[ind, 'Aspect']
             glacier_cenLon = oggm_rgi_glaciers.at[ind, 'CenLon']
             glacier_cenLat = oggm_rgi_glaciers.at[ind, 'CenLat']
+
+            # Calculate area and perimeter. Area in km2, perimeter in m.
+            glacier_geometry_ext = Polygon(glacier_geometry.exterior)
+
+            glacier_area, perimeter_ice = Geod(ellps="WGS84").geometry_area_perimeter(glacier_geometry)
+            area_ice_and_noince, perimeter_ice_and_noice = Geod(ellps="WGS84").geometry_area_perimeter(glacier_geometry_ext)
+
+            glacier_area = abs(glacier_area) * 1e-6  # km^2
+            area_ice_and_noince = abs(area_ice_and_noince) * 1e-6  # km^2
+
+            # Calculate area of nunataks in percentage to the total area
+            area_noice = 1 - glacier_area / area_ice_and_noince
+            #print(f'{glacier_area} {perimeter_ice} {area_noice}')
 
             # Hugonnet mass balance
             try:
@@ -2577,6 +2594,8 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
             # Add to dataframe
             glathida.loc[df_poins_in_glacier.index, 'RGIId'] = glacier_RGIId
             glathida.loc[df_poins_in_glacier.index, 'Area'] = glacier_area
+            glathida.loc[df_poins_in_glacier.index, 'Area_icefree'] = area_noice
+            glathida.loc[df_poins_in_glacier.index, 'Perimeter'] = perimeter_ice
             glathida.loc[df_poins_in_glacier.index, 'Zmin'] = glacier_zmin
             glathida.loc[df_poins_in_glacier.index, 'Zmax'] = glacier_zmax
             glathida.loc[df_poins_in_glacier.index, 'Zmed'] = glacier_zmed
@@ -2793,19 +2812,21 @@ if __name__ == '__main__':
         #glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
         #glathida = add_dist_from_boder_using_geometries(glathida)
         #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
+        #glathida = add_t2m(glathida, args.path_ERA5_t2m_folder)
 
-        glathida = pd.read_csv(args.path_ttt_rgi_csv.replace('TTT_rgi.csv', 'metadata31.csv'), low_memory=False)
+        glathida = pd.read_csv(args.path_ttt_rgi_csv.replace('TTT_rgi.csv', 'metadata33.csv'), low_memory=False)
         #glathida = add_smb(glathida, args.RACMO_folder)
         #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
-        #glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
+        glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
         #glathida = add_dist_from_boder_using_geometries(glathida)
         #glathida = add_slopes_elevation(glathida, args.mosaic)
         #glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
-        glathida = add_t2m(glathida, args.path_ERA5_t2m_folder)
+        #glathida = add_t2m(glathida, args.path_ERA5_t2m_folder)
 
         if args.save:
-            glathida.to_csv(args.save_outname, index=False)
-            print(f"Metadata dataset saved: {args.save_outname}")
+            glathida.to_csv(f'{args.save_outname}.csv', index=False)
+            glathida.to_parquet(f'{args.save_outname}.parquet', index=False, engine='fastparquet')
+            print(f"Metadata dataset saved: {args.save_outname} .csv and .parquet")
         print(f'Finished in {(time.time()-t0)/60} minutes. Bye bye.')
         exit()
 
