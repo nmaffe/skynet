@@ -25,7 +25,7 @@ parser.add_argument('--input_metadata_folder', type=str,
                     default="/media/maffe/nvme/glathida/glathida-3.1.0/glathida-3.1.0/data/",
                     help="Input metadata folder to be gridded")
 parser.add_argument('--input_metadata_file', type=str,
-                    default="metadata32.csv", help="Input metadata file to be gridded")
+                    default="metadata34.csv", help="Input metadata file to be gridded")
 parser.add_argument('--tmin', type=int, default=20050000, help="Keep only measurements after this year.")
 parser.add_argument('--hmin', type=float, default=0.0, help="Keep only measurements with thickness greater than this.")
 parser.add_argument('--method_grid', type=str, default='mean', help="Supported options: mean, median")
@@ -36,6 +36,7 @@ args = parser.parse_args()
 
 """ Import ungridded dataset """
 glathida = pd.read_csv(f"{args.input_metadata_folder}{args.input_metadata_file}", low_memory=False)
+#glathida = pd.read_parquet(f"{args.input_metadata_folder}{args.input_metadata_file}")
 
 """ A. Work on the dataset """
 # A.1 Remove old (-er than 2005) measurements and erroneous data (if DATA_FLAG is not nan)
@@ -44,8 +45,8 @@ glathida = glathida[cond]
 print(f'Original columns: {list(glathida)} \n')
 
 # A.2 Keep only these columns
-cols = ['RGI', 'RGIId', 'POINT_LAT', 'POINT_LON', 'THICKNESS', 'Area', 'elevation', 'dmdtda_hugo', 'smb',
-        'dist_from_border_km_geom',
+cols = ['RGI', 'RGIId', 'POINT_LAT', 'POINT_LON', 'THICKNESS', 'Area', 'Area_icefree', 'Perimeter',
+        'elevation', 'dmdtda_hugo', 'smb', 'dist_from_border_km_geom',
        'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'ith_m', 'ith_f',
         'slope50', 'slope75', 'slope100', 'slope125', 'slope150', 'slope300', 'slope450', 'slopegfa',
         'Form', 'Aspect', 'TermType', 'v50', 'v100', 'v150', 'v300', 'v450', 'vgfa',
@@ -94,6 +95,8 @@ for n, rgiid in enumerate(rgi_ids):
 
     # Those are the glacier-wide constant features
     area = glathida_id['Area'].iloc[0]
+    area_noice = glathida_id['Area_icefree'].iloc[0]
+    perimeter = glathida_id['Perimeter'].iloc[0]
     rgi = glathida_id['RGI'].iloc[0]
     zmin = glathida_id['Zmin'].iloc[0]
     zmax = glathida_id['Zmax'].iloc[0]
@@ -202,6 +205,8 @@ for n, rgiid in enumerate(rgi_ids):
     glathida_id_grid['RGI'] = rgi
     glathida_id_grid['RGIId'] = rgiid
     glathida_id_grid['Area'] = area
+    glathida_id_grid['Area_icefree'] = area_noice
+    glathida_id_grid['Perimeter'] = perimeter
     glathida_id_grid['Zmin'] = zmin
     glathida_id_grid['Zmax'] = zmax
     glathida_id_grid['Zmed'] = zmed
@@ -232,9 +237,11 @@ print(f"Finished. No. original measurements {len(glathida)} down to {len(glathid
 print(f"{glathida_gridded['RGI'].value_counts()}")
 
 if args.save:
+    ext = args.input_metadata_file[args.input_metadata_file.rfind('.'):]
     filename_out = (args.input_metadata_folder +
-                    args.input_metadata_file.replace('.csv', f'_hmineq{args.hmin}_tmin{args.tmin}_{args.method_grid}_grid_{args.nbins_grid_latlon}.csv'))
+                    args.input_metadata_file.replace(ext, f'_hmineq{args.hmin}_tmin{args.tmin}_{args.method_grid}_grid_{args.nbins_grid_latlon}{ext}'))
     glathida_gridded.to_csv(filename_out, index=False)
-    print(f"Gridded dataframe saved: {filename_out}.")
+
+    print(f"Gridded dataframe saved: {filename_out}")
 
 
