@@ -18,7 +18,7 @@ import geopandas as gpd
 import oggm
 from oggm import utils
 from shapely.geometry import Point, Polygon, LineString, MultiLineString
-from pyproj import Proj, Transformer
+from pyproj import Proj, Transformer, Geod
 import utm
 #from rtree import index
 from joblib import Parallel, delayed
@@ -61,7 +61,9 @@ Note the following policy for Millan special cases to produce vx, vy, v, ith_m:
 # todo: need improving convolve_fft for velocity (e.g. test case RGI60-03.01710 has boundary nans)
 # todo for speedup for geometry distance calculation: decrease k when i call distances, indices = kdtree.query
 # todo: speedups: for Millan velocity and ith fields I may use oggm (probably faster)
-
+# todo: use cupy-xarray instead of xarray
+# todo: use cupy instead of numpy. In particular convolving the slope could be done on GPU
+# using https://carpentries-incubator.github.io/lesson-gpu-programming/cupy.html
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--mosaic', type=str,default="/media/maffe/nvme/Tandem-X-EDEM/",
@@ -208,7 +210,7 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
 
     # Fill these features
     points_df['RGI'] = rgi
-    points_df['Area'] = gl_df['Area'].item()
+    #points_df['Area'] = gl_df['Area'].item()
     #points_df['Zmin'] = gl_df['Zmin'].item() # we use tandemx for this
     #points_df['Zmax'] = gl_df['Zmax'].item() # we use tandemx for this
     #points_df['Zmed'] = gl_df['Zmed'].item() # we use tandemx for this
@@ -217,6 +219,21 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
     points_df['Form'] = gl_df['Form'].item()
     points_df['TermType'] = gl_df['TermType'].item()
     points_df['Aspect'] = gl_df['Aspect'].item()
+
+    # Area in km2, perimeter in m
+    # Note that the area in OGGM equals to area_ice.
+    glacier_area, perimeter_ice = Geod(ellps="WGS84").geometry_area_perimeter(gl_geom)
+    area_ice_and_noince, perimeter_ice_and_noice = Geod(ellps="WGS84").geometry_area_perimeter(gl_geom_ext)
+
+    glacier_area = abs(glacier_area) * 1e-6                 # km^2
+    area_ice_and_noince = abs(area_ice_and_noince) * 1e-6   # km^2
+
+    # Calculate area of nunataks in percentage to the total area
+    area_noice = 1 - glacier_area / area_ice_and_noince
+
+    points_df['Area'] = glacier_area            # km^2
+    points_df['Perimeter'] = perimeter_ice      # m
+    points_df['Area_icefree'] = area_noice      # unitless
 
     # Data imputation for lmax (needed for sure for rgi19)
     if gl_df['Lmax'].item() == -9:
@@ -647,14 +664,133 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
     def fetch_millan_data_Gr(points_df):
         # Note: Millan has no velocity. Velocity needs to be extracted from NSICD.
         # Millan has only ith for ice caps. I can decide to use Millan ith or BedMachinev5 (has all Millan data inside)
+        # The fact is that BedMachine appears to downgrade the resolution of Millan (see e.g. RGI60-05.15702).
+        # Therefore I use Millan and, if not enough data at interpolation stage, rollback to BedMachine
 
         file_vx = f"{args.millan_velocity_folder}RGI-5/greenland_vel_mosaic250_vx_v1.tif"
         file_vy = f"{args.millan_velocity_folder}RGI-5/greenland_vel_mosaic250_vy_v1.tif"
         files_ith = sorted(glob(f"{args.millan_icethickness_folder}RGI-5/THICKNESS_RGI-5*"))
         file_ith_bedmacv5 = f"{args.NSIDC_icethickness_folder_Greenland}BedMachineGreenland-v5.nc"
 
-        run_bedmachine_for_ith = True
-        if run_bedmachine_for_ith:
+        # Interpolate Millan
+        # I need a dataframe for Millan with same indexes and lats lons
+        df_pointsM = points_df[['lats', 'lons']].copy()
+        df_pointsM = df_pointsM.assign(**{col: pd.Series() for col in files_ith})
+
+        # Fill the dataframe for occupancy
+        tocc0 = time.time()
+        for i, file_ith in enumerate(files_ith):
+
+            tile_ith = rioxarray.open_rasterio(file_ith, masked=False)
+
+            eastings, northings = Transformer.from_crs("EPSG:4326", tile_ith.rio.crs).transform(df_pointsM['lats'],
+                                                                                               df_pointsM['lons'])
+            df_pointsM['eastings'] = eastings
+            df_pointsM['northings'] = northings
+
+            # Get the points inside the tile
+            left, bottom, right, top = tile_ith.rio.bounds()
+            within_bounds_mask = (
+                    (df_pointsM['eastings'] >= left) &
+                    (df_pointsM['eastings'] <= right) &
+                    (df_pointsM['northings'] >= bottom) &
+                    (df_pointsM['northings'] <= top))
+
+            df_pointsM.loc[within_bounds_mask, file_ith] = 1
+
+        df_pointsM.drop(columns=['eastings', 'northings'], inplace=True)
+        ncols = df_pointsM.shape[1]
+        print(f"Created dataframe of occupancies for all points in {time.time() - tocc0} s.") if verbose else None
+
+        # Grouping by ith occupancy. Each group will have an occupancy value
+        df_pointsM['ntiles_ith'] = df_pointsM.iloc[:, 2:].sum(axis=1)
+        print(df_pointsM['ntiles_ith'].value_counts()) if verbose else None
+        groups = df_pointsM.groupby('ntiles_ith')  # Groups.
+        df_pointsM.drop(columns=['ntiles_ith'], inplace=True)  # Remove this column that we used to create groups
+        print(f"Num groups in Millan: {groups.ngroups}") if verbose else None
+
+        for g_value, df_group in groups:
+
+            unique_ith_tiles = df_group.iloc[:, 2:].columns[df_group.iloc[:, 2:].sum() != 0].tolist()
+
+            group_lats, group_lons = df_group['lats'], df_group['lons']
+
+            for file_ith in unique_ith_tiles:
+
+                tile_ith = rioxarray.open_rasterio(file_ith, masked=False)
+
+                group_eastings, group_northings = (Transformer.from_crs("EPSG:4326", "EPSG:3413")
+                                                   .transform(group_lats,group_lons))
+
+                minE, maxE = min(group_eastings), max(group_eastings)
+                minN, maxN = min(group_northings), max(group_northings)
+
+                epsM = 500
+                tile_ith = tile_ith.rio.clip_box(minx=minE - epsM, miny=minN - epsM, maxx=maxE + epsM, maxy=maxN + epsM)
+
+                # Condition no. 1. Check if ith tile is only either nodata or zero
+                # This condition is so soft. Glaciers may be still be present in the box. We need condition no. 2 as well
+                #tile_ith_is_all_zero_or_nodata = np.all(
+                #    np.logical_or(tile_ith.values == 0, tile_ith.values == tile_ith.rio.nodata))
+                cond0 = np.all(tile_ith.values == 0)
+                condnodata = np.all(np.abs(tile_ith.values - tile_ith.rio.nodata) < 1.e-6)
+                condnan = np.all(np.isnan(tile_ith.values))
+                all_zero_or_nodata = cond0 or condnodata or condnan
+                #print(f"Cond1: {all_zero_or_nodata}")
+
+                if all_zero_or_nodata:
+                    continue
+
+                # Condition no. 2. A fast and quick interpolation to see if points intercepts a valid raster region
+                group_eastings_ar = xarray.DataArray(group_eastings)
+                group_northings_ar = xarray.DataArray(group_northings)
+
+                vals_fast_interp = tile_ith.interp(y=group_northings_ar, x=group_eastings_ar, method='nearest').data
+
+                cond_valid_fast_interp = (np.isnan(vals_fast_interp).all() or
+                                          np.all(np.abs(vals_fast_interp - tile_ith.rio.nodata) < 1.e-6))
+                #print(f"Cond2: {cond_valid_fast_interp}")
+
+                if cond_valid_fast_interp:
+                    continue
+
+                # If we reached this point we should have the valid tile to interpolate
+                tile_ith.values = np.where((tile_ith.values == tile_ith.rio.nodata) | np.isinf(tile_ith.values),
+                                           np.nan, tile_ith.values)
+
+                tile_ith.rio.write_nodata(np.nan, inplace=True)
+
+                # Note: for rgi 5 we do not interpolate to remove nans.
+                tile_ith = tile_ith.squeeze()
+
+                # Interpolate (note: nans can be produced near boundaries). This should be removed at the end.
+                ith_data = tile_ith.interp(y=group_northings_ar, x=group_eastings_ar, method="nearest").data
+
+                #fig, ax = plt.subplots()
+                #tile_ith.plot(ax=ax, vmin=tile_ith.min(), vmax=tile_ith.max())
+                #s = ax.scatter(x=group_eastings, y=group_northings, c=ith_data, ec=None, s=3, vmin=tile_ith.min(),
+                #           vmax=tile_ith.max())
+                #cbar = plt.colorbar(s)
+                #plt.show()
+
+                #fig, ax = plt.subplots()
+                #s = ax.scatter(x=points_df['lons'], y=points_df['lats'], c=ith_data, s=3)
+                #plt.colorbar(s)
+                #plt.show()
+
+                # Fill dataframe with ith_m
+                points_df.loc[df_group.index, 'ith_m'] = ith_data
+
+                break # Since interpolation should have only happened for the only right tile no need to evaluate others
+
+
+        # Check if Millan ith interpolation is satisfactory. If not, try BedMachine v5
+        millan_ith_nan_count_perc = np.isnan(points_df['ith_m']).sum() / len(points_df['ith_m'])
+        #print(millan_ith_nan_count_perc)
+        if millan_ith_nan_count_perc > .5:
+            print(f'Millan ith has too many nans for {glacier_name}. Will try to use BedMachine tiles')
+
+            # Interpolate BedMachinev5 ice field
             tile_ith_bedmacv5 = rioxarray.open_rasterio(file_ith_bedmacv5, masked=False)
 
             tile_ith = tile_ith_bedmacv5['thickness'] # get the ith field. Note that source is also interesting
@@ -683,115 +819,8 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
 
             #fig, ax = plt.subplots()
             #tile_ith.plot(ax=ax, vmin=tile_ith.min(), vmax=tile_ith.max())
-            #ax.scatter(x=eastings, y=northings, c=ith_data, ec='r', s=30, vmin=tile_ith.min(), vmax=tile_ith.max())
+            #ax.scatter(x=eastings, y=northings, c=ith_data, ec='r', s=3, vmin=tile_ith.min(), vmax=tile_ith.max())
             #plt.show()
-
-
-        else:
-            # If I decide not to use bedmachine, lets go with millan tiles
-            # I need a dataframe for Millan with same indexes and lats lons
-            df_pointsM = points_df[['lats', 'lons']].copy()
-            df_pointsM = df_pointsM.assign(**{col: pd.Series() for col in files_ith})
-
-            # Fill the dataframe for occupancy
-            tocc0 = time.time()
-            for i, file_ith in enumerate(files_ith):
-
-                tile_ith = rioxarray.open_rasterio(file_ith, masked=False)
-
-                eastings, northings = Transformer.from_crs("EPSG:4326", tile_ith.rio.crs).transform(df_pointsM['lats'],
-                                                                                                   df_pointsM['lons'])
-                df_pointsM['eastings'] = eastings
-                df_pointsM['northings'] = northings
-
-                # Get the points inside the tile
-                left, bottom, right, top = tile_ith.rio.bounds()
-                within_bounds_mask = (
-                        (df_pointsM['eastings'] >= left) &
-                        (df_pointsM['eastings'] <= right) &
-                        (df_pointsM['northings'] >= bottom) &
-                        (df_pointsM['northings'] <= top))
-
-                df_pointsM.loc[within_bounds_mask, file_ith] = 1
-
-            df_pointsM.drop(columns=['eastings', 'northings'], inplace=True)
-            ncols = df_pointsM.shape[1]
-            print(f"Created dataframe of occupancies for all points in {time.time() - tocc0} s.") if verbose else None
-
-            # Grouping by ith occupancy. Each group will have an occupancy value
-            df_pointsM['ntiles_ith'] = df_pointsM.iloc[:, 2:].sum(axis=1)
-            print(df_pointsM['ntiles_ith'].value_counts()) if verbose else None
-            groups = df_pointsM.groupby('ntiles_ith')  # Groups.
-            df_pointsM.drop(columns=['ntiles_ith'], inplace=True)  # Remove this column that we used to create groups
-            print(f"Num groups in Millan: {groups.ngroups}") if verbose else None
-
-            for g_value, df_group in groups:
-
-                unique_ith_tiles = df_group.iloc[:, 2:].columns[df_group.iloc[:, 2:].sum() != 0].tolist()
-
-                group_lats, group_lons = df_group['lats'], df_group['lons']
-
-                for file_ith in unique_ith_tiles:
-
-                    tile_ith = rioxarray.open_rasterio(file_ith, masked=False)
-
-                    group_eastings, group_northings = (Transformer.from_crs("EPSG:4326", "EPSG:3413")
-                                                       .transform(group_lats,group_lons))
-
-                    minE, maxE = min(group_eastings), max(group_eastings)
-                    minN, maxN = min(group_northings), max(group_northings)
-
-                    epsM = 500
-                    tile_ith = tile_ith.rio.clip_box(minx=minE - epsM, miny=minN - epsM, maxx=maxE + epsM, maxy=maxN + epsM)
-
-                    # Condition no. 1. Check if ith tile is only either nodata or zero
-                    # This condition is so soft. Glaciers may be still be present in the box. We need condition no. 2 as well
-                    #tile_ith_is_all_zero_or_nodata = np.all(
-                    #    np.logical_or(tile_ith.values == 0, tile_ith.values == tile_ith.rio.nodata))
-                    cond0 = np.all(tile_ith.values == 0)
-                    condnodata = np.all(np.abs(tile_ith.values - tile_ith.rio.nodata) < 1.e-6)
-                    condnan = np.all(np.isnan(tile_ith.values))
-                    all_zero_or_nodata = cond0 or condnodata or condnan
-                    #print(f"Cond1: {all_zero_or_nodata}")
-
-                    if all_zero_or_nodata:
-                        continue
-
-                    # Condition no. 2. A fast and quick interpolation to see if points intercepts a valid raster region
-                    group_eastings_ar = xarray.DataArray(group_eastings)
-                    group_northings_ar = xarray.DataArray(group_northings)
-
-                    vals_fast_interp = tile_ith.interp(y=group_northings_ar, x=group_eastings_ar, method='nearest').data
-
-                    cond_valid_fast_interp = (np.isnan(vals_fast_interp).all() or
-                                              np.all(np.abs(vals_fast_interp - tile_ith.rio.nodata) < 1.e-6))
-                    #print(f"Cond2: {cond_valid_fast_interp}")
-
-                    if cond_valid_fast_interp:
-                        continue
-
-                    # If we reached this point we should have the valid tile to interpolate
-                    tile_ith.values = np.where((tile_ith.values == tile_ith.rio.nodata) | np.isinf(tile_ith.values),
-                                               np.nan, tile_ith.values)
-
-                    tile_ith.rio.write_nodata(np.nan, inplace=True)
-
-                    # Note: for rgi 5 we do not interpolate to remove nans.
-                    tile_ith = tile_ith.squeeze()
-
-                    # Interpolate (note: nans can be produced near boundaries). This should be removed at the end.
-                    ith_data = tile_ith.interp(y=group_northings_ar, x=group_eastings_ar, method="nearest").data
-
-                    #fig, ax = plt.subplots()
-                    #tile_ith.plot(ax=ax, vmin=tile_ith.min(), vmax=tile_ith.max())
-                    #ax.scatter(x=group_eastings, y=group_northings, c=ith_data, ec='r', s=30, vmin=tile_ith.min(),
-                    #           vmax=tile_ith.max())
-                    #plt.show()
-
-                    # Fill dataframe with ith_m
-                    points_df.loc[df_group.index, 'ith_m'] = ith_data
-
-                    break # Since interpolation should have only happened for the only right tile no need to evaluate others
 
 
         """At this point I am ready to interpolate the NSIDC velocity"""
@@ -1795,15 +1824,17 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
     if plot_minimum_distances:
         fig, ax = plt.subplots()
         #ax.plot(*gl_geom.exterior.xy, color='blue')
-        ax.plot(*geoseries_geometries_epsg.loc[0].xy, lw=1, c='blue')  # first entry is outside border
+        ax.plot(*geoseries_geometries_epsg.loc[0].xy, lw=1, c='k')  # first entry is outside border
         for geom in geoseries_geometries_epsg.loc[1:]:
-            ax.plot(*geom.xy, lw=1, c='red')
+            ax.plot(*geom.xy, lw=1, c='grey')
         s1 = ax.scatter(x=points_coords_array[:,0], y=points_coords_array[:,1], s=1, c=min_distances, zorder=0)
         #s1 = ax.scatter(x=points_df['lons'], y=points_df['lats'], s=10, c=min_distances3, alpha=0.5, zorder=0)
-        plt.colorbar(s1, ax=ax, label='Distance to closest ice free region (km)')
-        ax.set_xlabel('eastings (m)')
-        ax.set_ylabel('northings (m)')
-
+        cbar = plt.colorbar(s1, ax=ax)
+        cbar.set_label('Distance to closest ice free region (km)', labelpad=15, rotation=90, fontsize=14)
+        ax.set_xlabel('eastings (m)', fontsize=14)
+        ax.set_ylabel('northings (m)', fontsize=14)
+        ax.tick_params(axis='both', labelsize=12)
+        plt.tight_layout()
         plt.show()
 
     # Method 3: geopandas spatial indexes (bad method and slow)
@@ -1865,7 +1896,7 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
             points_df.loc[i, 'dist_from_border_km_geom'] = min_dist/1000.
 
             # Plot
-            plot_calculate_distance = True
+            plot_calculate_distance = False
             if plot_calculate_distance:
                 fig, (ax1, ax2) = plt.subplots(1,2)
                 ax1.plot(*gl_geom_ext.exterior.xy, lw=1, c='red')
@@ -2130,7 +2161,7 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
 
 if __name__ == "__main__":
 
-    glacier_name =  'RGI60-05.10315'# 'RGI60-11.01450'# 'RGI60-19.01882' RGI60-02.05515
+    glacier_name =  'RGI60-05.14828'# 'RGI60-11.01450'# 'RGI60-19.01882' RGI60-02.05515
     # ultra weird: RGI60-02.03411 millan ha ith ma non ha velocita
     # 'RGI60-05.10315'
 
