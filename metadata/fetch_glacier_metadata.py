@@ -64,6 +64,7 @@ Note the following policy for Millan special cases to produce vx, vy, v, ith_m:
 # todo: use cupy-xarray instead of xarray
 # todo: use cupy instead of numpy. In particular convolving the slope could be done on GPU
 # using https://carpentries-incubator.github.io/lesson-gpu-programming/cupy.html
+# todo: for big glaciers the time needed to calculate the aspect features can be 0.6s. It is worth deleting these feats
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--mosaic', type=str,default="/media/maffe/nvme/Tandem-X-EDEM/",
@@ -1169,8 +1170,19 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
                     tile_v = tile_vx.copy(deep=True, data=(tile_vx ** 2 + tile_vy ** 2) ** 0.5)
                     tile_v = tile_v.squeeze()
 
-                    #fig, ax = plt.subplots()
-                    #tile_v.plot(ax=ax)
+                    # Investigate the angle. We use arctan2
+                    #theta = np.arctan2(tile_vy.values, tile_vx.values) * 180 / np.pi
+                    #theta_ar = tile_vx.copy(deep=True, data=theta)
+
+                    # Investigate velocity divergence
+                    #divv_ar = tile_vx.differentiate(coord='x') + tile_vy.differentiate(coord='y')
+                    #divv_ar.values = convolve_fft(divv_ar.values.squeeze(), kernel450, nan_treatment='interpolate',
+                    #                            preserve_nan=True, boundary='fill', fill_value=np.nan).reshape(divv_ar.values.shape)
+
+                    #fig, (ax1, ax2, ax3) = plt.subplots(1,3)
+                    #theta_ar.plot(ax=ax1)
+                    #tile_v.plot(ax=ax2)
+                    #divv_ar.plot(ax=ax3)
                     #plt.show()
 
                     # If velocity exist
@@ -2161,7 +2173,7 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
 
 if __name__ == "__main__":
 
-    glacier_name =  'RGI60-05.14828'# 'RGI60-11.01450'# 'RGI60-19.01882' RGI60-02.05515
+    glacier_name =  'RGI60-11.01450'# 'RGI60-11.01450'# 'RGI60-19.01882' RGI60-02.05515
     # ultra weird: RGI60-02.03411 millan ha ith ma non ha velocita
     # 'RGI60-05.10315'
 
