@@ -25,7 +25,7 @@ parser.add_argument('--input_metadata_folder', type=str,
                     default="/media/maffe/nvme/glathida/glathida-3.1.0/glathida-3.1.0/data/",
                     help="Input metadata folder to be gridded")
 parser.add_argument('--input_metadata_file', type=str,
-                    default="metadata34.csv", help="Input metadata file to be gridded")
+                    default="metadata35.csv", help="Input metadata file to be gridded")
 parser.add_argument('--tmin', type=int, default=20050000, help="Keep only measurements after this year.")
 parser.add_argument('--hmin', type=float, default=0.0, help="Keep only measurements with thickness greater than this.")
 parser.add_argument('--method_grid', type=str, default='mean', help="Supported options: mean, median")
@@ -50,7 +50,7 @@ cols = ['RGI', 'RGIId', 'POINT_LAT', 'POINT_LON', 'THICKNESS', 'Area', 'Area_ice
        'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'ith_m', 'ith_f',
         'slope50', 'slope75', 'slope100', 'slope125', 'slope150', 'slope300', 'slope450', 'slopegfa',
         'Form', 'Aspect', 'TermType', 'v50', 'v100', 'v150', 'v300', 'v450', 'vgfa',
-        'curv_50', 'curv_300', 'curv_gfa', 'aspect_50', 'aspect_300', 'aspect_gfa', 't2m']
+        'curv_50', 'curv_300', 'curv_gfa', 'aspect_50', 'aspect_300', 'aspect_gfa', 't2m', 'dist_from_ocean']
 
 
 glathida = glathida[cols]
@@ -79,7 +79,7 @@ glathida_gridded = pd.DataFrame(columns=glathida.columns)
 features_to_grid = ['THICKNESS', 'elevation', 'smb', 'dist_from_border_km_geom',
         'ith_m', 'ith_f', 'slope50', 'slope75', 'slope100', 'slope125', 'slope150', 'slope300', 'slope450', 'slopegfa',
         'v50', 'v100', 'v150', 'v300', 'v450', 'vgfa',
-        'curv_50', 'curv_300', 'curv_gfa', 'aspect_50', 'aspect_300', 'aspect_gfa', 't2m']
+        'curv_50', 'curv_300', 'curv_gfa', 'aspect_50', 'aspect_300', 'aspect_gfa', 't2m', 'dist_from_ocean']
 
 list_num_measurements_before_grid = []
 list_num_measurements_after_grid = []
