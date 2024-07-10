@@ -65,6 +65,9 @@ Note the following policy for Millan special cases to produce vx, vy, v, ith_m:
 # todo: use cupy instead of numpy. In particular convolving the slope could be done on GPU
 # using https://carpentries-incubator.github.io/lesson-gpu-programming/cupy.html
 # todo: for big glaciers the time needed to calculate the aspect features can be 0.6s. It is worth deleting these feats
+# todo: probsably i should first calculate the slope and then smooth it.
+# todo: smoothing the elevation can be probably be done using albumentation on gpu
+# todo: delete num_pixels_50.. just use (3,3), (5,5), (7,7), (9,9), (11,11) etc.. Also get rid of gfa
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--mosaic', type=str,default="/media/maffe/nvme/Tandem-X-EDEM/",
@@ -83,6 +86,7 @@ parser.add_argument('--farinotti_icethickness_folder', type=str,default="/media/
                     help="Path to Farinotti ice thickness data")
 parser.add_argument('--RACMO_folder', type=str,default="/media/maffe/nvme/racmo", help="Path to RACMO main folder")
 parser.add_argument('--path_ERA5_t2m_folder', type=str,default="/media/maffe/nvme/ERA5/", help="Path to ERA5 folder")
+parser.add_argument('--GSHHG_folder', type=str,default="/media/maffe/nvme/gshhg/", help="Path to GSHHG folder")
 
 args = parser.parse_args()
 
@@ -1975,6 +1979,58 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
     tdist = tdist1 - tdist0
     print(f"Finished distance calculations.") if verbose else None
 
+    """ Calculate distance_from_ocean """
+    print(f"Calculating the distances from ocean... ") if verbose else None
+    tdistocean0 = time.time()
+
+    gdf16 = gpd.read_file(f'{args.GSHHG_folder}GSHHS_f_L1_L6.shp', engine='pyogrio') # subotimal to import every time
+
+    buffer = 1
+    box_geoms = gdf16.cx[llx-buffer:urx+buffer,lly-buffer:ury+buffer]
+
+    if len(box_geoms) == 0:
+        # We are in the island case in Antarctica, e.g. -73.10288797227037 -105.166778923743
+        # It may happen that no geometries gshhg are intercepted
+        # In this case we fill dataframe with dist_from_border_km_geom
+        points_df['dist_from_ocean'] = points_df['dist_from_border_km_geom']
+
+    else:
+
+        box_geoms_epsg = box_geoms.to_crs(glacier_epsg)
+
+        # Extract all coordinates of GeoSeries geometries
+        geoms_coords_array = np.concatenate([np.array(geom.coords) for geom in box_geoms_epsg.geometry.exterior])
+
+        # Reprojecting very big geometries cause distortion. Let's remove these points.
+        valid_coords_mask = (
+                (geoms_coords_array[:, 0] >= -1e7) & (geoms_coords_array[:, 0] <= 1e7) &
+                (geoms_coords_array[:, 1] >= -1e7) & (geoms_coords_array[:, 1] <= 1e7)
+        )
+        valid_coords = geoms_coords_array[valid_coords_mask]
+
+        #fig, ax = plt.subplots()
+        #box_geoms_epsg.plot(ax=ax, linestyle='-', linewidth=1, facecolor='none', edgecolor='red')
+        #geoseries_points_epsg.plot(ax=ax, c='k', markersize=2)
+        #plt.show()
+
+        kdtree_ocean = KDTree(valid_coords)
+
+        distances_ocean, _ = kdtree_ocean.query(points_coords_array, k=len(box_geoms))
+        min_distances_ocean = np.min(distances_ocean, axis=1)
+        min_distances_ocean /= 1000.
+
+        points_df['dist_from_ocean'] = min_distances_ocean
+
+    #fig, ax = plt.subplots()
+    #s = ax.scatter(x=points_df['lons'], y=points_df['lats'], s=1, c=points_df['dist_from_ocean'])
+    #cbar = plt.colorbar(s)
+    #plt.show()
+
+
+    tdistocean1 = time.time()
+    tdistocean = tdistocean1 - tdistocean0
+    print(f"Finished distance from ocean calculations.") if verbose else None
+
     # Show the result
     show_glacier_with_produced_points = False
     if show_glacier_with_produced_points:
@@ -2044,24 +2100,6 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
     """ Add features """
     points_df['elevation_from_zmin'] = points_df['elevation'] - points_df['Zmin']
 
-    #points_df['slope50'] = np.sqrt(points_df['slope_lon_gf50'] ** 2 + points_df['slope_lat_gf50'] ** 2)
-    #points_df['slope75'] = np.sqrt(points_df['slope_lon_gf75'] ** 2 + points_df['slope_lat_gf75'] ** 2)
-    #points_df['slope100'] = np.sqrt(points_df['slope_lon_gf100'] ** 2 + points_df['slope_lat_gf100'] ** 2)
-    #points_df['slope125'] = np.sqrt(points_df['slope_lon_gf125'] ** 2 + points_df['slope_lat_gf125'] ** 2)
-    #points_df['slope150'] = np.sqrt(points_df['slope_lon_gf150'] ** 2 + points_df['slope_lat_gf150'] ** 2)
-    #points_df['slope300'] = np.sqrt(points_df['slope_lon_gf300'] ** 2 + points_df['slope_lat_gf300'] ** 2)
-    #points_df['slope450'] = np.sqrt(points_df['slope_lon_gf450'] ** 2 + points_df['slope_lat_gf450'] ** 2)
-    #points_df['slopegfa'] = np.sqrt(points_df['slope_lon_gfa'] ** 2 + points_df['slope_lat_gfa'] ** 2)
-
-    #points_df['v50'] = np.sqrt(points_df['vx_gf50'] ** 2 + points_df['vy_gf50'] ** 2)
-    #points_df['v100'] = np.sqrt(points_df['vx_gf100'] ** 2 + points_df['vy_gf100'] ** 2)
-    #points_df['v150'] = np.sqrt(points_df['vx_gf150'] ** 2 + points_df['vy_gf150'] ** 2)
-    #points_df['v300'] = np.sqrt(points_df['vx_gf300'] ** 2 + points_df['vy_gf300'] ** 2)
-    #points_df['v450'] = np.sqrt(points_df['vx_gf450'] ** 2 + points_df['vy_gf450'] ** 2)
-    #points_df['vgfa'] = np.sqrt(points_df['vx_gfa'] ** 2 + points_df['vy_gfa'] ** 2)
-    #points_df['dvx'] = np.sqrt(points_df['dvx_dx'] ** 2 + points_df['dvx_dy'] ** 2)
-    #points_df['dvy'] = np.sqrt(points_df['dvy_dx'] ** 2 + points_df['dvy_dy'] ** 2)
-
     # ---------------------------------------------------------------------------------------------
     """ Data imputation """
     t0_imputation = time.time()
@@ -2123,6 +2161,8 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
             cbar = plt.colorbar(s)
             plt.show()
 
+    # Make sure no column is object
+    points_df[cols_millan] = points_df[cols_millan].astype('float64')
 
 
     # Imputation for smb (should be only needed when interpolating racmo)
@@ -2166,6 +2206,7 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
         print(f"Temperature: {tera5:.2f}")
         print(f"Farinotti: {tfar:.3f}")
         print(f"Distances: {tdist:.2f}")
+        print(f"Distances ocean: {tdistocean:.2f}")
         print(f"Imputation: {timp:.2f}")
         print(f"*******TOTAL FETCHING FEATURES in {tend - tin:.1f} sec *******")
     return points_df
@@ -2173,9 +2214,9 @@ def populate_glacier_with_metadata(glacier_name, n=50, seed=None, verbose=True):
 
 if __name__ == "__main__":
 
-    glacier_name =  'RGI60-11.01450'# 'RGI60-11.01450'# 'RGI60-19.01882' RGI60-02.05515
+    glacier_name =  'RGI60-14.06794'# 'RGI60-11.01450'# 'RGI60-19.01882' RGI60-02.05515
     # ultra weird: RGI60-02.03411 millan ha ith ma non ha velocita
-    # 'RGI60-05.10315'
+    # 'RGI60-05.10315' #RGI60-09.00909
 
     #dem_rgi = fetch_dem(folder_mosaic=args.mosaic, rgi=rgi)
     generated_points_dataframe = populate_glacier_with_metadata(
