@@ -67,6 +67,8 @@ def get_cmap():
     return cm
 
 def calc_volume_glacier(points_thickness, area=0):
+    '''points_thickness is a <class 'pandas.core.series.Series'>
+    If the series contains only nan, the returned volume will be zero'''
     # A potential drawback of this method is that I am randomly sampling in epsg:4326. In a utm projection
     # such sampling does not turn out to be uniform. Returned volume in km3.
     N = len(points_thickness)
