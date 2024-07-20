@@ -45,6 +45,7 @@ Time all rgis: 293m
 6. add_farinotti_ith. TESTED. All rgis: 1h15m
     - Points inside the glacier but close to the borders can be interpolated as nan.
     - Note: method to interpolate is chosen as "nearest" to reduce as much as possible these nans.
+7. add_dist_from_water. 5 mins
 """
 
 parser = argparse.ArgumentParser()
@@ -72,9 +73,10 @@ parser.add_argument('--farinotti_icethickness_folder', type=str,default="/media/
 parser.add_argument('--OGGM_folder', type=str,default="/home/maffe/OGGM", help="Path to OGGM main folder")
 parser.add_argument('--RACMO_folder', type=str,default="/media/maffe/nvme/racmo", help="Path to RACMO main folder")
 parser.add_argument('--path_ERA5_t2m_folder', type=str,default="/media/maffe/nvme/ERA5/", help="Path to ERA5 folder")
+parser.add_argument('--GSHHG_folder', type=str,default="/media/maffe/nvme/gshhg/", help="Path to GSHHG folder")
 parser.add_argument('--save', type=int, default=0, help="Save final dataset or not.")
 parser.add_argument('--save_outname', type=str,
-            default="/media/maffe/nvme/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata34",
+            default="/media/maffe/nvme/glathida/glathida-3.1.0/glathida-3.1.0/data/metadata35",
             help="Saved dataframe name.")
 
 #todo: whenever i call clip_box i need to check if there is only 1 measurement !
@@ -2432,6 +2434,93 @@ def add_dist_from_boder_using_geometries(glathida):
 
     return glathida
 
+"""Add distance from water"""
+def add_dist_from_water(glathida, path_GSHHG_folder):
+    print("Adding distance to water...")
+
+    if ('dist_from_ocean' in list(glathida)):
+        print('Variable already in dataframe.')
+        return glathida
+
+    # Import coastlines (we have merged L1 with L6)
+    gdf16 = gpd.read_file(f'{path_GSHHG_folder}GSHHS_f_L1_L6.shp', engine='pyogrio')
+
+    glathida['dist_from_ocean'] = [np.nan] * len(glathida)
+
+    regions = list(range(1, 20))
+    #regions = [19,]
+
+    # loop over regions
+    for rgi in tqdm(regions, total=len(regions), desc='Distances from ocean in RGI', leave=True):
+
+        glathida_rgi = glathida.loc[glathida['RGI'] == rgi]
+
+        if len(glathida_rgi) == 0:
+            continue
+
+        rgi_ids = glathida_rgi['RGIId'].dropna().unique().tolist()
+
+        # loop over glaciers
+        for rgi_id in tqdm(rgi_ids, total=len(rgi_ids), desc=f"Glaciers in rgi {rgi}", leave=False, position=0):
+
+            glathida_id = glathida_rgi.loc[glathida_rgi['RGIId'] == rgi_id] # glathida dataset
+
+            # get lons and lats, get epsg of center of data
+            lats, lons = glathida_id['POINT_LAT'], glathida_id['POINT_LON']
+            lats_mean, lons_mean = glathida_id['POINT_LAT'].mean(), glathida_id['POINT_LON'].mean()
+            lats_min, lons_min = glathida_id['POINT_LAT'].min(), glathida_id['POINT_LON'].min()
+            lats_max, lons_max = glathida_id['POINT_LAT'].max(), glathida_id['POINT_LON'].max()
+            _, _, _, _, id_epsg = from_lat_lon_to_utm_and_epsg(lats_mean, lons_mean)
+            #print(lats_mean, lons_mean, id_epsg)
+
+
+            list_points = [Point(lon, lat) for (lon, lat) in zip(lons, lats)]
+            geoseries_points_4326 = gpd.GeoSeries(list_points, crs="EPSG:4326")
+            geoseries_points_epsg = geoseries_points_4326.to_crs(epsg=id_epsg)
+
+            buffer = 1
+            box_geoms = gdf16.cx[lons_min-buffer:lons_max+buffer, lats_min-buffer:lats_max+buffer]
+
+            if len(box_geoms) == 0:
+                # We are in the island case in Antarctica, e.g. -73.10288797227037 -105.166778923743
+                # It may happen that no geometries gshhg are intercepted
+                # In this case we fill dataframe with dist_from_border_km_geom
+                glathida.loc[glathida_id.index, 'dist_from_ocean'] = glathida.loc[glathida_id.index, 'dist_from_border_km_geom']
+                continue
+
+            # else we have found at least one gshhg geometry
+            box_geoms_epsg = box_geoms.to_crs(id_epsg)
+            #print(f"No. geometries in box: {len(box_geoms)}")
+            #print(f"Num points: ", len(geoseries_points_4326))
+
+            # Extract all coordinates of GeoSeries points and geometries
+            points_coords_array = np.column_stack((geoseries_points_epsg.geometry.x, geoseries_points_epsg.geometry.y))  # (10000,2)
+            geoms_coords_array = np.concatenate([np.array(geom.coords) for geom in box_geoms_epsg.geometry.exterior])
+
+            #fig, ax = plt.subplots()
+            #box_geoms_epsg.plot(ax=ax, linestyle='-', linewidth=1, facecolor='none', edgecolor='red')
+            #geoseries_points_epsg.plot(ax=ax, c='k', markersize=2)
+            #plt.show()
+
+            # Reprojecting very big geometries cause distortion. Let's remove these points.
+            valid_coords_mask = (
+                    (geoms_coords_array[:, 0] >= -1e7) & (geoms_coords_array[:, 0] <= 1e7) &
+                    (geoms_coords_array[:, 1] >= -1e7) & (geoms_coords_array[:, 1] <= 1e7)
+            )
+            valid_coords = geoms_coords_array[valid_coords_mask]
+
+            kdtree = KDTree(valid_coords)
+
+            distances, indices = kdtree.query(points_coords_array, k=len(box_geoms))
+            min_distances = np.min(distances, axis=1)
+            min_distances /= 1000.
+
+
+            # Fill dataframe
+            glathida.loc[glathida_id.index, 'dist_from_ocean'] = min_distances
+
+    return glathida
+
 """Add RGIId and other OGGM stats like glacier area"""
 def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
     # Note: points that are outside any glaciers will have nan to RGIId (and the other features)
@@ -2439,7 +2528,7 @@ def add_RGIId_and_OGGM_stats(glathida, path_OGGM_folder):
     print("Adding OGGM's stats method and Hugonnet dmdtda")
     if (any(ele in list(glathida) for ele in ['RGIId', 'Area'])):
         print('Variables RGIId/Area etc already in dataframe.')
-        #return glathida
+        return glathida
 
     glathida['RGIId'] = [np.nan] * len(glathida)
     glathida['RGIId'] = glathida['RGIId'].astype(object)
@@ -2814,10 +2903,11 @@ if __name__ == '__main__':
         #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
         #glathida = add_t2m(glathida, args.path_ERA5_t2m_folder)
 
-        glathida = pd.read_csv(args.path_ttt_rgi_csv.replace('TTT_rgi.csv', 'metadata33.csv'), low_memory=False)
+        glathida = pd.read_csv(args.path_ttt_rgi_csv.replace('TTT_rgi.csv', 'metadata34.csv'), low_memory=False)
+        glathida = add_dist_from_water(glathida, args.GSHHG_folder)
         #glathida = add_smb(glathida, args.RACMO_folder)
         #glathida = add_farinotti_ith(glathida, args.farinotti_icethickness_folder)
-        glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
+        #glathida = add_RGIId_and_OGGM_stats(glathida, args.OGGM_folder)
         #glathida = add_dist_from_boder_using_geometries(glathida)
         #glathida = add_slopes_elevation(glathida, args.mosaic)
         #glathida = add_millan_vx_vy_ith(glathida, args.millan_velocity_folder, args.millan_icethickness_folder)
@@ -2825,8 +2915,8 @@ if __name__ == '__main__':
 
         if args.save:
             glathida.to_csv(f'{args.save_outname}.csv', index=False)
-            glathida.to_parquet(f'{args.save_outname}.parquet', index=False, engine='fastparquet')
-            print(f"Metadata dataset saved: {args.save_outname} .csv and .parquet")
+            #glathida.to_parquet(f'{args.save_outname}.parquet', index=False, engine='fastparquet')
+            print(f"Metadata dataset saved: {args.save_outname}")
         print(f'Finished in {(time.time()-t0)/60} minutes. Bye bye.')
         exit()
 
