@@ -4,6 +4,7 @@ from tqdm import tqdm
 import copy, math
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator, FormatStrFormatter
 import pandas as pd
 import earthpy.spatial
 import geopandas as gpd
@@ -13,102 +14,135 @@ from oggm import utils
 
 from scipy import stats
 from scipy.interpolate import griddata
-from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
-from sklearn.neural_network import MLPRegressor
-from sklearn.ensemble import IsolationForest, RandomForestRegressor
-from sklearn.linear_model import LinearRegression
 from sklearn.manifold import TSNE
 
 import xgboost as xgb
-import lightgbm as lgb
 import optuna
 import shap
 from fetch_glacier_metadata import populate_glacier_with_metadata
 from create_rgi_mosaic_tanxedem import create_glacier_tile_dem_mosaic
-from utils_metadata import calc_volume_glacier, get_random_glacier_rgiid, create_train_test
+from utils_metadata import calc_volume_glacier, get_random_glacier_rgiid, create_train_test, get_cmap
 
-import warnings
-warnings.filterwarnings('ignore')
-
-pd.set_option('display.max_rows', None)
+#import warnings
+#warnings.filterwarnings('ignore')
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--metadata_file', type=str, default="/media/maffe/nvme/glathida/glathida-3.1.0/"
-                        +"glathida-3.1.0/data/metadata32_hmineq0.0_tmin20050000_mean_grid_100.csv", help="Training dataset.")
+                        +"glathida-3.1.0/data/metadata35_hmineq0.0_tmin20050000_mean_grid_100.csv", help="Training dataset.")
 parser.add_argument('--farinotti_icethickness_folder', type=str,default="/media/maffe/nvme/Farinotti/composite_thickness_RGI60-all_regions/",
                     help="Path to Farinotti ice thickness data")
 parser.add_argument('--mosaic', type=str,default="/media/maffe/nvme/Tandem-X-EDEM/", help="Path to Tandem-X-EDEM")
 parser.add_argument('--oggm', type=str,default="/home/maffe/OGGM/", help="Path to OGGM folder")
-parser.add_argument('--save_model', type=int, default=0, help="Save ave the model: 0/1")
-parser.add_argument('--save_outdir', type=str, default="/home/maffe/PycharmProjects/skynet/metadata/", help="Saved model dir.")
-parser.add_argument('--save_outname', type=str, default="", help="Saved model name.")
+parser.add_argument('--save_model', type=int, default=0, help="Save the model")
+parser.add_argument('--save_outdir', type=str, default="/home/maffe/PycharmProjects/skynet/metadata/saved_iceboost/", help="Saved model dir.")
+parser.add_argument('--save_outname', type=str, default="iceboost", help="Saved model name.")
 
 args = parser.parse_args()
-
-# setup oggm version
 utils.get_rgi_dir(version='62')
-utils.get_rgi_intersects_dir(version='62')
+
+
+def custom_loss(elevation):
+    def loss(y_true, y_pred):
+        residual = y_pred - elevation
+        penalty = np.maximum(residual, 0) #** 2
+        grad = 2 * (y_pred - y_true) + 2 * penalty
+        hess = 2 * np.ones_like(y_true) + 2 * (residual > 0)
+        return grad, hess
+    return loss
+
+def xgb_custom_obj(elevation):
+    def obj(y_pred, dtrain):
+        y_true = dtrain.get_label()
+        grad, hess = custom_loss(elevation)(y_true, y_pred)
+        return grad, hess
+    return obj
 
 class CFG:
-    features_not_used = ['sia', 'lats', 'RGI', ]
+    features_not_used = ['Form', 'sia', 'RGI', 'lats', 'Area_icefree', 'aspect_50', 'aspect_300', 'aspect_gfa', 'Form'
+                         ]
 
-    featuresSmall = ['Area', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'Form', 'TermType', 'Aspect',
+    featuresSmall = ['Area',  'Perimeter', 'Zmin', 'Zmax', 'Zmed', 'Slope', 'Lmax', 'Aspect',  'TermType',
                 'elevation', 'elevation_from_zmin', 'dist_from_border_km_geom',
-                  'slope50', 'slope75', 'slope100', 'slope125', 'slope150', 'slope300', 'slope450', 'slopegfa',
-                'curv_50', 'curv_300', 'curv_gfa', 'aspect_50', 'aspect_300', 'aspect_gfa', 'dmdtda_hugo',
-                     'smb', 't2m']
-
+                   'slope50', 'slope75', 'slope100', 'slope125', 'slope150', 'slope300', 'slope450', 'slopegfa',
+                 'curv_50', 'curv_300', 'curv_gfa', 'dmdtda_hugo',  'deltaZ',
+                     'smb', 't2m', 'dist_from_ocean', ]
     featuresBig = featuresSmall + ['v50', 'v100', 'v150', 'v300', 'v450', 'vgfa', ]
+
+    feature_human_names = {
+        'Area': 'Area', 'Zmin': r'H$_{min}$', 'Zmax': r'H$_{max}$', 'Zmed': r'H$_{med}$', 'Slope': 'Slope', 'Lmax': 'Lmax',
+        'Form': 'Form', 'TermType': 'TermType', 'Aspect': 'Aspect', 'elevation': 'h', 'elevation_from_zmin': r'h-H$_{min}$',
+        'dist_from_border_km_geom': r'd$_{noice}$', 'slope50': r's$_{50}$', 'slope75': r's$_{75}$', 'slope100': r's$_{100}$',
+        'slope125': r's$_{125}$', 'slope150': r's$_{150}$', 'slope300': r's$_{300}$', 'slope450': r's$_{450}$',
+        'slopegfa': r's$_{gfa}$', 'curv_50': r'c$_{50}$',
+        'curv_300': r'c$_{300}$', 'curv_gfa': r'c$_{gfa}$', 'aspect_50': r'a$_{50}$', 'aspect_300': r'a$_{300}$', 'aspect_gfa': r'a$_{gfa}$',
+        'dmdtda_hugo': 'MB', 'smb': 'mb', 't2m': 't2m', 'v50': r'v$_{50}$', 'v100': r'v$_{100}$', 'v150': r'v$_{150}$',
+        'v300': r'v$_{300}$', 'v450': r'v$_{450}$', 'vgfa': r'v$_{gfa}$', 'Area_icefree': 'Area icefree', 'Perimeter': 'Perimeter',
+        'deltaZ': r'$\Delta$H', 'RGI': 'RGI', 'dist_from_ocean': r'd$_{ocean}$'
+    }
 
     target = 'THICKNESS'
     millan = 'ith_m'
     farinotti = 'ith_f'
-    #model = lgb.LGBMRegressor(num_leaves=40, n_jobs=-1, loss='l2', verbose=-1) #num_leaves=28, 40
-    xgb_params = {'objective': 'reg:squarederror',
-                  'tree_method': "gpu_hist",
+
+    xgb_params = {'tree_method': "hist",
+                   'device': 'cuda',
                     'lambda': 0.00878,
-                    'alpha': 6.3,
+                    'alpha': 6.3, #6.3
                     'colsample_bytree': 0.8459,
                     'subsample': 0.809,
                     'learning_rate': 0.07,
-                    'n_estimators': 537, #537
+                    #'n_estimators': 537,#537
+                    #'num_boost_round': 537,
                     'max_depth': 15, # 15
                     'min_child_weight': 3,
                     'gamma': 0.0803458919901354,
-                    }
+                    'objective': 'reg:squarederror' #placeholder if custom loss is used
+                    } #
     #model = xgb.XGBRegressor(n_estimators=537, max_depth=15, learning_rate=0.07, min_child_weight=8,
     #                        subsample=0.808, gamma=2.303, alpha=0.698, reg_lambda=5.009,
     #                         objective=xgbloss, tree_method="gpu_hist")
-    n_rounds = 100
+    n_rounds = 1
     n_points_regression = 30000
-    use_log_transform = False
-    run_feature_importance = False
     run_umap_tsne = False
     run_shap = False
     features = featuresBig
 
 # Import the training dataset
 glathida_rgis = pd.read_csv(args.metadata_file, low_memory=False)
+glathida_rgis.loc[glathida_rgis['RGIId'] == 'RGI60-19.01406', 'THICKNESS'] /= 10.
+#glathida_rgis = glathida_rgis[~glathida_rgis['RGIId'].isin(['RGI60-19.01406'])] # suspeciously high measurements
+#glathida_rgis = glathida_rgis[~glathida_rgis['RGIId'].isin(['RGI60-01.13696'])] # Malaspina
+#glathida_rgis = glathida_rgis[~glathida_rgis['RGIId'].isin(['RGI60-05.10315'])] # Flade Isblink ice cap
+#glathida_rgis = glathida_rgis[~glathida_rgis['RGIId'].isin(['RGI60-05.13726'])]
+#glathida_rgis = glathida_rgis[~glathida_rgis['RGIId'].isin(['RGI60-03.02442'])]
+#glathida_rgis = glathida_rgis[~glathida_rgis['RGIId'].isin(['RGI60-03.01517'])]
+#glathida_rgis = glathida_rgis[~glathida_rgis['RGIId'].isin(['RGI60-03.02467'])]
 
 # Replace zeros
-glathida_rgis.loc[glathida_rgis['THICKNESS'] == 0, 'THICKNESS'] = glathida_rgis.loc[glathida_rgis['THICKNESS'] == 0, ['ith_m', 'ith_f']].mean(axis=1, skipna=True)
-# Remove zeros
-#glathida_rgis = glathida_rgis[glathida_rgis['THICKNESS'] != 0.0]
+#glathida_rgis_specific = glathida_rgis.loc[glathida_rgis['RGIId'] == 'RGI60-03.01517']
+#fig, ax = plt.subplots()
+#s = ax.scatter(x=glathida_rgis_specific['POINT_LON'], y=glathida_rgis_specific['POINT_LAT'],
+#               c=glathida_rgis_specific['THICKNESS'], s=50, cmap='jet', vmin=0, vmax=750)
+#cbar = plt.colorbar(s)
+#plt.show()
 
+# Remove zeros by replacing them with Millan and Farinotti average
+#glathida_rgis.loc[glathida_rgis['THICKNESS'] == 0, 'THICKNESS'] = glathida_rgis.loc[glathida_rgis['THICKNESS'] == 0, ['ith_m', 'ith_f']].mean(axis=1, skipna=True)
 glathida_rgis_zeros = glathida_rgis.loc[glathida_rgis['THICKNESS'] == 0.0]
-
+#glathida_rgis = glathida_rgis[glathida_rgis['THICKNESS'] != 0.0]
 glathida_nan = glathida_rgis[glathida_rgis.isna().any(axis=1)]
 
-fig, ax = plt.subplots()
-s1 = ax.scatter(x=glathida_rgis['POINT_LON'], y=glathida_rgis['POINT_LAT'], s=2, c=glathida_rgis['THICKNESS'])
-s2 = ax.scatter(x=glathida_nan['POINT_LON'], y=glathida_nan['POINT_LAT'], s=2, c='r')#c=np.sqrt(glathida_nan['vx']**2+glathida_nan['vy']**2))
-cbar = plt.colorbar(s1)
-plt.show()
+glathida_19 = glathida_rgis[glathida_rgis['RGI'].isin([19])]
+#fig, ax = plt.subplots()
+#s1 = ax.scatter(x=glathida_19['POINT_LON'], y=glathida_19['POINT_LAT'], s=2, c=glathida_19['THICKNESS'])
+#s2 = ax.scatter(x=glathida_nan['POINT_LON'], y=glathida_nan['POINT_LAT'], s=2, c='r')#c=np.sqrt(glathida_nan['vx']**2+glathida_nan['vy']**2))
+#cbar = plt.colorbar(s1)
+#plt.show()
 
 # Regional statistics for Millan and Farinotti
-calc_regional_stats_millan_and_farinotti = False
+calc_regional_stats_millan_and_farinotti = True
 if calc_regional_stats_millan_and_farinotti:
     for rgi in sorted(glathida_rgis['RGI'].unique()):
         df = glathida_rgis.loc[glathida_rgis['RGI']==rgi]
@@ -128,11 +162,14 @@ if calc_regional_stats_millan_and_farinotti:
 # Add some features
 glathida_rgis['lats'] = glathida_rgis['POINT_LAT']
 glathida_rgis['elevation_from_zmin'] = glathida_rgis['elevation'] - glathida_rgis['Zmin']
+glathida_rgis['deltaZ'] = glathida_rgis['Zmax'] - glathida_rgis['Zmin']
 #glathida_rgis['hbahrm'] = 0.03*(glathida_rgis['Area']**0.375)*1000 # Bahr's approximation: h in meters
-#glathida_rgis['hbahrm2'] = glathida_rgis['dist_from_border_km_geom']*np.sqrt(glathida_rgis['Area'])
+glathida_rgis['hbahrm2'] = np.sqrt(glathida_rgis['Area'])*glathida_rgis['dist_from_border_km_geom']/glathida_rgis['Lmax']
 A = 24 * np.power(10, -25.0) #s−1 Pa−3
-rho, g = 917., 9.81
-#glathida_rgis['sia'] = ((glathida_rgis['v100']*(3+1))/(2*A*(rho*g*glathida_rgis['slope100'])**3))**(1./4)
+rho, g, n = 917., 9.81, 3
+#glathida_rgis['sia1'] = ((glathida_rgis['v100']*(1-0.1)*(n+1))/(2*A*(rho*g*glathida_rgis['slope100'])**3))**(1./(n+1))
+#glathida_rgis['sia2'] = ((glathida_rgis['v100']*(1-0.2)*(n+1))/(2*A*(rho*g*glathida_rgis['slope100'])**3))**(1./(n+1))
+#glathida_rgis['sia3'] = ((glathida_rgis['v100']*(1-0.5)*(n+1))/(2*A*(rho*g*glathida_rgis['slope100'])**3))**(1./(n+1))
 glathida_rgis['sia'] = glathida_rgis['v100']/(glathida_rgis['slope100']**3)
 
 # Remove nans (this is an overkill - i want ideally to remove nans only in the training features)
@@ -209,7 +246,7 @@ def objective(trial):
         "min_child_weight": trial.suggest_int("min_child_weight", 1, 200), # some say [1, 200]
     }
 
-    train, test = create_test(glathida_rgis, rgi=None, full_shuffle=True, frac=.2, seed=42) #important to decide
+    train, test = create_train_test(glathida_rgis, rgi=None, full_shuffle=True, frac=0.2, seed=None) #42
     y_train, y_test = train[CFG.target], test[CFG.target]
     X_train, X_test = train[CFG.features], test[CFG.features]
 
@@ -240,7 +277,7 @@ best_rmse = 9999
 for i in range(CFG.n_rounds):
 
     # Train, val, and test
-    train, test = create_train_test(glathida_rgis, rgi=3, full_shuffle=True, frac=0.2, seed=None)
+    train, test = create_train_test(glathida_rgis, rgi=None, full_shuffle=True, frac=.2, seed=None)
 
     create_val = False
     if create_val:
@@ -264,42 +301,102 @@ for i in range(CFG.n_rounds):
         ax.hist(train['sia'], bins=200, color='k', ec='k', alpha=.4)
         plt.show()
 
+    # Prepare the Data
     y_train, y_test = train[CFG.target], test[CFG.target]
     X_train, X_test = train[CFG.features], test[CFG.features]
-    #print(f'Dataset sizes: {X_train.shape}, {X_test.shape}, {y_train.shape}, {y_test.shape}')
     y_test_m = test[CFG.millan]
     y_test_f = test[CFG.farinotti]
 
-    ### initializa the model
+    elevation_train, elevation_test = train['elevation'], test['elevation']
+
+    # Step 4: Create DMatrix for training and testing
+    dtrain = xgb.DMatrix(data=X_train, label=y_train)
+    dtest = xgb.DMatrix(data=X_test, label=y_test)
+
+    # Wrap the custom objective function with the training elevation data
+    # If I want to use the custom loss:
+    # custom_obj = xgb_custom_obj(elevation_train)
+
+    # Train the model
+    model = xgb.train(
+        CFG.xgb_params,
+        dtrain,
+        #obj=custom_obj, # If I want to use the custom loss:
+        num_boost_round=537,
+        evals=[(dtest, 'eval')],
+        early_stopping_rounds=50,
+        verbose_eval=False
+    )
+    y_preds = model.predict(dtest)
+
+    '''
+    ### sklearn-api: initialize the model
     model = xgb.XGBRegressor(**CFG.xgb_params)
     #model = CFG.model
 
-    if CFG.use_log_transform:
-        # Log transform the target variable
-        y_train_log = np.log1p(y_train)
-        y_test_log = np.log1p(y_test)
-        model.fit(X_train, y_train_log)
-        y_preds_log = model.predict(X_test)
-        y_preds = np.expm1(y_preds_log)
+    #model.fit(X_train, y_train)
+    model.fit(X_train, y_train, eval_set=[(X_test, y_test)], early_stopping_rounds=100, verbose=False)
+    y_preds = model.predict(X_test)
+    '''
 
-    else:
-        #model.fit(X_train, y_train)
-        model.fit(X_train, y_train, eval_set=[(X_test, y_test)], early_stopping_rounds=50, verbose=False)
-        y_preds = model.predict(X_test)
+    # Shap Analysis
+    if CFG.run_shap:
 
-        # Shap Analysis
-        if CFG.run_shap:
-            #explainer = shap.Explainer(model)
-            explainer = shap.explainers.GPUTree(model, X_train)
-            shap_values = explainer(X_train.sample(2000), check_additivity=False)
-            shap.plots.bar(shap_values, max_display=len(CFG.features))
-            #shap.plots.beeswarm(shap_values, max_display=len(CFG.features))
-            plt.show()
+        explainer = shap.explainers.GPUTree(model, X_test)
+        shap_values = explainer(X_test.sample(2000), check_additivity=False)
 
-    # Run feature importance
-    if CFG.run_feature_importance:
-        lgb.plot_importance(model, importance_type="gain", figsize=(7,6), title="LightGBM Feature Importance")
+        list_new_feature_names = [CFG.feature_human_names.get(col) for col in X_test.columns]
+
+        fig, ax = plt.subplots()
+
+        shap_values.feature_names = list_new_feature_names
+        #shap.plots.bar(shap_values, max_display=len(CFG.features))
+        shap.plots.beeswarm(shap_values, max_display=len(CFG.features), color=get_cmap('black_electric_green'), show=False)#len(CFG.features) plt.get_cmap('winter')
+        cbar = fig.axes[-1]
+        cbar.set_ylabel('Feature value', fontsize=16, color='grey')
+        cbar.tick_params(labelsize=14)
+        cbar.tick_params(labelsize=14, colors='grey')
+
+        # Set the y-axis labels font size
+        ax.set_yticklabels(ax.get_yticklabels(), fontsize=16, color='grey')
+        ax.set_xticklabels(ax.get_xticklabels(), fontsize=12, color='grey')
+        ax.set_xlabel('SHAP value', fontsize=16, color='grey')#ax.get_xlabel()
+
+        for line in ax.lines: line.set_color('k')
+
+        plt.tight_layout()
         plt.show()
+
+        plot_nice_shape = True
+        if plot_nice_shape:
+
+            # Retrieve the SHAP values in a format suitable for plotting
+            shap_summary_values = np.abs(shap_values.values) # (2000, 35)
+
+            # Sort the SHAP values for better presentation in the bar plot
+            sorted_indices = np.argsort(shap_summary_values.mean(axis=0))[::-1]
+
+            # Prepare data for plotting (all features)
+            all_shap_values = shap_summary_values[:, sorted_indices]
+            all_feature_names = np.array(list_new_feature_names)[sorted_indices]
+
+            # Plotting all features as a bar chart
+            fig, ax = plt.subplots(figsize=(8, 8))
+            bars = ax.barh(all_feature_names, all_shap_values.mean(axis=0), color='grey', alpha=0.3)
+
+            ax.invert_yaxis()  # Invert y-axis to show highest importance at the top
+
+            ax.set_yticklabels(all_feature_names, fontsize=14, color='grey')
+            ax.set_xlabel('Mean |SHAP Value|', fontsize=16)
+            ax.tick_params(axis='x', labelsize=14)
+
+            ax.set_ylim(ax.get_ylim()[0] - 1, ax.get_ylim()[1] + 1)
+
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+            plt.tight_layout()
+            plt.show()
 
     # benchmarks
     mae_ML, rmse_ML, mu_ML, med_ML, std_ML, mfit_ML, qfit_ML = compute_scores(y_test, y_preds, verbose=False)
@@ -336,6 +433,12 @@ print(f"Rmse {100*(np.nanmean(rmses_Mil)-np.nanmean(rmses_ML))/np.nanmean(rmses_
 print(f"Rmse {100*(np.nanmean(rmses_Far)-np.nanmean(rmses_ML))/np.nanmean(rmses_Far):.1f}% better than Farinotti")
 
 print(f"At the end of cv the best rmse is {best_rmse}")
+
+if args.save_model==1:
+    date_n_time = time.strftime("%Y%m%d", time.localtime())
+    fileout = f"{args.save_outdir}{args.save_outname}_{date_n_time}.json"
+    best_model.save_model(fileout)
+    print(f'saved: {fileout}')
 
 # ************************************
 # plot
@@ -432,24 +535,23 @@ if plot_spatial_test_predictions:
 
     plt.show()
 
-
 # *********************************************
 # Model deploy
 # *********************************************
-glacier_name_for_generation = get_random_glacier_rgiid(name='RGI60-05.13501', rgi=3, area=20, seed=None)
+glacier_name_for_generation = get_random_glacier_rgiid(name='RGI60-03.02467', rgi=7, area=30, seed=None)
 #'RGI60-13.37753', RGI60-13.43528 RGI60-13.54431
-#glacier_name_for_generation = 'RGI60-07.00228' #RGI60–07.00027 'RGI60-11.01450' RGI60-07.00552,
+#glacier_name_for_generation = 'RGI60-07.00228' #RGI60-07.00027 'RGI60-11.01450' RGI60-07.00552,
 #glacier_name_for_generation = 'RGI60-07.00832' very nice
 # RGI60-03.00832 la differenza tra i modelli è molto interessante
 # RGI60-03.01708
 #'RGI60-03.01632', 'RGI60-07.01482' ML simile agli altri 2 in termini di alte profondita
 # 'RGI60-03.00251' Dobbin Bay, 'RGI60-07.00124' Renardbreen, 'RGI60-11.01328' Unteraargletscher, 'RGI60-11.01478'
-# 'RGI60-03.02469', 'RGI60-03.01483 ML << Millan/Farinotti. This is super interesting. These are marine-term glaciers,
+# 'RGI60-03.02469', 'RGI60-03.01483, RGI60-03.01517 ML << Millan/Farinotti. This is super interesting. These are marine-term glaciers,
 # I remember Millan mentioning that marine term glaciers have a bias towards bigger thickness (high speed, low slope)
 # 'RGI60-03.01466' RGI60-04.05745 << M-F
 # 'RGI60-03.00228'
 # Barnes Ice Cap e' molto interessante confrontare le predizioni perche' c'e' area senza ghiaccio attorno per confrontare
-# i bedrock! E i volumi di ghiaccio sono enormi
+# i bedrock! E i volumi di ghiaccio sono enormi: RGI60-04.06187
 # 'RGI60-11.01492' we can see millan's effect of velocity products on ice thickness calculation
 # RGI60-07.00027 biggest in Svalbard
 # RGI60-03.01710 biggest in Arctic Canada (Wykeham Glacier South)
@@ -467,27 +569,45 @@ glacier_name_for_generation = get_random_glacier_rgiid(name='RGI60-05.13501', rg
 # 'RGI60-05.11268' has tandem-x with bugs. The bugs are reflected in my solution (since the model strongly uses the slope)
 # RGI60-05.10988 I think Millan and Farinotti solutions are wrong.
 # RGI60-05.10743 Farinotti looks badly wrong.
+# RGI60-05.15702 big difference between Millan and IceBoost-Farinotti
+# RGI60-05.10148 big difference between IceBoost and Millan-Farinotti
+# RGI60-09.00909 RGI60-09.00520 I think iceboost is very wrong
+# high frequency features in 'RGI60-14.16214' or RGI60-15.04541 RGI60-16.00244 RGI60-16.00776 RGI60-18.02210
+# Probably caused by some features, check curv_50 or elevation
+
+# check if RGI60-06.00475 and RGI60-06.00481 blend together
 
 # Generate points for one glacier
 test_glacier = populate_glacier_with_metadata(glacier_name=glacier_name_for_generation,
-                                              n=CFG.n_points_regression, seed=None, verbose=True)
+                                              n=CFG.n_points_regression, seed=42, verbose=True)
 test_glacier_rgi = glacier_name_for_generation[6:8]
 
-# Add features just in case
-test_glacier['sia'] = ((0.3*test_glacier['v50']*(3+1))/(2*A*(rho*g*test_glacier['slope50'])**3))**(1./4)
+# Add features
+#test_glacier['sia'] = ((0.3*test_glacier['v50']*(3+1))/(2*A*(rho*g*test_glacier['slope50'])**3))**(1./4)
+test_glacier['sia'] = test_glacier['v100']/(test_glacier['slope100']**3)
+test_glacier['deltaZ'] = test_glacier['Zmax'] - test_glacier['Zmin']
+#test_glacier['hbahrm2'] = np.sqrt(test_glacier['Area'])*test_glacier['dist_from_border_km_geom']/test_glacier['Lmax']
+
+#fig, (ax1, ax2, ax3) = plt.subplots(1,3)
+#s = ax1.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=1, c=test_glacier['dist_from_border_km_geom'])
+#s2 = ax2.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=1, c=test_glacier['dist_from_ocean'])
+#s3 = ax3.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=1, c=test_glacier['curv_50'])
+#cbar1 = plt.colorbar(s)
+#cbar2 = plt.colorbar(s2)
+#cbar3 = plt.colorbar(s3)
+#plt.show()
+
 
 X_test_glacier = test_glacier[CFG.features]
-y_test_glacier_m = test_glacier[CFG.millan]  # Note that here nans are present if Millan has no data
+y_test_glacier_m = test_glacier[CFG.millan]
 y_test_glacier_f = test_glacier[CFG.farinotti]
+dtest = xgb.DMatrix(data=X_test_glacier)
 
 no_millan_data = np.isnan(y_test_glacier_m).all()
 no_farinotti_data = np.isnan(y_test_glacier_f).all()
 
-if CFG.use_log_transform:
-    y_preds_glacier_log = best_model.predict(X_test_glacier)
-    y_preds_glacier = np.expm1(y_preds_glacier_log)  # Inverse log transform
-else:
-    y_preds_glacier = best_model.predict(X_test_glacier)
+#y_preds_glacier = best_model.predict(X_test_glacier) # sklearn-api
+y_preds_glacier = best_model.predict(dtest) # Native API
 
 # Set negative predictions to zero
 y_preds_glacier = np.where(y_preds_glacier < 0, 0, y_preds_glacier)
@@ -529,6 +649,7 @@ if not no_farinotti_data:
 else:
     print(f"Farinotti glacier {glacier_name_for_generation} not found in OGGM V62 database.")
     vol_farinotti = np.nan
+
 # Calculate the glacier volume using the 3 models
 vol_ML = calc_volume_glacier(y_preds_glacier, glacier_area)
 vol_millan = calc_volume_glacier(y_test_glacier_m, glacier_area)
@@ -544,6 +665,9 @@ print(f"No. points: {len(y_preds_glacier)} no. positive preds {100*np.sum(y_pred
 # Visualize test predictions of specific glacier
 y_min = min(np.concatenate((y_preds_glacier, y_test_glacier_m, y_test_glacier_f)))
 y_max = max(np.concatenate((y_preds_glacier, y_test_glacier_m, y_test_glacier_f)))
+
+vmin = min(y_preds_glacier) # 0 # min(y_preds_glacier)#test_glacier['smb'].min()
+vmax = max(y_preds_glacier) #1600 #max(y_preds_glacier)#test_glacier['smb'].max()
 
 create_tif_file = False
 if create_tif_file:
@@ -580,17 +704,15 @@ if plot_fancy_ML_prediction:
     im = hillshade.plot(ax=ax, cmap='grey', alpha=0.9, zorder=0, add_colorbar=False)
     #im = ax.imshow(hillshade, cmap='grey', alpha=0.9, zorder=0)
     #im = ax.imshow(hillshade, cmap='grey', vmin=np.nanmin(focus), vmax=np.nanmax(focus), alpha=0.15, zorder=0)
-    vmin = min(y_preds_glacier) # 0 # min(y_preds_glacier)#test_glacier['smb'].min()
-    vmax = max(y_preds_glacier) #1600 #max(y_preds_glacier)#test_glacier['smb'].max()
     # y_preds_glacier
     s1 = ax.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=1, c=y_preds_glacier,
                      cmap='jet', label='ML', zorder=1, vmin=vmin,vmax=vmax)
     s_glathida = ax.scatter(x=glathida_rgis['POINT_LON'], y=glathida_rgis['POINT_LAT'], c=glathida_rgis['THICKNESS'],
-                            cmap='jet', ec='grey', lw=0.5, s=20, vmin=vmin,vmax=vmax)
+                            cmap='jet', ec='grey', lw=0.5, s=35, vmin=vmin,vmax=vmax)
 
     cbar = plt.colorbar(s1, ax=ax)
     cbar.mappable.set_clim(vmin=vmin,vmax=vmax)
-    cbar.set_label('Thickness (m)', labelpad=15, rotation=90, fontsize=14)
+    cbar.set_label('Thickness (m)', labelpad=15, rotation=90, fontsize=16)
     #cbar.set_label(r'mass balance (mm w.e. yr$^{-1}$)', labelpad=15, rotation=90, fontsize=14)
     cbar.ax.tick_params(labelsize=12)
     ax.plot(*exterior_ring.xy, c='k')
@@ -600,26 +722,103 @@ if plot_fancy_ML_prediction:
     ax.spines['right'].set_visible(False)
     ax.spines['bottom'].set_visible(False)
     ax.spines['left'].set_visible(False)
-    ax.set_xlabel('Lon ($^{\\circ}$)', fontsize=14)
-    ax.set_ylabel('Lat ($^{\\circ}$)', fontsize=14)
+    ax.set_xlabel('Lon ($^{\\circ}$E)', fontsize=16)
+    ax.set_ylabel('Lat ($^{\\circ}$N)', fontsize=16)
     ax.set_title('')
+
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax.xaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+    ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+
     ax.tick_params(axis='both', labelsize=12)
+
     plt.tight_layout()
     #plt.savefig('/home/maffe/Downloads/RGI60-1313574_CCAI.png', dpi=200)
     plt.show()
 
+plot_fancy_ML_Mil_Far_prediction = True
+if plot_fancy_ML_Mil_Far_prediction:
+    fig, (ax1, ax2, ax3) = plt.subplots(1,3, figsize=(15, 6))
+
+    x0, y0, x1, y1 = exterior_ring.bounds
+    dx, dy = x1 - x0, y1 - y0
+    hillshade = copy.deepcopy(focus)
+    hillshade.values = earthpy.spatial.hillshade(focus, azimuth=315, altitude=0)
+    hillshade = hillshade.rio.clip_box(minx=x0 - dx / 8, miny=y0 - dy / 8, maxx=x1 + dx / 8, maxy=y1 + dy / 8)
+
+    im1 = hillshade.plot(ax=ax1, cmap='grey', alpha=0.9, zorder=0, add_colorbar=False)
+    im2 = hillshade.plot(ax=ax2, cmap='grey', alpha=0.9, zorder=0, add_colorbar=False)
+    im3 = hillshade.plot(ax=ax3, cmap='grey', alpha=0.9, zorder=0, add_colorbar=False)
+
+    s1 = ax1.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_preds_glacier, cmap='jet', label='ML', vmin=vmin, vmax=vmax)
+    if not no_millan_data:
+        s2 = ax2.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_test_glacier_m, cmap='jet',
+                         label='Millan', vmin=vmin, vmax=vmax)
+    if not no_farinotti_data:
+        s3 = ax3.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_test_glacier_f, cmap='jet',
+                         label='Farinotti', vmin=vmin, vmax=vmax)
+
+    ax1.set_title(f"IceBoost: {vol_ML:.4g} km$^3$", fontsize=16)
+    ax2.set_title(f"Model1: {vol_millan:.4g} km$^3$", fontsize=16)
+    ax3.set_title(f"Model2: {vol_farinotti:.4g} km$^3$", fontsize=16)
+
+    for ax in (ax1, ax2, ax3):
+        ax.scatter(x=glathida_rgis['POINT_LON'], y=glathida_rgis['POINT_LAT'], c=glathida_rgis['THICKNESS'],
+                                cmap='jet', ec='grey', lw=0.5, s=35, vmin=vmin, vmax=vmax)
+
+    cbar1 = plt.colorbar(s1, ax=ax1)
+    cbar1.mappable.set_clim(vmin=vmin, vmax=vmax)
+    cbar1.set_label('Thickness (m)', labelpad=15, rotation=90, fontsize=16)
+    cbar1.ax.tick_params(labelsize=11)
+    if not no_millan_data:
+        cbar2 = plt.colorbar(s2, ax=ax2)
+        cbar2.mappable.set_clim(vmin=vmin, vmax=vmax)
+        cbar2.set_label('Thickness (m)', labelpad=15, rotation=90, fontsize=16)
+        cbar2.ax.tick_params(labelsize=11)
+    if not no_farinotti_data:
+        cbar3 = plt.colorbar(s3, ax=ax3)
+        cbar3.mappable.set_clim(vmin=vmin, vmax=vmax)
+        cbar3.set_label('Thickness (m)', labelpad=15, rotation=90, fontsize=16)
+        cbar3.ax.tick_params(labelsize=11)
+
+    for ax in (ax1, ax2, ax3):
+        ax.plot(*exterior_ring.xy, c='k')
+        for nunatak in glacier_nunataks_list:
+            ax.plot(*nunatak.xy, c='k', lw=0.8)
+
+        # ax.legend(fontsize=14, loc='upper left')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_visible(False)
+        ax.spines['left'].set_visible(False)
+        ax.set_xlabel('Lon ($^{\\circ}$E)', fontsize=14)
+        ax.set_ylabel('Lat ($^{\\circ}$N)', fontsize=14)
+        ax.tick_params(axis='both', labelsize=12)
+        #ax.tick_params(axis='both', which='both', bottom=False, top=False, left=False, right=False)
+
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=4))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+        ax.xaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+        ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+
+    ax2.axis('off')
+    ax3.axis('off')
+
+    #fig.suptitle(f'{glacier_name_for_generation}', fontsize=13)
+    plt.tight_layout()
+    plt.show()
+
+
+
 # Plot comparison between ML, Millan and Farinotti
-fig, axes = plt.subplots(1,3, figsize=(8,4))
-ax1, ax2, ax3 = axes.flatten()
+fig, (ax1, ax2, ax3) = plt.subplots(1,3, figsize=(8,4))
 s1 = ax1.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_preds_glacier, cmap='jet', label='ML')
-#cntr1 = ax1.tricontourf(test_glacier['lons'], test_glacier['lats'], y_preds_glacier, cmap="jet")
 if not no_millan_data:
     s2 = ax2.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_test_glacier_m, cmap='jet',
                      label='Millan')
-    #cntr2 = ax2.tricontourf(test_glacier['lons'], test_glacier['lats'], y_test_glacier_m>=0, levels=5, cmap="plasma")
 if not no_farinotti_data:
     s3 = ax3.scatter(x=test_glacier['lons'], y=test_glacier['lats'], s=2, c=y_test_glacier_f, cmap='jet', label='Farinotti')
-#cntr3 = ax3.tricontourf(test_glacier['lons'], test_glacier['lats'], y_test_glacier_f>=0, levels=5, cmap="plasma")
 
 ax1.set_title(f"ML {vol_ML:.4g} km3")
 ax2.set_title(f"Millan {vol_millan:.4g} km3")
